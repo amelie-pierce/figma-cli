@@ -31,6 +31,18 @@ test('invalid ports fail closed instead of silently selecting another service', 
   assert.equal(parseCdpPort('65535'), 65535);
 });
 
+test('separate user profiles retain independent machine ports', t => {
+  const first = profile(t);
+  const second = profile(t);
+  saveCdpPort(9233, { home: first });
+  saveCdpPort(9333, { home: second });
+  assert.equal(getCdpSettings({ home: first, env: {} }).port, 9233);
+  assert.equal(getCdpSettings({ home: second, env: {} }).port, 9333);
+  saveCdpPort(9444, { home: first });
+  assert.equal(getCdpSettings({ home: second, env: {} }).port, 9333);
+  assert.equal(getCdpSettings({ home: profile(t), env: {} }).source, 'default');
+});
+
 test('saving preserves unknown fields and refuses corrupt or foreign records', t => {
   const home = profile(t);
   const path = connectionConfigPath(home);

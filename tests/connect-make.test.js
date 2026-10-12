@@ -49,9 +49,16 @@ test('macOS permission failures stop before restart, while Windows receives appr
 });
 
 test('Make setup awaits restart and verifies the requested port without a Design daemon', async () => {
-  const { options, calls } = fixture();
-  assert.equal((await connectMakeDesktop(options)).ready, true);
-  assert.deepEqual(calls, ['patch', 'stop', ['launch', 'test-binary', 9333], ['wait', 9333]]);
+  for (const platform of ['darwin', 'win32']) {
+    for (const port of [9233, 9333]) {
+      const { options, calls } = fixture({ platform, port });
+      const probes = [];
+      options.probe = async args => { probes.push(args.port); return { reachable: false }; };
+      assert.equal((await connectMakeDesktop(options)).ready, true);
+      assert.deepEqual(probes, [port]);
+      assert.deepEqual(calls, ['patch', 'stop', ['launch', 'test-binary', port], ['wait', port]]);
+    }
+  }
 });
 
 test('stop failures abort launch, and endpoint failures are not reported as success', async () => {

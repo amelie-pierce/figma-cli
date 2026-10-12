@@ -157,6 +157,23 @@ If `FIGMA_PORT` is set, it overrides saved settings; the diagnostic reports this
 Reuse the port configured for that device, not a port copied from someone else's
 machine. Never stop another service to free it.
 
+Different computers can use different CDP ports, such as 9233 and 9333. Save the
+value separately on each computer; do not distribute `connection.json` or a
+launcher with a fixed teammate-specific port. `connect --make --port PORT` is a
+temporary override: save it separately if subsequent commands should reuse it.
+
+**CDP and MCP are different endpoints.** Figma's official desktop MCP server
+normally uses [`http://127.0.0.1:3845/mcp`](https://developers.figma.com/docs/figma-mcp-server/local-server-installation/).
+This CLI instead expects a CDP target list at `http://127.0.0.1:PORT/json`.
+Do not copy the MCP port into this CLI's configuration unless that port actually
+serves CDP. A valid port number alone does not establish a debugging connection.
+
+Here, “remote debugging” means enabling Figma's CDP interface with
+`--remote-debugging-port=PORT`; `connect --make` supplies the selected port when
+launching Desktop. The CLI currently connects only to loopback on the same
+computer. Connecting an agent on another computer is a separate capability and
+is not enabled by choosing a different port.
+
 | Diagnostic | Meaning and recovery |
 | --- | --- |
 | `endpoint-unavailable` / `CDP_DISCOVERY_FAILED` | Includes URL, port, and underlying reason such as `ECONNREFUSED`. A wrong port and Figma launched without debugging can look identical. Confirm the launch configuration first. |
