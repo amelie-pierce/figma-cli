@@ -18,7 +18,8 @@ export function makeUiSnapshot() {
     result.children = [...element.children].map(child => structure(child, depth + 1)).filter(Boolean);
     return result;
   };
-  return { editorViews: structure(document.querySelector('nav[aria-label="Editor views"]')), filesHeader: structure(document.querySelector('[data-testid="files-workspace-header"]')), groups: selectors.map(selector => ({ selector, nodes: [...document.querySelectorAll(selector)].slice(0, 50).map(element => ({ ...describe(element),
+  return { viewport: { width: globalThis.innerWidth ?? null, height: globalThis.innerHeight ?? null, visibility: document.visibilityState ?? null },
+    editorViews: structure(document.querySelector('nav[aria-label="Editor views"]')), filesHeader: structure(document.querySelector('[data-testid="files-workspace-header"]')), groups: selectors.map(selector => ({ selector, nodes: [...document.querySelectorAll(selector)].slice(0, 50).map(element => ({ ...describe(element),
     children: [...element.children].slice(0, 12).map(describe),
     parent: element.parentElement ? describe(element.parentElement) : null })) })) };
 }
