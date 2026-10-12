@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import { getCdpPort } from './figma-patch.js';
+import { fetchCdpTargets } from './lib/cdp-diagnostics.js';
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const FILE_KEY = /^[A-Za-z0-9_-]+$/;
@@ -48,10 +49,7 @@ function validWebSocketURL(value, port) {
 
 async function discoverTargets(port, signal) {
   // Reject redirects so discovery cannot leave the configured local service.
-  const response = await fetch(`http://127.0.0.1:${port}/json`, { signal, redirect: 'error' });
-  if (!response.ok) throw new Error(`Make CDP discovery failed: HTTP ${response.status}`);
-  const targets = await response.json();
-  if (!Array.isArray(targets)) throw new Error('Make CDP discovery returned an invalid target list');
+  const targets = await fetchCdpTargets(port, { signal });
   return targets.flatMap((target) => {
     if (!target || target.type !== 'page' || typeof target.id !== 'string' || !target.id) return [];
     const fileKey = keyFromURL(target.url);

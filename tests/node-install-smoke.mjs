@@ -27,7 +27,9 @@ try {
     assert.equal(result.status, 0, result.stderr + result.stdout);
     return result.stdout;
   };
-  run([join(root, 'install.mjs'), '--agent', 'copilot', '--npm-cli', npmCli]);
+  delete env.FIGMA_PORT;
+  run([join(root, 'install.mjs'), '--agent', 'copilot', '--npm-cli', npmCli, '--port', '9333']);
+  assert.equal(JSON.parse(readFileSync(join(home, '.figma-cli/connection.json'))).port, 9333);
   const runtime = JSON.parse(readFileSync(join(home, '.figma-cli/node-runtime.json'), 'utf8'));
   assert.equal(runtime.nodeExecutable, process.execPath);
   const cli = runtime.cliEntry;
@@ -38,6 +40,9 @@ try {
   assert.ok(status.results.every(x => x.agent === 'copilot' && x.status === 'up-to-date'));
   assert.match(run([cli, 'make', '--help']), /replace/);
   assert.match(run([cli, 'render', '--help']), /Render JSX/);
+  const configured = JSON.parse(run([cli, 'connection', '--save-port', '9444']));
+  assert.equal(configured.effective.port, 9444);
+  assert.equal(configured.effective.source, 'saved');
   console.log('PASS: fresh Node installation, empty PATH, unavailable shell, Copilot skill registration, Design and Make entry points.');
 } finally {
   rmSync(sandbox, { recursive: true, force: true });

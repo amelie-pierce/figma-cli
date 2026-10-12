@@ -20,7 +20,7 @@ Read the local ~/.figma-cli/node-runtime.json record to locate Node and src/inde
 
 Read the figma-make skill. Reuse an existing Figma Desktop connection, or set up a dedicated free debugging port. Explain any required app patch or restart before proceeding.
 
-Verify the connection with `figma-cli make list`. Then ask me for the Make URL and desired changes.
+Run `connection` through the Node entry point first. Report the exact endpoint and port source. Installation alone does not enable Desktop debugging. Reuse the known Desktop port; persist it with `connection --save-port PORT` when needed. Do not guess a port or restart a healthy connection. Then verify with `make list` and ask me for the Make URL and desired changes.
 
 If shell launchers are unavailable, invoke the installed JavaScript entry point with Node.js and an argument array (shell: false), preserving the configured port. Do not embed personal absolute paths in shared instructions.
 
@@ -124,6 +124,53 @@ A cloud Copilot session cannot reach your local Figma Desktop.
 The installer does not connect, patch, or restart Figma. Skill conflicts are
 preserved and reported with a nonzero exit status. Installation tests verify
 registration and CLI execution; they do not certify a live Copilot model session.
+
+### Desktop connection diagnostics and saved port
+
+Installing the CLI and opening Figma do **not** enable remote debugging. Run the
+read-only `connection` command first. It prints the exact loopback endpoint, the
+effective port and its source, and whether CDP exposes Figma/Make targets. It never
+patches, restarts, scans other ports, or edits Figma. A discovered target does not
+prove the editor is ready; use `make inspect --file KEY` after discovery.
+
+Port precedence is **`--port` → `FIGMA_PORT` → saved setting → 9222**. All Make
+commands accept the global `--port`, including `make list --port PORT`. Invalid
+values fail explicitly instead of silently falling back to another service.
+
+Persist a known Desktop port with `connection --save-port PORT`, or pass
+`--port PORT` to `install.mjs` when installing. This saves only local settings in
+`~/.figma-cli/connection.json`; it does not enable debugging or verify the endpoint.
+Reinstallation without `--port` preserves that setting. Installer output reports
+the effective port, any saved port supplied to it, and `verified: false`.
+
+For Node agents, pass these argument arrays after the locally resolved CLI entry
+point using `spawnSync(nodeExecutable, [cliEntry, ...args], { shell: false, ... })`:
+
+```js
+['connection']                              // Read-only diagnostic
+['connection', '--save-port', '9333']       // Save a known port; example only
+['make', 'list', '--port', '9333']           // Temporary override
+['make', 'inspect', '--file', 'MAKE_KEY']    // Uses the saved port
+```
+
+If `FIGMA_PORT` is set, it overrides saved settings; the diagnostic reports this.
+Reuse the port configured for that device, not a port copied from someone else's
+machine. Never stop another service to free it.
+
+| Diagnostic | Meaning and recovery |
+| --- | --- |
+| `endpoint-unavailable` / `CDP_DISCOVERY_FAILED` | Includes URL, port, and underlying reason such as `ECONNREFUSED`. A wrong port and Figma launched without debugging can look identical. Confirm the launch configuration first. |
+| `no-figma-target` | CDP responds, but no Figma page is exposed. It may be another browser/service or a Desktop session without a loaded tab. Confirm the port and open the intended file. |
+| `PATCH_PERMISSION_DENIED` during `connect` | The patch operation was denied. On macOS, check App Management for the app hosting the agent/Node process. Managed devices may require administrator help. |
+| `PATCH_FAILED` | A different patch failure, such as an incompatible app version; the original error is retained. Do not assume permission denial. |
+
+When initial patch/restart is authorized, `connect --port PORT` now checks the
+actual CDP endpoint after launching Figma, with a bounded wait. Make-only sessions
+do not require a Design tab or Design daemon. This verifies discovery, not source
+editor readiness. The existing initial setup still uses OS helpers; Node-only
+installation and diagnostic commands do not make those helpers available on a
+restricted device. If setup is blocked, report that prerequisite without switching
+to computer-use tools. Plugin/Safe mode does not provide Make access.
 
 ### Run directly from Node.js
 

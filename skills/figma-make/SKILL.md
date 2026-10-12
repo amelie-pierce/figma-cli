@@ -29,6 +29,15 @@ commands rather than assuming an upstream installation includes it.
 - Use `make list` to find the open project, then `make inspect --file KEY` with
   the exact key from the user's `/make/KEY/...` URL. Do not choose by title alone
   or use Design's `FIGMA_FILE` setting for Make.
+- If discovery fails, run `connection` for a read-only diagnostic. Report the
+  endpoint, port source, and underlying error. Port precedence is `--port`,
+  `FIGMA_PORT`, saved `~/.figma-cli/connection.json`, then 9222. Every Make command
+  accepts the global `--port`; persist a known Desktop port with
+  `connection --save-port PORT`. Installation accepts `--port PORT` too, but
+  does not enable or verify debugging. Do not copy a different device's port.
+  An unreachable port alone cannot distinguish wrong configuration from disabled
+  debugging. App Management guidance applies to an actual macOS patch permission
+  error, not every connection failure. A CDP target is not editor-readiness proof.
 - The project must be open and loaded in Figma Desktop. A healthy Make connection
   needs no `connect`, app patch, restart, or additional MCP login. For a missing
   connection, follow the installed CLI's setup guidance and existing authorization;

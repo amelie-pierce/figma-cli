@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { installFromNode, findNpmCli } from '../src/lib/node-install.js';
+import { getCdpSettings } from '../src/lib/cdp-config.js';
 
 function fixture(t, { failure = false, locked = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'figma Node install with spaces '));
@@ -83,4 +84,24 @@ test('npm discovery supports standard Node directory layouts without running npm
     const npm = join(bin, relative); mkdirSync(join(npm, '..'), { recursive: true }); writeFileSync(npm, '');
     assert.equal(realpathSync(findNpmCli({ execPath, env: {} })), realpathSync(npm));
   }
+});
+
+test('installer persists an explicit port, reports overrides, and preserves settings on reinstall', t => {
+  const options = fixture(t);
+  const result = installFromNode({ ...options, port: '9333', env: { ...options.env, FIGMA_PORT: '9444' } });
+  assert.equal(result.connection.savedPort, 9333);
+  assert.equal(result.connection.port, 9444);
+  assert.equal(result.connection.source, 'FIGMA_PORT');
+  assert.equal(result.connection.verified, false);
+  const env = { ...options.env }; delete env.FIGMA_PORT;
+  const reinstalled = installFromNode({ ...options, env });
+  assert.equal(reinstalled.connection.port, 9333);
+  assert.equal(reinstalled.connection.source, 'saved');
+  assert.equal(getCdpSettings({ home: options.home, env: {} }).port, 9333);
+});
+
+test('installer rejects an invalid port before installing dependencies', t => {
+  const options = fixture(t);
+  assert.throws(() => installFromNode({ ...options, port: '9333junk' }), /integer/);
+  assert.equal(existsSync(join(options.root, 'invocation.json')), false);
 });

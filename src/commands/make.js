@@ -6,11 +6,14 @@ import { MakeClient } from '../make-client.js';
 import { decodeMakeSource } from '../make-source.js';
 
 const make = program.command('make')
-  .description('Experimental direct source-file editing in Figma Make Desktop');
+  .description('Experimental direct source-file editing in Figma Make Desktop')
+  .addHelpText('after', '\nAll Make commands accept --port PORT (global option). Use connection --save-port PORT to persist it.');
 
 function report(value) { console.log(JSON.stringify(value, null, 2)); }
 function failure(error) {
-  console.error(JSON.stringify({ error: error.message, ...(error.backupPath ? { backupPath: error.backupPath } : {}),
+  console.error(JSON.stringify({ error: error.message,
+    ...(error.endpoint ? { code: error.code, port: error.port, endpoint: error.endpoint, reason: error.reason, recovery: error.recovery } : {}),
+    ...(error.backupPath ? { backupPath: error.backupPath } : {}),
     ...(error.acknowledged ? { acknowledged: error.acknowledged, requestedPaths: error.requestedPaths, observedWrites: error.observedWrites } : {}) }));
   process.exitCode = 1;
 }
@@ -31,12 +34,13 @@ function target(command) {
     .option('--timeout <ms>', 'Maximum operation time', timeout, 15000);
 }
 async function withClient(options, fn) {
-  const client = new MakeClient({ timeoutMs: options.timeout });
+  let client;
   try {
+    client = new MakeClient({ timeoutMs: options.timeout });
     await client.connect(options.file);
     await fn(client);
   } catch (error) { failure(error); }
-  finally { client.close(); }
+  finally { client?.close(); }
 }
 
 make.command('list').description('List open Make projects on the configured desktop port')

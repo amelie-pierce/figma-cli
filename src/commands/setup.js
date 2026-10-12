@@ -8,6 +8,7 @@ import { join, basename } from 'path';
 import { FigmaClient } from '../figma-client.js';
 import * as apiDocs from '../api-docs.js';
 import { isPatched, patchFigma, unpatchFigma, getCdpPort } from '../figma-patch.js';
+import { patchFailure, waitForCdp } from '../lib/cdp-diagnostics.js';
 import { detectBrowser, startBrowserApp, getBrowserCommand } from '../platform.js';
 import { convert, detectSourceType } from '../code-import/index.js';
 import {
@@ -736,26 +737,8 @@ program
       } catch (err) {
         patchSpinner.fail('Setup failed');
 
-        // macOS 13+ needs "App Management" to modify another app's bundle
-        if (process.platform === 'darwin') {
-          console.log(chalk.hex('#FF6B35')('\n  ┌─────────────────────────────────────────────────────┐'));
-          console.log(chalk.hex('#FF6B35')('  │') + chalk.white.bold('  One-time setup required                           ') + chalk.hex('#FF6B35')('│'));
-          console.log(chalk.hex('#FF6B35')('  └─────────────────────────────────────────────────────┘\n'));
-
-          console.log(chalk.white('  Your Terminal needs permission to configure Figma.\n'));
-
-          console.log(chalk.cyan('  Step 1: ') + chalk.white('Open ') + chalk.yellow('System Settings'));
-          console.log(chalk.cyan('  Step 2: ') + chalk.white('Go to ') + chalk.yellow('Privacy & Security → App Management'));
-          console.log(chalk.cyan('  Step 3: ') + chalk.white('Enable your ') + chalk.yellow('Terminal') + chalk.white(' (or iTerm)'));
-          console.log(chalk.cyan('  Step 4: ') + chalk.white('Quit the terminal completely ') + chalk.gray('(Cmd+Q)'));
-          console.log(chalk.cyan('  Step 5: ') + chalk.white('Reopen it and try again\n'));
-
-          console.log(chalk.gray('  (On macOS 13+ "App Management" is what allows patching another app; Full Disk Access alone is not enough.)\n'));
-          console.log(chalk.gray('  Or use Safe Mode (no permission needed): ') + chalk.cyan('node src/index.js connect --safe\n'));
-        } else {
-          console.log(chalk.yellow('\n  Try running as administrator.\n'));
-          console.log(chalk.gray('  Or use Safe Mode: ') + chalk.cyan('node src/index.js connect --safe\n'));
-        }
+        console.error(JSON.stringify(patchFailure(err)));
+        process.exitCode = 1;
         return;
       }
     }
@@ -769,25 +752,35 @@ program
       await new Promise(r => setTimeout(r, 500));
     } catch {}
 
-    startFigma();
-    console.log(chalk.green('✓ Figma started\n'));
-
-    // Wait and check connection
-    const spinner = ora('Waiting for connection...').start();
-    let connected = false;
-    for (let i = 0; i < 8; i++) {
-      await new Promise(r => setTimeout(r, 1000));
-      const result = figmaUse('status', { silent: true });
-      if (result && result.includes('Connected')) {
-        spinner.succeed('Connected to Figma');
-        console.log(chalk.gray(result.trim()));
-        connected = true;
-        break;
-      }
+    try {
+      startFigma();
+    } catch (error) {
+      console.error(JSON.stringify({ code: 'FIGMA_LAUNCH_FAILED', port: getCdpPort(), error: error.message,
+        recovery: 'The operating system could not launch Figma with remote debugging. Check the installation and allowed OS helpers; no CDP connection was verified.' }));
+      process.exitCode = 1;
+      return;
     }
 
-    if (!connected) {
-      spinner.warn('Open a file in Figma to connect');
+    // Verify the actual endpoint after launch, including Make-only sessions.
+    // Never infer connectivity from a process launch or a cached patch flag.
+    const port = getCdpPort();
+    const spinner = ora(`Checking http://127.0.0.1:${port}/json ...`).start();
+    const connection = await waitForCdp({ port });
+    if (!connection.reachable) {
+      spinner.fail(`Desktop debugging endpoint unavailable on port ${port}`);
+      console.error(JSON.stringify(connection, null, 2));
+      process.exitCode = 1;
+      return;
+    }
+    spinner.succeed(`CDP endpoint responds on port ${port}`);
+    console.log(JSON.stringify(connection, null, 2));
+    if (!connection.figmaTarget) {
+      console.log(chalk.yellow('Confirm this is the Figma Desktop port and open a Figma file, then run connection again.'));
+      process.exitCode = 1;
+      return;
+    }
+    if (!connection.designTargets) {
+      console.log(chalk.gray('For Make, run make list and make inspect --file KEY after the editor loads. No Design daemon is needed.'));
       return;
     }
 

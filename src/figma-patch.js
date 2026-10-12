@@ -13,11 +13,10 @@ import {
   getFigmaCommand as platformGetFigmaCommand
 } from './platform.js';
 
-const DEFAULT_CDP_PORT = 9222;
+import { getCdpSettings } from './lib/cdp-config.js';
 
 export function getCdpPort() {
-  const envPort = parseInt(process.env.FIGMA_PORT, 10);
-  return (envPort > 0 && envPort < 65536) ? envPort : DEFAULT_CDP_PORT;
+  return getCdpSettings().port;
 }
 
 // The string that blocks remote debugging

@@ -41,6 +41,14 @@ See the README's **Run directly from Node.js** example. Initial connection/setup
 commands may still invoke operating-system helpers.
 
 ## Connect (pick one mode)
+First run `connection` for a read-only endpoint diagnostic. Port precedence is
+`--port`, `FIGMA_PORT`, saved `~/.figma-cli/connection.json`, then 9222. Persist a
+known Desktop port with `connection --save-port PORT`; installation also accepts
+`--port PORT`. Installation alone does not enable debugging. Do not infer a macOS
+permission denial from an unreachable endpoint or restart a healthy connection.
+After an authorized patch/restart, `connect` checks CDP; the editor may still need
+to finish loading before design operations work.
+
 - `figma-cli connect` — **Yolo** (default): patches Figma Desktop once, fully automatic.
 - `figma-cli connect --browser` — **Browser**: drives Figma in a Chromium browser via
   a local connection; **never modifies the Figma app**. Use when patching the desktop

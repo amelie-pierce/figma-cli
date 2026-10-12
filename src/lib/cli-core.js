@@ -1,6 +1,7 @@
 // Shared CLI core: daemon plumbing, figma eval helpers, config, program.
 // Extracted from index.js — all command modules import from here.
 import { Command } from 'commander';
+import { parseCdpPort } from './cdp-config.js';
 import chalk from 'chalk';
 import ora from 'ora';
 import { execSync, spawn } from 'child_process';
@@ -581,7 +582,7 @@ const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 
 const program = new Command();
 
-program.option('--port <number>', 'CDP port for Figma connection (default: 9222, env: FIGMA_PORT)');
+program.option('--port <number>', 'CDP port (overrides FIGMA_PORT, saved connection setting, then default 9222)', parseCdpPort);
 
 program.hook('preAction', (thisCommand) => {
   const opts = thisCommand.opts();

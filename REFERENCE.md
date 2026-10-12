@@ -33,7 +33,18 @@ The `make` command group reads, creates, imports, and edits UTF-8 source files i
 Make Code editor. It uses a separate desktop connection; Design commands and
 the Design daemon are unchanged. Select a project with its exact Make URL or
 file key, never a title. Use the workspace's configured launcher and dedicated
-debugging port; set `FIGMA_PORT` or the global `--port` option when necessary.
+debugging port. Precedence: global `--port`, `FIGMA_PORT`, saved local port, then
+9222. The global option also works after the Make subcommand (`make list --port
+PORT`). Use `connection --save-port PORT` to persist a known port in
+`~/.figma-cli/connection.json`, or `install.mjs --port PORT` during Node installation.
+Neither setting a port nor installing enables Desktop debugging.
+
+`connection` performs a bounded, read-only endpoint check and reports the port,
+source, exact URL, target counts, and recovery guidance. It does not patch, restart,
+scan, or edit. An unreachable endpoint cannot alone distinguish disabled debugging
+from a wrong port. `connect` checks the CDP endpoint after patch/restart and reports
+patch permission failures separately. A successful check is not editor-readiness
+proof; follow with `make inspect`. No computer-use fallback is required or allowed.
 
 ```sh
 figma-cli make list
