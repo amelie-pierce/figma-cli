@@ -7,30 +7,32 @@ import { listMakeFiles, selectMakeFile } from './make-tree.js';
 import { watchMakeSave } from './make-save-observer.js';
 import { validateImportFiles } from './make-import.js';
 import { captureMakeFileSocket } from './make-rpc.js';
+import { makeWorkspace } from './make-workspace.js';
+import { makeUiSnapshot } from './make-ui.js';
 
 const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
 
 // Serialized into the Make page, with no dependency on private application stores.
-function makeEditorAction(action) {
+function makeEditorAction(action, workspace) {
   const visible = (element) => {
     if (!element) return false;
     const rect = element.getBoundingClientRect();
     const style = getComputedStyle(element);
     return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
   };
-  const allVisible = (selector) => [...document.querySelectorAll(selector)].filter(visible);
+  let contentRoot = document;
+  const allVisible = (selector) => [...contentRoot.querySelectorAll(selector)].filter(visible);
   const busy = allVisible('button[aria-label="Stop"], [data-testid="code-chat-send-button"]')
     .some((button) => button.getAttribute('aria-label') === 'Stop' || button.innerText?.trim() === 'Stop');
   const offline = /Some changes won[’']t be synced/i.test(document.body?.innerText || '');
-  const code = [...document.querySelectorAll('input[type="radio"][value="code"]')];
-  if (code.length !== 1) throw new Error('Expected exactly one Make Code tab.');
-  if (action.type === 'ensure-code' && !code[0].checked) code[0].click();
+  const context = workspace(action.type);
+  contentRoot = context.root;
   const editors = allVisible('.cm-content');
   const selected = allVisible('[data-testid="code-file-item"][aria-current="page"]');
   const trees = allVisible('[data-testid="virtualized-file-tree-container"][role="tree"]');
-  const ready = code[0].checked && trees.length === 1;
+  const ready = context.ready && trees.length === 1;
   const summary = {
-    url: location.href, title: document.title, codeReady: ready, editorCount: editors.length,
+    url: location.href, title: document.title, codeReady: ready, workspaceMode: context.mode, editorCount: editors.length,
     readOnly: editors.length === 1 ? editors[0].cmView?.view?.state?.readOnly !== false : null,
     busy, offline,
     selectedName: selected.length === 1 ? selected[0].closest('[role="treeitem"]')?.getAttribute('aria-label') : null,
@@ -99,9 +101,19 @@ function makeEditorAction(action) {
       bottom = rowTop(element) + element.getBoundingClientRect().height;
     }
   }
-  const headings = allVisible('h2 input[data-testid="code-file-name-input"]');
-  if (headings.length !== 1 || headings[0].value !== entry.name) {
-    throw new Error('Make editor heading does not match the selected source file.');
+  if (context.mode === 'files-workspace') {
+    const crumbs = allVisible('[data-testid="files-workspace-header"] nav[aria-label="File path"]');
+    const leaves = allVisible('[data-testid="files-workspace-selected-file"]');
+    const parts = crumbs.length === 1 ? [...crumbs[0].children].filter(visible).filter(element => element.textContent?.trim()) : [];
+    if (leaves.length !== 1 || parts.at(-1) !== leaves[0] || leaves[0].textContent.trim() !== entry.name ||
+        parts.length !== entry.path.split('/').length + 1 || parts.slice(1).map(element => element.textContent.trim()).join('/') !== entry.path) {
+      throw new Error('Make Files workspace breadcrumb does not match the selected source path.');
+    }
+  } else {
+    const headings = allVisible('h2 input[data-testid="code-file-name-input"]');
+    if (headings.length !== 1 || headings[0].value !== entry.name) {
+      throw new Error('Make editor heading does not match the selected source file.');
+    }
   }
   const original = view.state.doc.toString();
   if (action.type === 'diagnostics') {
@@ -199,7 +211,7 @@ export class MakeClient {
   }
 
   _editor(action, deadline) {
-    return this._evaluate(`(${makeEditorAction.toString()})(${JSON.stringify(action)})`, deadline);
+    return this._evaluate(`(${makeEditorAction.toString()})(${JSON.stringify(action)}, (${makeWorkspace.toString()}))`, deadline);
   }
 
   async _operation(callback) {
@@ -282,6 +294,11 @@ export class MakeClient {
     return this._operation(async (deadline) => ({ fileKey: this.fileKey, ...await this._ensureCode(deadline) }));
   }
 
+  ui() {
+    return this._operation(async deadline => ({ fileKey: this.fileKey,
+      ...await this._evaluate(`(${makeUiSnapshot.toString()})()`, deadline) }));
+  }
+
   diagnostics(path) {
     return this._operation(async deadline => {
       const { entry, content, sha256: hash } = await this._read(path, deadline);
@@ -304,7 +321,7 @@ export class MakeClient {
       });
       try {
         await this.transport.send('Runtime.enable');
-        await this._evaluate(`(() => { const tabs = [...document.querySelectorAll('input[type="radio"][value="preview"]')]; if (tabs.length !== 1) throw new Error('Make Preview tab is unavailable.'); if (!tabs[0].checked) tabs[0].click(); return true; })()`, deadline);
+        await this._evaluate(`(() => { (${makeWorkspace.toString()})('ensure-preview'); return true; })()`, deadline);
         await this._bounded(() => new Promise(resolve => setTimeout(resolve, 1200)), deadline);
         const tree = await this.transport.send('Page.getFrameTree');
         const frames = [];

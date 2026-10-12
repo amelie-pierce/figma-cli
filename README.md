@@ -2,6 +2,12 @@
 
 ## Amelie Pierce fork: Figma Make and agent skills
 
+The current main ZIP supports the new **Files/Browser** workspace as well as the
+older Code/Preview tabs. If an older installation reports `Expected exactly one
+Make Code tab`, update the CLI adapter; this is not a reason to patch Figma again.
+Use `make ui --file KEY` to report unsupported workspace controls without reading
+source. Preserve any customized adapter before updating.
+
 This fork of [silships/figma-cli](https://github.com/silships/figma-cli) adds direct
 Figma Make source editing and bundles **figma-cli** (Design) and **figma-make**
 (React source) skills. The original MIT license and author attribution are retained.

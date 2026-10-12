@@ -52,9 +52,21 @@ Windows uses the newest complete numeric version. `FIGMA_APP_PATH` selects a cus
 A successful check is not editor-readiness
 proof; follow with `make inspect`. No computer-use fallback is required or allowed.
 
+Both the older Code/Preview radio tabs and the newer Files/Browser workspace are
+supported. Files tabs are identified by their controls, even after their title
+changes to a filename. The current visible file tree and header identify the active
+Files pane; the full breadcrumb must match the selected source path before a read
+or write. If several Files tabs exist and none is active, select the intended one
+manually; the CLI does not guess. If no Files tab exists, open one in the workspace.
+`make ui --file KEY` reports bounded control metadata without selecting tabs or
+reading source/input values. Use it for an unsupported layout. The old error
+`Expected exactly one Make Code tab` may indicate an outdated CLI adapter, not a
+missing project or a Desktop debugging/patch permission problem.
+
 ```sh
 figma-cli make list
 figma-cli make inspect --file <make-file-key>
+figma-cli make ui --file <make-file-key>
 figma-cli make files --file <make-file-key>
 figma-cli make read src/App.tsx --file <make-file-key>
 figma-cli make read AGENTS.md --remote --file <make-file-key>

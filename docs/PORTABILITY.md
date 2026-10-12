@@ -39,4 +39,10 @@ Make's private editor interface can change independently of the OS. A teammate's
 locally modified `make-client.js` is not part of this release until its actual
 diff is reviewed and covered by tests. Preserve local adapter modifications before
 upgrading. Notes describing those modifications are not sufficient to reproduce
-them or claim support for the newer Files/Browser interface.
+them.
+
+The current adapter separately implements Files/Browser support from observed
+Desktop DOM controls, with legacy Code/Preview compatibility. Live Mac checks
+verified file-tree enumeration, exact-path source reading, and preview inspection.
+Offline tests cover writes, breadcrumb changes, and ambiguous Files panes; this
+does not claim live Windows editing or import every change in a teammate's adapter.

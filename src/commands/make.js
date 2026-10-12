@@ -53,6 +53,9 @@ make.command('list').description('List open Make projects on the configured desk
 target(make.command('inspect').description('Inspect editor readiness without changing source'))
   .action(options => withClient(options, async client => report(await client.inspect())));
 
+target(make.command('ui').description('Report bounded Make workspace control metadata without reading source or selecting tabs'))
+  .action(options => withClient(options, async client => report(await client.ui())));
+
 target(make.command('preview').description('Inspect the running Make preview through the desktop connection'))
   .action(options => withClient(options, async client => report(await client.preview())));
 

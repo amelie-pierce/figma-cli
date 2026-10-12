@@ -7,6 +7,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MakeClient } from '../src/make-client.js';
+import { makeWorkspace } from '../src/make-workspace.js';
 
 const hash = (content) => createHash('sha256').update(content).digest('hex');
 
@@ -19,7 +20,9 @@ function fixture(options = {}) {
     rowName: 'App.tsx', heading: 'App.tsx', level: 2, top: 32,
     folderName: 'src', folderTop: 0, folderLevel: 1, folderHeight: 32,
     folderExpanded: true, folderPresent: true, folderVisible: true,
-    editorCount: 1, dispatches: [], expressions: [], ...options,
+    editorCount: 1, workspace: false, filesTabs: 1, headers: 1, treeVisible: true,
+    breadcrumbFolder: 'src', breadcrumbLeaf: 'App.tsx', tabClicks: 0, closeClicks: 0,
+    dispatches: [], expressions: [], ...options,
   };
   const listeners = new Set();
   const emit = (method, payload) => {
@@ -28,6 +31,7 @@ function fixture(options = {}) {
   };
   const box = { getBoundingClientRect: () => ({ width: 300, height: 32 }), style: {} };
   const radio = { ...box, get checked() { return state.code; }, click() { state.code = true; } };
+  const previewRadio = { ...box, get checked() { return !state.code; }, click() { state.code = false; } };
   const heading = { ...box, get value() { return state.heading; } };
   const view = {
     state: {
@@ -77,14 +81,32 @@ function fixture(options = {}) {
   const tree = { ...box, parentElement: {}, querySelectorAll: () => [...(state.folderPresent ? [folderRow] : []), fileRow] };
   viewport.parentElement = tree;
   const stop = { ...box, innerText: 'Stop', getAttribute: () => 'Stop' };
+  const filesTab = { ...box, get innerText() { return state.selected ? state.rowName : 'Files'; },
+    click() { state.tabClicks++; state.code = true; } };
+  const closeTab = { ...box, click() { state.closeClicks++; }, parentElement: { querySelectorAll: () => [filesTab, closeTab] } };
+  const browserTab = { ...box, innerText: 'Browser', click() { state.previewClicks = (state.previewClicks || 0) + 1; state.code = false; } };
+  const navigation = { ...box, querySelectorAll: selector => selector === 'button[aria-label="Close Files tab"]'
+    ? Array(state.filesTabs).fill(closeTab) : [browserTab, filesTab, closeTab] };
+  const showFiles = { ...box, click() { state.treeVisible = true; } };
+  const filesHeader = { ...box, querySelectorAll: () => state.treeVisible ? [] : [showFiles] };
+  const leaf = { ...box, get textContent() { return state.breadcrumbLeaf; } };
+  const crumbs = { ...box, get children() { return [{ ...box, textContent: 'Test project' },
+    { ...box, get textContent() { return state.breadcrumbFolder; } }, leaf]; } };
+  const workspace = { ...box, querySelectorAll: selector => document.querySelectorAll(selector) };
   const document = {
     title: 'Test Make file', body: { get innerText() { return state.offline ? "Some changes won't be synced" : ''; } },
     querySelectorAll(selector) {
-      if (selector === 'input[type="radio"][value="code"]') return [radio];
+      if (selector === 'input[type="radio"][value="code"]') return state.workspace ? [] : [radio];
+      if (selector === 'input[type="radio"][value="preview"]') return state.workspace ? [] : [previewRadio];
+      if (selector === '[data-testid="figmake-workspace-container"]') return state.workspace ? [workspace] : [];
+      if (selector === 'nav[aria-label="Editor views"]') return [navigation];
+      if (selector === '[data-testid="files-workspace-header"]') return state.code ? Array(state.headers).fill(filesHeader) : [];
+      if (selector === '[data-testid="files-workspace-header"] nav[aria-label="File path"]') return state.code ? [crumbs] : [];
+      if (selector === '[data-testid="files-workspace-selected-file"]') return state.code ? [leaf] : [];
       if (selector === '.cm-content') return Array(state.editorCount).fill(editor);
       if (selector === '[data-testid="code-file-item"][aria-current="page"]') return state.selected ? [fileControl] : [];
       if (selector === 'h2 input[data-testid="code-file-name-input"]') return [heading];
-      if (selector === '[data-testid="virtualized-file-tree-container"][role="tree"]') return state.code ? [tree] : [];
+      if (selector === '[data-testid="virtualized-file-tree-container"][role="tree"]') return state.code && state.treeVisible ? [tree] : [];
       if (selector === 'button[aria-label="Stop"], [data-testid="code-chat-send-button"]') return state.busy ? [stop] : [];
       throw new Error(`Unhandled test selector ${selector}`);
     },
@@ -144,6 +166,81 @@ test('inspect/list/read use Code and return exact file identity and content hash
     fileKey: 'ExactKey', path: 'src/App.tsx', content: state.content, sha256: hash(state.content),
   });
   assert.equal(state.dispatches.length, 0);
+});
+
+test('Files workspace opens without Code radios and reads after the tab becomes a filename', async t => {
+  const { client, state } = await setup(t, { workspace: true });
+  const info = await client.inspect();
+  assert.equal(info.workspaceMode, 'files-workspace');
+  assert.equal(info.codeReady, true);
+  assert.equal((await client.read('src/App.tsx')).sha256, hash(state.content));
+  assert.equal((await client.inspect()).selectedName, 'App.tsx');
+  assert.equal(state.tabClicks, 1);
+  assert.equal(state.closeClicks, 0);
+  assert.equal(state.dispatches.length, 0);
+});
+
+test('Files workspace reuses one visible pane among multiple tabs and reveals a hidden tree', async t => {
+  for (const treeVisible of [true, false]) {
+    const { client, state } = await setup(t, { workspace: true, filesTabs: 2, code: true, treeVisible });
+    assert.equal((await client.read('src/App.tsx')).sha256, hash(state.content));
+    assert.equal(state.tabClicks, 0);
+    assert.equal(state.closeClicks, 0);
+    assert.equal(state.treeVisible, true);
+  }
+});
+
+test('Files workspace refuses to guess which inactive tab to open', async t => {
+  for (const filesTabs of [0, 2]) {
+    const { client, state } = await setup(t, { workspace: true, filesTabs });
+    await assert.rejects(client.inspect(), filesTabs ? /Multiple Make Files tabs/ : /No Make Files workspace/);
+    assert.equal(state.tabClicks, 0);
+    assert.equal(state.closeClicks, 0);
+    assert.equal(state.dispatches.length, 0);
+  }
+});
+
+test('Files workspace refuses multiple visible pane headers before selecting or writing', async t => {
+  const { client, state } = await setup(t, { workspace: true, code: true, headers: 2 });
+  await assert.rejects(client.inspect(), /Multiple visible Make Files panes/);
+  assert.equal(state.tabClicks, 0);
+  assert.equal(state.dispatches.length, 0);
+});
+
+test('Files workspace replacement keeps backup, acknowledgement and readback guards', async t => {
+  const { client, state, backupDir } = await setup(t, { workspace: true });
+  const original = state.content;
+  const result = await client.replace('src/App.tsx', 'export const changed = true;\n', {
+    expectedSha256: hash(original), backupDir,
+  });
+  assert.equal(readFileSync(result.backupPath, 'utf8'), original);
+  assert.equal(state.dispatches.length, 1);
+  assert.equal(result.sha256, hash(state.content));
+  assert.equal(state.closeClicks, 0);
+});
+
+test('Files breadcrumb must match the full selected path, including at final dispatch', async t => {
+  for (const final of [false, true]) {
+    for (const field of ['breadcrumbFolder', 'breadcrumbLeaf']) {
+      const { client, state, backupDir } = await setup(t, { workspace: true });
+      if (final) state.beforeEvaluate = ({ isWrite }) => { if (isWrite) state[field] = 'other'; };
+      else state[field] = 'other';
+      await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }), /breadcrumb/);
+      assert.equal(state.dispatches.length, 0);
+      assert.equal((await readdir(backupDir)).length, final ? 1 : 0);
+    }
+  }
+});
+
+test('preview selection supports Browser workspace and legacy radio without closing Files', async t => {
+  for (const workspace of [false, true]) {
+    const { transport, state } = await setup(t, { workspace, code: true });
+    const result = await transport.evaluate(`(() => { const value = (${makeWorkspace.toString()})('ensure-preview'); return { mode: value.mode }; })()`);
+    assert.equal(result.mode, workspace ? 'files-workspace' : 'legacy-code');
+    assert.equal(state.code, false);
+    assert.equal(state.closeClicks, 0);
+    assert.equal(state.dispatches.length, 0);
+  }
 });
 
 test('diagnostics reads editor ranges without changing source and distinguishes unavailable lint', async (t) => {

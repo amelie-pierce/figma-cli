@@ -8,6 +8,7 @@ These examples are templates; choose paths/content for the actual requested work
 | --- | --- |
 | Discover open projects | `figma-cli make list` |
 | Check readiness | `figma-cli make inspect --file KEY` |
+| Diagnose workspace controls without selecting tabs or reading source | `figma-cli make ui --file KEY` |
 | Inventory source | `figma-cli make files --file KEY` |
 | Read source and hash | `figma-cli make read src/App.tsx --file KEY` |
 | Read saved Markdown or installed kit source | `figma-cli make read AGENTS.md --remote --file KEY` |
