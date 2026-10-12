@@ -7,7 +7,7 @@ import { installFromNode, findNpmCli } from '../src/lib/node-install.js';
 import { getCdpSettings } from '../src/lib/cdp-config.js';
 
 function fixture(t, { failure = false, locked = true } = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'figma Node install with spaces '));
+  const root = mkdtempSync(join(tmpdir(), 'figma Node install with spaces Ω '));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, 'profile');
   mkdirSync(home);

@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { copyTree } from './copy-tree.js';
 
 export const SKILLS_ROOT = fileURLToPath(new URL('../../skills/', import.meta.url));
 const MARKER = '.figma-cli-skill.json';
@@ -83,7 +84,7 @@ export function manageSkills({ install = false, sourceRoot = SKILLS_ROOT, ...opt
         let movedPrevious = false;
         try {
           const expected = digest(source);
-          cpSync(source, prepared, { recursive: true, errorOnExist: true, force: false });
+          copyTree(source, prepared);
           if (digest(prepared) !== expected) throw new Error('Bundled skill changed during copying');
           writeFileSync(join(prepared, MARKER), JSON.stringify({ owner: OWNER, sha256: expected }) + '\n');
           // Recheck after preparing; do not replace edits made while copying.

@@ -1,11 +1,12 @@
 // Networked package-install rehearsal, separate from the offline unit suite.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findNpmCli } from '../src/lib/node-install.js';
+import { copyTree } from '../src/lib/copy-tree.js';
 
 const source = fileURLToPath(new URL('../', import.meta.url));
 // Expand Windows 8.3 temp aliases before constructing ESM module paths.
@@ -15,7 +16,7 @@ const home = join(sandbox, 'profile');
 mkdirSync(root); mkdirSync(home);
 try {
   for (const item of ['install.mjs', 'package.json', 'package-lock.json', 'src', 'skills']) {
-    cpSync(join(source, item), join(root, item), { recursive: true });
+    copyTree(join(source, item), join(root, item));
   }
   assert.ok(existsSync(join(root, 'src/lib/node-install.js')), 'Installer implementation must be present in the copied package');
   const npmCli = findNpmCli();
