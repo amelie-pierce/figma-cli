@@ -22,6 +22,11 @@ stale replacement content defeats the guard.
 
 ## Editor or connection is unavailable
 
+Keep recovery on the Node/CLI path. Do not switch to computer-use tools,
+mouse/keyboard control, screenshot clicking, or separate browser automation.
+If CLI recovery cannot establish readiness, report the exact blocker and ask for
+only the missing prerequisite. Keep the existing source intact.
+
 Use `make list` and `make inspect` to distinguish a missing/wrong project from a
 loading, busy, offline, or read-only editor. Use bounded checks after an observed
 loading transition; do not repeatedly issue writes to probe readiness.

@@ -24,7 +24,7 @@ Verify the connection with `figma-cli make list`. Then ask me for the Make URL a
 
 If shell launchers are unavailable, invoke the installed JavaScript entry point with Node.js and an argument array (shell: false), preserving the configured port. Do not embed personal absolute paths in shared instructions.
 
-For Make work, write readable React/TSX directly through the CLI using stdin. Keep modules separate, avoid local application source files and computer-use tools, and verify saved source and the preview after editing. Keep publishing separate from editing.
+For Make work, write readable React/TSX directly through the CLI using stdin. Keep modules separate, avoid local application source files and computer-use tools, and verify saved source and the preview after editing. Keep publishing separate from editing. If CLI access fails, report the blocker; do not fall back to computer-use, mouse/keyboard automation, or screenshot clicking.
 ```
 
 ### Install for Claude Code, Codex, and GitHub Copilot
@@ -188,6 +188,25 @@ Source can travel entirely through stdin, with no local application source copie
 See [the Make skill](skills/figma-make/SKILL.md) and [command reference](REFERENCE.md).
 Make uses an experimental private filesystem protocol through your loaded editor;
 Figma changes may require adapter updates. Saving source is separate from publishing.
+
+### No computer-use tools required
+
+The supported agent workflow uses Node.js and CLI commands throughout. Copilot,
+Codex, and Claude do not need computer-use tools, operating-system mouse/keyboard
+control, screenshot-coordinate clicking, or a separate browser-automation tool.
+
+- **Install:** launch `install.mjs` with Node; it registers the bundled skills.
+- **Design:** inspect and edit through Design commands and verify with CLI exports.
+- **Make:** discover, read, edit, verify, and inspect previews through `make` commands.
+- **Recovery:** inspect through the CLI and report a blocked capability; never
+  silently switch to computer-use tools when a command fails.
+
+The Make adapter selects the Code tab and source files programmatically over its
+Desktop connection. Design `verify` exports an image through the design API;
+reading that export does not require screen-control tools. Figma Desktop must be
+running, signed in, with the intended file open and loaded. Initial connection
+setup and any required system permission remain prerequisites. Unsupported
+interaction checks stay explicitly unverified.
 
 ### Verify the extension
 

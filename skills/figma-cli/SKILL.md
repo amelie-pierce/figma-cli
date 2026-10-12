@@ -16,6 +16,17 @@ If the `figma-cli` command is not found, the tool isn't installed yet — see
 **Installation** at the bottom. Never show raw terminal commands to the user;
 run them silently and give friendly feedback.
 
+## CLI-only operation
+
+Use Node/CLI commands for discovery, inspection, creation, editing, and verification.
+Do not invoke computer-use tools, OS mouse/keyboard automation, screenshot-coordinate
+clicking, or separate browser-automation tools to operate Figma. CLI image exports
+are valid visual evidence and can be inspected without controlling the screen.
+If the CLI cannot access a file or perform a required action, report the blocker
+and the missing prerequisite; do not silently fall back to computer use. The user
+may need to open/sign in to Figma or grant a required initial connection permission.
+Keep unsupported interaction tests explicitly unverified.
+
 ## Direct Node.js invocation
 
 If the user requests Node execution or shell launchers are unavailable, invoke
@@ -112,6 +123,7 @@ without reloading.
 ## Installation
 figma-cli is a Node CLI (Node ≥ 18) that talks to Figma Desktop locally. If the
 `figma-cli` binary is missing, get the project from
-https://github.com/amelie-pierce/figma-cli and run `npm install` in it, then invoke it
-through its installed `figma-cli` launcher (or the workspace-configured launcher). Full command
+https://github.com/amelie-pierce/figma-cli. For Node-only installation, launch the
+extracted `install.mjs` with Node and use its runtime record as described above.
+The npm/installed-launcher route is also supported when permitted. Full command
 reference and JSX docs live in that repo's README.md and REFERENCE.md.

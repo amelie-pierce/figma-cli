@@ -34,9 +34,11 @@ commands rather than assuming an upstream installation includes it.
   connection, follow the installed CLI's setup guidance and existing authorization;
   do not reuse a Chrome debugging port or kill another service.
 
-Use CLI commands for the whole source workflow. Do not substitute mouse/keyboard
-automation, Make prompts, Design `eval`/`render`, or hand-written private service
-calls. The CLI owns the desktop adapter and transport. If a capability is missing,
+Use Node/CLI commands for the whole source workflow, including discovery and
+verification. Do not invoke computer-use tools, OS mouse/keyboard automation,
+screenshot-coordinate clicking, separate browser-automation tools, Make prompts,
+Design `eval`/`render`, or hand-written private service calls. Do not silently fall
+back to any of these when the CLI fails; report the exact blocker instead. The CLI owns the desktop adapter and transport. If a capability is missing,
 explain it; changing the CLI itself is a separate scope unless already authorized.
 
 ## Read enough to plan the change
