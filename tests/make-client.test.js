@@ -292,15 +292,16 @@ test('bounds the operation and rejects concurrent operations on the same editor'
 });
 
 test('verification timeout after dispatch reports uncertainty without replaying the write', async (t) => {
-  const { client, state, backupDir } = await setup(t, { hangReadback: true }, 100);
+  const { client, state, backupDir } = await setup(t, { hangReadback: true }, 1000);
   await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }), /uncertain.*timed out/);
   assert.equal(state.dispatches.length, 1);
   assert.equal(state.content, 'new');
 });
 
 test('missing or rejected save acknowledgements leave an uncertain outcome and backup, never success', async (t) => {
+  // Allow VM setup and backup I/O under the full parallel CI suite before timing out.
   for (const saveMode of ['absent', 'failed']) {
-    const { client, state, backupDir } = await setup(t, { saveMode }, 100);
+    const { client, state, backupDir } = await setup(t, { saveMode }, 1000);
     let failure;
     await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }), (error) => {
       failure = error;

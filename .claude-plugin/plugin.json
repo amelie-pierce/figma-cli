@@ -1,6 +1,6 @@
 {
   "name": "figma-cli",
-  "version": "2.2.5-make.1",
+  "version": "2.2.5-make.2",
   "description": "Figma Desktop CLI with direct Figma Make source editing and skills for Claude Code, Codex, and Copilot.",
   "author": {
     "name": "Sil Bormüller",

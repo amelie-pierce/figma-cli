@@ -8,10 +8,10 @@ Figma Make source editing and bundles **figma-cli** (Design) and **figma-make**
 
 ### Install for Claude Code, Codex, and GitHub Copilot
 
-With Node.js 22 LTS and Git installed, run:
+With Node.js 22 LTS installed, run:
 
 ```sh
-npm install -g 'github:amelie-pierce/figma-cli#v2.2.5-make.1'
+npm install -g https://github.com/amelie-pierce/figma-cli/archive/refs/tags/v2.2.5-make.2.tar.gz
 figma-cli skills status
 ```
 

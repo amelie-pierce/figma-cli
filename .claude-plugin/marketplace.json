@@ -9,7 +9,7 @@
       "name": "figma-cli",
       "source": "./",
       "description": "Figma Desktop CLI with direct Figma Make source editing and skills for Claude Code, Codex, and Copilot.",
-      "version": "2.2.5-make.1",
+      "version": "2.2.5-make.2",
       "author": {
         "name": "Sil Bormüller",
         "url": "https://intodesignsystems.com"
