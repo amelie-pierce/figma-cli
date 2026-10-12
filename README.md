@@ -6,6 +6,26 @@ This fork of [silships/figma-cli](https://github.com/silships/figma-cli) adds di
 Figma Make source editing and bundles **figma-cli** (Design) and **figma-make**
 (React source) skills. The original MIT license and author attribution are retained.
 
+### Copy-and-paste installation prompt
+
+Copy this prompt into Claude Code, Codex, or GitHub Copilot running on the same
+computer as Figma Desktop:
+
+```text
+Install the amelie-pierce fork of figma-cli and set it up for direct Figma Make editing.
+
+Use Node.js 22 LTS and install:
+npm install -g https://github.com/amelie-pierce/figma-cli/archive/refs/tags/v2.2.5-make.2.tar.gz
+
+Run `figma-cli skills status`. Ensure both figma-cli and figma-make skills are available for Claude Code, Codex, and Copilot. Use `figma-cli skills install` if registration is incomplete, preserving existing customized skills.
+
+Read the figma-make skill. Reuse an existing Figma Desktop connection, or set up a dedicated free debugging port. Explain any required app patch or restart before proceeding.
+
+Verify the connection with `figma-cli make list`. Then ask me for the Make URL and desired changes.
+
+For Make work, write readable React/TSX directly through the CLI using stdin. Keep modules separate, avoid local application source files and computer-use tools, and verify saved source and the preview after editing. Keep publishing separate from editing.
+```
+
 ### Install for Claude Code, Codex, and GitHub Copilot
 
 With Node.js 22 LTS installed, run:
