@@ -1,14 +1,15 @@
 // Networked package-install rehearsal, separate from the offline unit suite.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findNpmCli } from '../src/lib/node-install.js';
 
 const source = fileURLToPath(new URL('../', import.meta.url));
-const sandbox = mkdtempSync(join(tmpdir(), 'figma-node-rehearsal-'));
+// Expand Windows 8.3 temp aliases before constructing ESM module paths.
+const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'figma-node-rehearsal-')));
 const root = join(sandbox, 'CLI package with spaces Ω');
 const home = join(sandbox, 'profile');
 mkdirSync(root); mkdirSync(home);
@@ -16,6 +17,7 @@ try {
   for (const item of ['install.mjs', 'package.json', 'package-lock.json', 'src', 'skills']) {
     cpSync(join(source, item), join(root, item), { recursive: true });
   }
+  assert.ok(existsSync(join(root, 'src/lib/node-install.js')), 'Installer implementation must be present in the copied package');
   const npmCli = findNpmCli();
   const env = { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: join(home, '.claude'),
     PATH: '', npm_config_script_shell: join(sandbox, 'shell-does-not-exist'),
