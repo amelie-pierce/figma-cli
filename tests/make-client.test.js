@@ -85,6 +85,11 @@ function fixture(options = {}) {
     click() { state.tabClicks++; state.code = true; } };
   const closeTab = { ...box, click() { state.closeClicks++; }, parentElement: { querySelectorAll: () => [filesTab, closeTab] } };
   const browserTab = { ...box, innerText: 'Browser', click() { state.previewClicks = (state.previewClicks || 0) + 1; state.code = false; } };
+  const addTab = { ...box, getAttribute: () => String(!!state.menuOpen),
+    click() { state.addClicks = (state.addClicks || 0) + 1; state.menuOpen = true; } };
+  const filesOption = { ...box, innerText: 'Files', getAttribute: () => state.menuDisabled ? 'true' : null,
+    click() { state.filesTabs++; state.code = true; state.menuOpen = false; state.filesClicks = (state.filesClicks || 0) + 1; } };
+  const menu = { ...box, querySelectorAll: () => Array(state.menuOptions ?? 1).fill(filesOption) };
   const navigation = { ...box, querySelectorAll: selector => selector === 'button[aria-label="Close Files tab"]'
     ? Array(state.filesTabs).fill(closeTab) : [browserTab, filesTab, closeTab] };
   const showFiles = { ...box, click() { state.treeVisible = true; } };
@@ -97,6 +102,9 @@ function fixture(options = {}) {
   const document = {
     title: 'Test Make file', body: { get innerText() { return state.offline ? "Some changes won't be synced" : ''; } },
     querySelectorAll(selector) {
+      if (selector === 'nav[aria-label="Editor views"] button[aria-label="Close Files tab"]') return Array(state.filesTabs).fill(closeTab);
+      if (selector === 'nav[aria-label="Editor views"] button[aria-label="Add workspace tab"]') return Array(state.addControls ?? 1).fill(addTab);
+      if (selector === '[role="menu"]') return state.menuOpen ? Array(state.menuCount ?? 1).fill(menu) : [];
       if (selector === 'input[type="radio"][value="code"]') return state.workspace ? [] : [radio];
       if (selector === 'input[type="radio"][value="preview"]') return state.workspace ? [] : [previewRadio];
       if (selector === '[data-testid="figmake-workspace-container"]') return state.workspace ? [workspace] : [];
@@ -192,10 +200,31 @@ test('Files workspace reuses one visible pane among multiple tabs and reveals a 
 });
 
 test('Files workspace refuses to guess which inactive tab to open', async t => {
-  for (const filesTabs of [0, 2]) {
+  for (const filesTabs of [2]) {
     const { client, state } = await setup(t, { workspace: true, filesTabs });
-    await assert.rejects(client.inspect(), filesTabs ? /Multiple Make Files tabs/ : /No Make Files workspace/);
+    await assert.rejects(client.inspect(), /Multiple Make Files tabs/);
     assert.equal(state.tabClicks, 0);
+    assert.equal(state.closeClicks, 0);
+    assert.equal(state.dispatches.length, 0);
+  }
+});
+
+test('Files workspace opens one new tab when none exists and reuses it on subsequent reads', async t => {
+  const { client, state } = await setup(t, { workspace: true, filesTabs: 0 });
+  assert.equal((await client.inspect()).codeReady, true);
+  assert.equal((await client.read('src/App.tsx')).sha256, hash(state.content));
+  assert.equal(state.addClicks, 1);
+  assert.equal(state.filesClicks, 1);
+  assert.equal(state.closeClicks, 0);
+  assert.equal(state.dispatches.length, 0);
+});
+
+test('Files tab creation rejects unavailable, ambiguous and disabled menu controls', async t => {
+  for (const options of [{ addControls: 0 }, { addControls: 2 }, { menuCount: 2 }, { menuOptions: 2 }, { menuDisabled: true }]) {
+    const { client, state } = await setup(t, { workspace: true, filesTabs: 0, ...options });
+    await assert.rejects(client.inspect(), /unavailable|ambiguous|disabled/);
+    assert.equal(state.filesTabs, 0);
+    assert.equal(state.filesClicks || 0, 0);
     assert.equal(state.closeClicks, 0);
     assert.equal(state.dispatches.length, 0);
   }

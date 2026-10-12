@@ -41,7 +41,10 @@ export function makeWorkspace(action) {
     browsers[0].click();
     return { root, mode: 'files-workspace', ready: false };
   }
-  if (!files.length) throw new Error('No Make Files workspace tab is open. Open Files in the workspace, then retry.');
+  if (!files.length) {
+    if (action === 'ensure-code' || action === 'inspect') return { root, mode: 'files-workspace', ready: false, needsFilesTab: true };
+    throw new Error('No Make Files workspace tab is open.');
+  }
   const headers = [...root.querySelectorAll('[data-testid="files-workspace-header"]')].filter(visible);
   if (headers.length > 1 || treesIn(root).length > 1) throw new Error('Multiple visible Make Files panes are ambiguous; select one workspace pane.');
   if (headers.length === 1 && !treesIn(root).length && action === 'ensure-code') {
@@ -54,4 +57,35 @@ export function makeWorkspace(action) {
     files[0].click();
   }
   return { root, mode: 'files-workspace', ready: treesIn(root).length === 1 && [...root.querySelectorAll('[data-testid="files-workspace-header"]')].filter(visible).length === 1 };
+}
+
+// Serialized separately so opening a menu can wait for React to render it.
+// Only the caller that observed no Files tab invokes this once per operation.
+export async function openMakeFilesTab(timeoutMs = 1000) {
+  const deadline = Date.now() + Math.min(timeoutMs, 1000);
+  const visible = element => {
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  if ([...document.querySelectorAll('nav[aria-label="Editor views"] button[aria-label="Close Files tab"]')].some(visible)) return;
+  const add = [...document.querySelectorAll('nav[aria-label="Editor views"] button[aria-label="Add workspace tab"]')].filter(visible);
+  if (add.length !== 1 || add[0].disabled) throw new Error('Make Add workspace tab control is unavailable or ambiguous.');
+  if (add[0].getAttribute('aria-expanded') !== 'true') add[0].click();
+  for (let attempt = 0; attempt < 40 && Date.now() < deadline; attempt++) {
+    if (add[0].getAttribute('aria-expanded') === 'true') {
+      const menus = [...document.querySelectorAll('[role="menu"]')].filter(visible);
+      if (menus.length > 1) throw new Error('Make workspace menu is ambiguous; no tab was opened.');
+      const files = menus.length === 1 ? [...menus[0].querySelectorAll('[role="menuitem"]')]
+        .filter(item => visible(item) && item.innerText?.trim() === 'Files') : [];
+      if (files.length > 1) throw new Error('Make Files menu option is ambiguous; no tab was opened.');
+      if (files.length === 1) {
+        if (files[0].getAttribute('aria-disabled') === 'true') throw new Error('Make Files menu option is disabled.');
+        files[0].click();
+        return;
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  throw new Error('Make Files menu option did not become available. Open Files manually, then retry.');
 }

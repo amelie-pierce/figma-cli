@@ -7,7 +7,7 @@ import { listMakeFiles, selectMakeFile } from './make-tree.js';
 import { watchMakeSave } from './make-save-observer.js';
 import { validateImportFiles } from './make-import.js';
 import { captureMakeFileSocket } from './make-rpc.js';
-import { makeWorkspace } from './make-workspace.js';
+import { makeWorkspace, openMakeFilesTab } from './make-workspace.js';
 import { makeUiSnapshot } from './make-ui.js';
 
 const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
@@ -35,6 +35,7 @@ function makeEditorAction(action, workspace) {
     url: location.href, title: document.title, codeReady: ready, workspaceMode: context.mode, editorCount: editors.length,
     readOnly: editors.length === 1 ? editors[0].cmView?.view?.state?.readOnly !== false : null,
     busy, offline,
+    ...(context.needsFilesTab ? { needsFilesTab: true } : {}),
     selectedName: selected.length === 1 ? selected[0].closest('[role="treeitem"]')?.getAttribute('aria-label') : null,
   };
   if (action.type === 'ensure-code' || action.type === 'inspect') return summary;
@@ -261,6 +262,7 @@ export class MakeClient {
 
   async _ensureCode(deadline) {
     let state = await this._editor({ type: 'ensure-code' }, deadline);
+    if (state.needsFilesTab) await this._evaluate(`(${openMakeFilesTab.toString()})(${Math.min(1000, this._remaining(deadline))})`, deadline);
     while (!state.codeReady) {
       await this._bounded(() => new Promise((resolve) => setTimeout(resolve, 50)), deadline);
       state = await this._editor({ type: 'inspect' }, deadline);

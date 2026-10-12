@@ -7,6 +7,9 @@ older Code/Preview tabs. If an older installation reports `Expected exactly one
 Make Code tab`, update the CLI adapter; this is not a reason to patch Figma again.
 Use `make ui --file KEY` to report unsupported workspace controls without reading
 source. Preserve any customized adapter before updating.
+When no Files tab is open, Make source commands automatically open one through
+**Add workspace tab → Files**. Existing active Files panes are reused; multiple
+inactive Files tabs still require selecting the intended pane.
 
 This fork of [silships/figma-cli](https://github.com/silships/figma-cli) adds direct
 Figma Make source editing and bundles **figma-cli** (Design) and **figma-make**

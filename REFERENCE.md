@@ -57,7 +57,9 @@ supported. Files tabs are identified by their controls, even after their title
 changes to a filename. The current visible file tree and header identify the active
 Files pane; the full breadcrumb must match the selected source path before a read
 or write. If several Files tabs exist and none is active, select the intended one
-manually; the CLI does not guess. If no Files tab exists, open one in the workspace.
+manually; the CLI does not guess. If no Files tab exists, the CLI opens one through
+**Add workspace tab → Files**, waiting for the menu and file tree to become ready.
+Unavailable, disabled, or ambiguous controls stop the operation without a source edit.
 `make ui --file KEY` reports bounded control metadata without selecting tabs or
 reading source/input values. Use it for an unsupported layout. The old error
 `Expected exactly one Make Code tab` may indicate an outdated CLI adapter, not a
