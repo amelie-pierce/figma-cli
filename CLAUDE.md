@@ -2,6 +2,11 @@
 
 CLI that controls Figma Desktop directly. No API key needed.
 
+For Figma Make application source, first read `skills/figma-make/SKILL.md`.
+Use the dedicated `make` commands with an exact `--file` key and preserve readable
+React modules; Design `eval`/`render` cannot edit Make source. Use
+`figma-cli skills status` to check the installed Design and Make skills.
+
 ## Quick Reference
 
 | User says | Command |

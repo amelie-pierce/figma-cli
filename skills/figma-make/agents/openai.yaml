@@ -1,0 +1,4 @@
+interface:
+  display_name: "Figma Make"
+  short_description: "Edit and verify React source directly in Figma Make"
+  default_prompt: "Use $figma-make to update this Make project with readable React source and verify the saved result."

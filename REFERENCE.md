@@ -2,6 +2,99 @@
 
 Full command reference for the Figma CLI. For quick start, see CLAUDE.md.
 
+## Agent skills
+
+`figma-cli skills install` registers all bundled skills for Claude Code, Codex,
+and GitHub Copilot. `figma-cli skills status` reports exact paths and exits nonzero
+when registration is incomplete. Both support `--agent all|claude|codex|copilot`.
+Installation preserves custom skills and modified managed copies. See README.md
+for automatic npm registration, opt-out, and the documented discovery directories.
+
+## Figma Make source files (experimental)
+
+The `make` command group reads, creates, imports, and edits UTF-8 source files in an open Figma
+Make Code editor. It uses a separate desktop connection; Design commands and
+the Design daemon are unchanged. Select a project with its exact Make URL or
+file key, never a title. Use the workspace's configured launcher and dedicated
+debugging port; set `FIGMA_PORT` or the global `--port` option when necessary.
+
+```sh
+figma-cli make list
+figma-cli make inspect --file <make-file-key>
+figma-cli make files --file <make-file-key>
+figma-cli make read src/App.tsx --file <make-file-key>
+figma-cli make replace src/App.tsx --file <make-file-key> --from - --expected-sha256 <hash-from-read>
+figma-cli make create src/Component.tsx --file <make-file-key> --from -
+figma-cli make import --file <make-file-key> --manifest - --timeout 120000
+figma-cli make verify --file <make-file-key> --manifest - --timeout 120000
+figma-cli make preview --file <make-file-key>
+```
+
+`read` returns the complete editor document and its SHA-256 as JSON. With
+`--out`, source goes to a new local file (an existing file is not overwritten),
+and stdout contains metadata. `files` expands and scrolls the virtualized file
+tree so nested paths and repeated basenames are resolved unambiguously.
+Each operation temporarily keeps the Make renderer active through CDP, allowing
+its file tree to update while Figma is in the background, then clears that
+override. It does not move operating-system focus. File selection verifies the
+entire parent-folder chain before reading or writing. Selection collapses unrelated
+folders so large vendor trees do not obscure an app file. Paths whose ancestors
+and file still cannot fit together in the viewport are refused.
+
+`replace` requires the previous content hash, saves a private local backup,
+then applies one editor transaction. It observes Make's own file-write
+request and matching successful server response, and rechecks the editor
+content. It does not call a private write endpoint. Successful results report
+`verification: "server-acknowledged"` and `persistence: "acknowledged"`.
+This confirms the source file was saved; it does not certify a passing app
+build, deployment, or publication. An unchanged file reports `changed: false`
+and does not claim a new save.
+
+Backups default to `~/.figma-cli/make-backups`; override with `--backup-dir`.
+Their source files and metadata use private filesystem permissions. Keep the
+returned backup path until the intended change is reviewed.
+
+Writes reject stale editor content, a running Make generation, a visible
+connection warning, unsupported editor structure, or read-only files. They
+are never retried automatically. A timeout after a write may mean it saved:
+read the file again before deciding what to do. To restore, read the current
+hash and replace from the original backup with that hash. Do not blindly
+replay a failed write or roll back over another person's changes.
+
+Replacement files must be valid UTF-8 text, at most 2 MiB. Byte-order marks and
+line endings are preserved when loading local source.
+
+`--from -` and `--manifest -` read blocking stdin, so application source can stay
+in memory and be saved directly into Make without creating local app files.
+Import manifests use `{ "files": [{ "path": "src/Component.tsx", "content": "..." }] }`.
+`create` and `import` reject existing paths, case-ambiguous duplicates, traversal,
+and file/folder conflicts. Limits: 300 files, 2 MiB each, 20 MiB total source.
+
+Creation uses Make's observed filesystem protocol on its existing authenticated
+WebSocket. The adapter briefly observes a source-file read to identify that exact
+connection, then restores the send hook. It reuses the connection in the same Make
+page; it never extracts credentials or opens a separate authenticated connection.
+The cached socket reference expires with the page/socket. Each write is acknowledged
+and read back. This is an experimental private protocol, not a public Figma API.
+
+Imports are sequential, not atomic. Errors report acknowledged files and requested
+paths; other writes may have an uncertain outcome. Inspect and verify before
+resuming, and submit only missing files. `verify` compares remote source bytes to
+the manifest without changing files. `preview` inspects the current rendered app
+and Vite overlay through the desktop connection; it does not reload or publish.
+
+`remove <path> --expected-sha256 <hash>` is for explicitly authorized source cleanup.
+It reads the exact remote file, checks its hash, writes a private recovery backup,
+and requests removal of that file only. It does not recursively remove folders.
+Keep its backup until cleanup is reviewed. Like replacement, this check is not a
+server-side compare-and-swap; do not run concurrent writers on the same project.
+
+Limitations: no rename, binary edits, or multi-file atomic changes. The content check is local to the active editor,
+not a server-side compare-and-swap against other collaborators. The adapter
+depends on the current CodeMirror editor and Make's observed save-response
+format, so a Figma update may require adapting it. It does not reload the
+desktop page, restart Figma, trigger Make prompts, or publish the app.
+
 ## Design Tokens & Variables
 
 ### Create Design Systems

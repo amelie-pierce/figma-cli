@@ -1,20 +1,20 @@
 {
-  "name": "intodesignsystems",
+  "name": "amelie-pierce",
   "owner": {
-    "name": "Sil Bormüller"
+    "name": "amelie-pierce"
   },
-  "description": "Figma tooling for AI coding agents from Into Design Systems.",
+  "description": "Figma Desktop CLI with direct Figma Make source editing and skills for Claude Code, Codex, and Copilot.",
   "plugins": [
     {
       "name": "figma-cli",
       "source": "./",
-      "description": "Build and edit designs directly in Figma Desktop from your terminal — render frames/components/variants, manage design tokens & variables (shadcn/Tailwind/DTCG), extract & import whole design systems, gradients, Figma Motion, and accessibility audits. No API key.",
-      "version": "2.1.0",
+      "description": "Figma Desktop CLI with direct Figma Make source editing and skills for Claude Code, Codex, and Copilot.",
+      "version": "2.2.5-make.1",
       "author": {
         "name": "Sil Bormüller",
         "url": "https://intodesignsystems.com"
       },
-      "homepage": "https://github.com/silships/figma-cli",
+      "homepage": "https://github.com/amelie-pierce/figma-cli",
       "license": "MIT",
       "category": "design",
       "keywords": [

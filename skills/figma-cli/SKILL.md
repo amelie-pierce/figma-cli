@@ -5,6 +5,10 @@ description: Build and edit designs directly in Figma Desktop from the terminal 
 
 # Using figma-cli
 
+For Figma Make application source, use the dedicated
+[figma-make skill](../figma-make/SKILL.md). The Design canvas workflow below does
+not edit Make source files.
+
 figma-cli controls **Figma Desktop** directly (no API key). It runs in any
 terminal. Open Figma Desktop, then `figma-cli connect` once per session.
 
@@ -69,9 +73,32 @@ figma-cli motion preset <id> fade-up   # animate (Figma Motion, beta)
 figma-cli blocks create dashboard-01   # pre-built dashboard layout
 ```
 
+## Figma Make source editing
+
+For Make app source, use the dedicated [figma-make skill](../figma-make/SKILL.md)
+and the separate `make` commands. Respect the workspace's configured launcher,
+which may select Figma's dedicated port and Node runtime.
+Start with `make list`, then `make inspect`, `make files`, and `make read` with
+an exact `--file` key or Make URL. Source edits use `make replace --from` with
+the SHA-256 returned by the prior read. Preserve the returned backup path.
+
+Do not route Make source through Design `eval`, `render`, or the Design daemon.
+The Make adapter opens the Code tab and observes Make's own save acknowledgement.
+For new modules, use `make create --from -` or `make import --manifest -` with
+`{files:[{path,content}]}` streamed through stdin. Imports reject existing paths.
+Use `make verify --manifest -` for exact remote-content checks and `make preview`
+for read-only inspection of the running app. Keep React/TSX as readable source,
+with library modules separate; do not paste compiled bundles into App.tsx.
+These commands need no local application-code files and no computer-use tools.
+Do not claim a passing build or publication from a successful source save.
+After an uncertain write outcome, read first; do not retry or restore blindly.
+Never reload the desktop CDP page to verify a save: Figma Desktop's tab lifecycle
+can leave that view hidden or stalled. The adapter verifies the server response
+without reloading.
+
 ## Installation
 figma-cli is a Node CLI (Node ≥ 18) that talks to Figma Desktop locally. If the
 `figma-cli` binary is missing, get the project from
-https://github.com/silships/figma-cli and run `npm install` in it, then invoke it
-as `node src/index.js <command>` (or link it as `figma-cli`). Full command
+https://github.com/amelie-pierce/figma-cli and run `npm install` in it, then invoke it
+through its installed `figma-cli` launcher (or the workspace-configured launcher). Full command
 reference and JSX docs live in that repo's README.md and REFERENCE.md.

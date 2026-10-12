@@ -73,7 +73,9 @@ function refreshInBackground(file) {
 function currentVersion() {
   try {
     const pkg = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json');
-    return JSON.parse(readFileSync(pkg, 'utf8')).version;
+    const metadata = JSON.parse(readFileSync(pkg, 'utf8'));
+    // Fork installs must never recommend replacing themselves with upstream npm.
+    return metadata.name === 'figma-ds-cli' ? metadata.version : null;
   } catch { return null; }
 }
 

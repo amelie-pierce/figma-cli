@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync } from 'fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { isNewer, decide, isDisabled, runUpdateCheck, DAY_MS } from '../src/lib/update-check.js';
@@ -37,13 +37,15 @@ test('CI, tests and the opt-out variable disable the check', () => {
   assert.equal(isDisabled({}), false);
 });
 
-test('runUpdateCheck prints once and records it', () => {
-  const file = join(mkdtempSync(join(tmpdir(), 'upd-')), 'c.json');
+test('fork never recommends upstream or updates its registry cache', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'upd-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, 'c.json');
   const now = Date.now();
   writeFileSync(file, JSON.stringify({ latest: '999.0.0', checkedAt: now }));
   const printed = [];
   runUpdateCheck({ file, env: {}, now, print: m => printed.push(m) });
   runUpdateCheck({ file, env: {}, now: now + 1000, print: m => printed.push(m) });
-  assert.equal(printed.length, 1);
-  assert.equal(JSON.parse(readFileSync(file, 'utf8')).notifiedFor, '999.0.0');
+  assert.equal(printed.length, 0);
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { latest: '999.0.0', checkedAt: now });
 });

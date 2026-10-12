@@ -1,5 +1,98 @@
 # figma-cli
 
+## Amelie Pierce fork: Figma Make and agent skills
+
+This fork of [silships/figma-cli](https://github.com/silships/figma-cli) adds direct
+Figma Make source editing and bundles **figma-cli** (Design) and **figma-make**
+(React source) skills. The original MIT license and author attribution are retained.
+
+### Install for Claude Code, Codex, and GitHub Copilot
+
+With Node.js 22 LTS and Git installed, run:
+
+```sh
+npm install -g 'github:amelie-pierce/figma-cli#v2.2.5-make.1'
+figma-cli skills status
+```
+
+Installation registers every bundled skill, including its reference files, in:
+
+| Agent | User skill directory |
+| --- | --- |
+| Claude Code | `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills`) |
+| Codex | `~/.agents/skills` |
+| GitHub Copilot CLI / VS Code | `~/.copilot/skills` |
+
+These follow the documented discovery locations for
+[Claude Code](https://code.claude.com/docs/en/skills),
+[Codex](https://developers.openai.com/codex/skills/), and
+[Copilot](https://code.visualstudio.com/docs/copilot/customization/agent-skills).
+Reload skills or start a new agent session after installation. In Codex, invoke
+`$figma-make`; in Claude Code or Copilot, invoke `/figma-make` or ask to edit a Make
+project directly. Discovery makes the skills available; agent permissions and
+disabled-skill settings still apply. Remote/cloud agents cannot reach a local
+Figma Desktop just by installing a skill.
+
+The installer updates only unchanged copies it owns. It preserves custom skills,
+local edits, and unrelated symlinks and reports conflicts. `skills status` exits
+nonzero if anything is missing, outdated, or conflicted. Inspect a conflicting
+directory and move your custom copy aside yourself before retrying; no force
+overwrite is performed. npm can hide postinstall output, so check status.
+
+```sh
+figma-cli skills install                  # repair registration for all three
+figma-cli skills install --agent codex    # or claude / copilot
+```
+
+When npm lifecycle scripts are disabled, run `skills install` explicitly.
+Set `FIGMA_CLI_SKIP_SKILLS=1` during installation to opt out of user skill writes.
+The CLI remains installed if skill registration encounters a permission conflict;
+the status command identifies any incomplete registration. Uninstalling the npm
+package leaves the skill copies in place; remove its two skill directories from
+the table above if you no longer want them.
+
+This release is distributed from GitHub, not the public npm registry. To update,
+install a newer tag from **this fork** and run `skills status` again. The upstream
+npm update notification is disabled so it cannot replace the Make extension.
+
+### Connect and edit Make
+
+Installation itself does not patch, restart, or connect to Figma. Open your Make
+project in Figma Desktop. On first setup only, connect using a dedicated free
+debugging port, then use the same port for subsequent commands:
+
+```sh
+figma-cli --port 9333 connect
+figma-cli --port 9333 make list
+figma-cli --port 9333 make inspect --file YOUR_MAKE_FILE_KEY
+figma-cli --port 9333 make read src/App.tsx --file YOUR_MAKE_FILE_KEY
+```
+
+`connect` may patch and restart Figma Desktop; follow your machine's policy and
+reopen the Make project afterward. Existing installations should reuse their
+configured port and launcher. Never restart a healthy Make connection just to
+verify source. Plugin/Safe mode is for Design and does not supply the Make adapter.
+
+The Make skill handles readable React/TSX, new modules, dependencies, hash-guarded
+replacement, backups, remote-content verification, and preview inspection.
+Source can travel entirely through stdin, with no local application source copies.
+See [the Make skill](skills/figma-make/SKILL.md) and [command reference](REFERENCE.md).
+Make uses an experimental private filesystem protocol through your loaded editor;
+Figma changes may require adapter updates. Saving source is separate from publishing.
+
+### Verify the extension
+
+```sh
+FIGMA_CLI_SKIP_SKILLS=1 npm ci
+npm run test:make
+```
+
+The Make and skill-installer suite is offline. Do not run upstream live Design
+fixture tests against a personal Figma session. The original Design documentation
+continues below; its connection-mode claims apply to Design, not Make.
+
+---
+
 <p align="center">
   <a href="https://www.intodesignsystems.com/"><img src="https://img.shields.io/badge/Into_Design_Systems-intodesignsystems.com-ff6b35" alt="Into Design Systems"></a>
   <img src="https://img.shields.io/badge/Figma-Desktop-purple" alt="Figma Desktop">
@@ -54,7 +147,7 @@ You don't install this by hand. You use an **AI coding assistant** , **Claude Co
 ### 2. Get this project onto your computer
 Don't know git? No problem. Open Claude Code anywhere and paste:
 
-> "Download the figma-cli project from https://github.com/silships/figma-cli into a folder in my home directory, then go into it."
+> "Download the figma-cli project from https://github.com/amelie-pierce/figma-cli into a folder in my home directory, then go into it."
 
 (Or, if you prefer: click the green **Code** button on the GitHub page → **Download ZIP** → unzip it.)
 
@@ -83,8 +176,8 @@ Claude Code learns the figma-cli workflow in *any* project (not just this one) a
 a two-line install:
 
 ```
-/plugin marketplace add silships/figma-cli
-/plugin install figma-cli@intodesignsystems
+/plugin marketplace add amelie-pierce/figma-cli
+/plugin install figma-cli@amelie-pierce
 ```
 
 That installs a skill that teaches Claude Code how to drive figma-cli (connect
@@ -106,7 +199,7 @@ Prefer **Cursor**? It works exactly the same , the CLI controls Figma Desktop, n
 ### 2. Tell Cursor to install it , one line
 Open Cursor in any folder, open the chat (the Agent), and paste:
 
-> **"Install github.com/silships/figma-cli and connect it to my Figma."**
+> **"Install github.com/amelie-pierce/figma-cli and connect it to my Figma."**
 
 Cursor downloads the project, installs it, sets up its own rules so it knows how to drive it, and connects to your open Figma Desktop. You watch , you don't type commands.
 

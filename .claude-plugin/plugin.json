@@ -1,13 +1,13 @@
 {
   "name": "figma-cli",
-  "version": "2.1.0",
-  "description": "Build and edit designs directly in Figma Desktop from your terminal — render frames/components/variants, manage design tokens & variables (shadcn/Tailwind/DTCG), extract & import whole design systems, gradients, Figma Motion, and accessibility audits. Controls Figma live over a local connection, no API key.",
+  "version": "2.2.5-make.1",
+  "description": "Figma Desktop CLI with direct Figma Make source editing and skills for Claude Code, Codex, and Copilot.",
   "author": {
     "name": "Sil Bormüller",
     "url": "https://intodesignsystems.com"
   },
-  "homepage": "https://github.com/silships/figma-cli",
-  "repository": "https://github.com/silships/figma-cli",
+  "homepage": "https://github.com/amelie-pierce/figma-cli",
+  "repository": "https://github.com/amelie-pierce/figma-cli",
   "license": "MIT",
   "keywords": [
     "figma",

@@ -1,7 +1,7 @@
 {
-  "name": "figma-ds-cli",
-  "version": "2.2.5",
-  "description": "CLI for managing Figma design systems. Create variables, components, and more. No API key required.",
+  "name": "@amelie-pierce/figma-cli",
+  "version": "2.2.5-make.1",
+  "description": "Figma Desktop CLI with direct Figma Make source editing and skills for Claude Code, Codex, and Copilot.",
   "author": {
     "name": "Sil Bormüller",
     "url": "https://www.silbormueller.com/"
@@ -14,7 +14,11 @@
   },
   "files": [
     "src",
-    "plugin"
+    "plugin",
+    "skills",
+    "!src/.figma-client-*.mjs",
+    "REFERENCE.md",
+    ".claude-plugin"
   ],
   "keywords": [
     "figma",
@@ -25,17 +29,19 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/silships/figma-cli.git"
+    "url": "git+https://github.com/amelie-pierce/figma-cli.git"
   },
-  "homepage": "https://intodesignsystems.com",
+  "homepage": "https://github.com/amelie-pierce/figma-cli",
   "bugs": {
-    "url": "https://github.com/silships/figma-cli/issues"
+    "url": "https://github.com/amelie-pierce/figma-cli/issues"
   },
   "scripts": {
     "test": "node --test tests/*.test.js",
     "test:live": "node tests/live/parity-harness.mjs && node examples/autolayout-patterns.mjs",
     "test:parity": "node tests/live/parity-harness.mjs",
-    "examples": "node examples/autolayout-patterns.mjs"
+    "examples": "node examples/autolayout-patterns.mjs",
+    "postinstall": "node src/install-skills.js",
+    "test:make": "node --test tests/make-*.test.js tests/agent-skills.test.js tests/lazy-command-map.test.js tests/update-check.test.js"
   },
   "engines": {
     "node": ">=18"
