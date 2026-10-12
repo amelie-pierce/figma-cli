@@ -122,7 +122,9 @@ function fixture(options = {}) {
   return { state, transport };
 }
 
-async function setup(t, options = {}, timeoutMs = 1000) {
+// Normal operations use the production budget: Windows CI may take more than
+// one second to create/flush a private backup. Timeout tests pass short budgets.
+async function setup(t, options = {}, timeoutMs = 15000) {
   const f = fixture(options);
   const client = new MakeClient({ transport: f.transport, timeoutMs });
   await client.connect('ExactKey');
