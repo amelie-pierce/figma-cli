@@ -138,3 +138,14 @@ test('a port saved by the CLI is reused by Make in a separate process', async t 
   assert.equal(diagnostic.code, 0, diagnostic.stderr);
   assert.equal(JSON.parse(diagnostic.stdout).source, 'saved');
 });
+
+test('Node-only connect --make reuses a fake endpoint with empty PATH and rejects mixed modes', async t => {
+  const { port } = await endpoint(t, (req, res) => res.end(JSON.stringify([makePage])));
+  const result = await cli(t, ['connect', '--make', '--port', String(port)], { PATH: '' });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).reused, true);
+  assert.equal(JSON.parse(result.stdout).ready, true);
+  const invalid = await cli(t, ['connect', '--make', '--safe'], { PATH: '' });
+  assert.equal(invalid.code, 1);
+  assert.match(invalid.stderr, /cannot be combined/);
+});

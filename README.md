@@ -18,7 +18,7 @@ Use Node.js 22 LTS. Download and extract https://github.com/amelie-pierce/figma-
 
 Read the local ~/.figma-cli/node-runtime.json record to locate Node and src/index.js. Use those to run `skills status --agent copilot` (or --agent all). Ensure both figma-cli and figma-make skills are ready. Preserve customized skills if the installer reports a conflict.
 
-Read the figma-make skill. Reuse an existing Figma Desktop connection, or set up a dedicated free debugging port. Explain any required app patch or restart before proceeding.
+Read the figma-make skill. Reuse an existing Figma Desktop connection, or set up a dedicated free debugging port with `connect --make --port PORT`. Explain any required app patch or restart before proceeding. This Make setup invokes OS helpers directly without a shell, but still needs the OS permissions to modify and launch Figma.
 
 Run `connection` through the Node entry point first. Report the exact endpoint and port source. Installation alone does not enable Desktop debugging. Reuse the known Desktop port; persist it with `connection --save-port PORT` when needed. Do not guess a port or restart a healthy connection. Then verify with `make list` and ask me for the Make URL and desired changes.
 
@@ -164,13 +164,27 @@ machine. Never stop another service to free it.
 | `PATCH_PERMISSION_DENIED` during `connect` | The patch operation was denied. On macOS, check App Management for the app hosting the agent/Node process. Managed devices may require administrator help. |
 | `PATCH_FAILED` | A different patch failure, such as an incompatible app version; the original error is retained. Do not assume permission denial. |
 
-When initial patch/restart is authorized, `connect --port PORT` now checks the
-actual CDP endpoint after launching Figma, with a bounded wait. Make-only sessions
-do not require a Design tab or Design daemon. This verifies discovery, not source
-editor readiness. The existing initial setup still uses OS helpers; Node-only
-installation and diagnostic commands do not make those helpers available on a
-restricted device. If setup is blocked, report that prerequisite without switching
-to computer-use tools. Plugin/Safe mode does not provide Make access.
+When initial patch/restart is authorized, use **`connect --make --port PORT`** for
+Make. It reuses a responding Figma endpoint, or patches/restarts Desktop and checks
+CDP with a bounded wait. It invokes OS helpers directly with argument arrays and
+`shell: false`; it needs no Bash, CMD, PowerShell, curl, or Design daemon. It does
+not kill a service to free a port. This verifies discovery, not source editor
+readiness. The older Design/Safe/Browser setup paths still contain shell-dependent
+operations and are not covered by this guarantee.
+
+Direct invocation does not remove OS permissions. On macOS, modifying Figma may
+require App Management approval; on Windows, the user needs write access to the
+Figma installation and permission to launch processes. If company policy blocks
+these, report the prerequisite and ask for approved IT setup. Plugin/Safe mode
+does not provide Make access. No computer-use tools are required.
+
+Desktop discovery supports `/Applications/Figma.app` and `~/Applications/Figma.app`
+on macOS, and the per-user Figma installation under `%LOCALAPPDATA%` on Windows.
+Windows version folders are compared numerically and the binary and archive are
+selected from the same complete version. For a custom installation, set
+`FIGMA_APP_PATH` to the `.app` bundle on macOS or the installation folder on Windows.
+An invalid explicit override does not silently select a different installation.
+See [platform support and verification limits](docs/PORTABILITY.md).
 
 ### Run directly from Node.js
 
@@ -218,7 +232,7 @@ project in Figma Desktop. On first setup only, connect using a dedicated free
 debugging port, then use the same port for subsequent commands:
 
 ```sh
-figma-cli --port 9333 connect
+figma-cli --port 9333 connect --make
 figma-cli --port 9333 make list
 figma-cli --port 9333 make inspect --file YOUR_MAKE_FILE_KEY
 figma-cli --port 9333 make read src/App.tsx --file YOUR_MAKE_FILE_KEY

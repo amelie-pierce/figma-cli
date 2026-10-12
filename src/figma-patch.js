@@ -5,8 +5,8 @@
  * Newer Figma versions block --remote-debugging-port by default.
  */
 
-import { readFileSync, writeFileSync, accessSync, constants } from 'fs';
-import { execSync } from 'child_process';
+import { readFileSync, accessSync, constants } from 'fs';
+import { locateDesktop, writeDesktopArchive } from './lib/desktop-runtime.js';
 import {
   getAsarPath as platformGetAsarPath,
   getFigmaBinaryPath as platformGetFigmaBinaryPath,
@@ -77,7 +77,8 @@ export function canPatchFigma() {
  * @returns {boolean} true if patched successfully
  */
 export function patchFigma() {
-  const asarPath = getAsarPath();
+  const installation = locateDesktop();
+  const asarPath = installation?.asar;
   if (!asarPath) {
     throw new Error('Cannot detect Figma installation path for this platform');
   }
@@ -85,13 +86,14 @@ export function patchFigma() {
   // Check write access first
   if (!canPatchFigma()) {
     if (process.platform === 'darwin') {
-      throw new Error('No write access to Figma. On macOS 13+ grant your terminal "App Management" (System Settings → Privacy & Security → App Management) — "Full Disk Access" alone does not allow modifying another app. Or use Safe Mode: figma-cli connect --safe');
+      throw new Error('No write access to Figma. On macOS 13+ the app hosting your agent may need "App Management" (System Settings → Privacy & Security → App Management). Ask your administrator if this is restricted. Safe Mode is available for Design only, not Make.');
     } else {
       throw new Error('No write access to Figma. Try running as administrator.');
     }
   }
 
   const content = readFileSync(asarPath);
+  const previous = Buffer.from(content);
   const blockIndex = content.indexOf(BLOCK_STRING);
 
   if (blockIndex < 0) {
@@ -104,16 +106,7 @@ export function patchFigma() {
 
   // Apply patch
   PATCH_STRING.copy(content, blockIndex);
-  writeFileSync(asarPath, content);
-
-  // On macOS, re-sign the app
-  if (process.platform === 'darwin') {
-    try {
-      execSync('codesign --force --deep --sign - /Applications/Figma.app', { stdio: 'ignore' });
-    } catch {
-      // Codesign might fail but patch might still work
-    }
-  }
+  writeDesktopArchive(installation, previous, content);
 
   return true;
 }
@@ -123,12 +116,14 @@ export function patchFigma() {
  * @returns {boolean} true if unpatched successfully
  */
 export function unpatchFigma() {
-  const asarPath = getAsarPath();
+  const installation = locateDesktop();
+  const asarPath = installation?.asar;
   if (!asarPath) {
     throw new Error('Cannot detect Figma installation path for this platform');
   }
 
   const content = readFileSync(asarPath);
+  const previous = Buffer.from(content);
   const patchIndex = content.indexOf(PATCH_STRING);
 
   if (patchIndex < 0) {
@@ -141,16 +136,7 @@ export function unpatchFigma() {
 
   // Restore original
   BLOCK_STRING.copy(content, patchIndex);
-  writeFileSync(asarPath, content);
-
-  // On macOS, re-sign the app
-  if (process.platform === 'darwin') {
-    try {
-      execSync('codesign --force --deep --sign - /Applications/Figma.app', { stdio: 'ignore' });
-    } catch {
-      // Codesign might fail but unpatch might still work
-    }
-  }
+  writeDesktopArchive(installation, previous, content);
 
   return true;
 }

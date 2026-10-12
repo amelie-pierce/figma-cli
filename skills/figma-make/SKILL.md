@@ -42,6 +42,12 @@ commands rather than assuming an upstream installation includes it.
   needs no `connect`, app patch, restart, or additional MCP login. For a missing
   connection, follow the installed CLI's setup guidance and existing authorization;
   do not reuse a Chrome debugging port or kill another service.
+- For an authorized initial patch/restart, use `connect --make --port PORT`.
+  This setup path uses direct OS helpers without Bash, CMD, PowerShell, or the
+  Design daemon. It does not bypass OS permissions: Mac app modification may
+  require App Management approval; Windows needs write/process permissions.
+  If restricted, request approved IT setup. `FIGMA_APP_PATH` can identify a custom
+  installation (.app bundle on Mac; Figma installation folder on Windows).
 
 Use Node/CLI commands for the whole source workflow, including discovery and
 verification. Do not invoke computer-use tools, OS mouse/keyboard automation,

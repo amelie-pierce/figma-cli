@@ -9,6 +9,7 @@ import { FigmaClient } from '../figma-client.js';
 import * as apiDocs from '../api-docs.js';
 import { isPatched, patchFigma, unpatchFigma, getCdpPort } from '../figma-patch.js';
 import { patchFailure, waitForCdp } from '../lib/cdp-diagnostics.js';
+import { connectMakeDesktop } from '../lib/connect-make.js';
 import { detectBrowser, startBrowserApp, getBrowserCommand } from '../platform.js';
 import { convert, detectSourceType } from '../code-import/index.js';
 import {
@@ -240,7 +241,7 @@ program.action(async () => {
     try {
       killFigma();
       await new Promise(r => setTimeout(r, 1000));
-      startFigma();
+      await startFigma();
       console.log(chalk.green('  ✓ Figma started'));
 
       // Wait for connection
@@ -290,7 +291,7 @@ program.action(async () => {
     try {
       killFigma();
       await new Promise(r => setTimeout(r, 500));
-      startFigma();
+      await startFigma();
       console.log(chalk.green('  ✓ Figma started\n'));
 
       const spinner = ora('  Waiting for connection...').start();
@@ -400,7 +401,7 @@ program
     try {
       killFigma();
       await new Promise(r => setTimeout(r, 1000));
-      startFigma();
+      await startFigma();
       console.log(chalk.green('  ✓ Figma started'));
 
       // Wait for connection
@@ -612,9 +613,21 @@ async function connectBrowser(config) {
 program
   .command('connect')
   .description('Connect to Figma Desktop')
+  .option('--make', 'Set up or reuse Desktop debugging for Make using direct OS helpers; no shell or Design daemon')
   .option('--safe', 'Use Safe Mode (plugin-based, no patching required)')
   .option('--browser', 'Use Browser Mode (drive Figma in a Chromium browser via CDP — never modifies the Figma app)')
   .action(async (options) => {
+    if (options.make) {
+      if (options.safe || options.browser) {
+        console.error(JSON.stringify({ error: '--make cannot be combined with --safe or --browser' }));
+        process.exitCode = 1;
+        return;
+      }
+      const result = await connectMakeDesktop({ port: program.opts().port });
+      console.log(JSON.stringify(result, null, 2));
+      if (!result.ready) process.exitCode = 1;
+      return;
+    }
     // Fun welcome message
     console.log(chalk.hex('#FF6B35')('\n  ✨ Hey designer! ') + chalk.white("Don't be afraid of the terminal!"));
     console.log(chalk.hex('#4ECDC4')('  🎨 Happy vibe coding! ') + chalk.gray('— Sil · ') + chalk.hex('#FF6B35')('intodesignsystems.com\n'));
@@ -753,7 +766,7 @@ program
     } catch {}
 
     try {
-      startFigma();
+      await startFigma();
     } catch (error) {
       console.error(JSON.stringify({ code: 'FIGMA_LAUNCH_FAILED', port: getCdpPort(), error: error.message,
         recovery: 'The operating system could not launch Figma with remote debugging. Check the installation and allowed OS helpers; no CDP connection was verified.' }));

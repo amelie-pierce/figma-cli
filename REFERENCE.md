@@ -43,7 +43,13 @@ Neither setting a port nor installing enables Desktop debugging.
 source, exact URL, target counts, and recovery guidance. It does not patch, restart,
 scan, or edit. An unreachable endpoint cannot alone distinguish disabled debugging
 from a wrong port. `connect` checks the CDP endpoint after patch/restart and reports
-patch permission failures separately. A successful check is not editor-readiness
+patch permission failures separately. For Node-only Make setup, use
+`connect --make --port PORT`: it reuses a healthy endpoint or launches Desktop via
+direct OS helpers without a shell or Design daemon. App-modification/process
+permissions are still required. Mac discovery includes system and user Applications;
+Windows uses the newest complete numeric version. `FIGMA_APP_PATH` selects a custom
+`.app` bundle (Mac) or installation folder (Windows).
+A successful check is not editor-readiness
 proof; follow with `make inspect`. No computer-use fallback is required or allowed.
 
 ```sh

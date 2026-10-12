@@ -5,7 +5,7 @@ export function cdpFailure(error, port) {
   const reason = error.cause?.code || error.code || error.name;
   const recovery = [
     'Confirm the port used to launch Figma Desktop; use --port PORT for one command or connection --save-port PORT to persist it.',
-    'Opening Figma normally does not enable remote debugging. If it has no debugging endpoint, connect --port PORT patches/restarts Desktop; obtain permission for that restart first.',
+    'Opening Figma normally does not enable remote debugging. For Make, connect --make --port PORT uses direct OS helpers to patch/restart Desktop when needed; use existing restart authorization or obtain it first.',
     'An unreachable endpoint alone cannot distinguish a wrong port from disabled debugging. App Management is relevant only if patching fails with a permission error on macOS.',
     'Do not stop another service to free this port or fall back to computer-use tools.',
   ];
@@ -67,7 +67,7 @@ export async function waitForCdp({ port, timeoutMs = 10000, intervalMs = 500 } =
 }
 
 export function patchFailure(error, platform = process.platform) {
-  const permission = ['EACCES', 'EPERM'].includes(error.code) || /permission|no write access|operation not permitted/i.test(error.message);
+  const permission = ['EACCES', 'EPERM'].includes(error.code || error.cause?.code) || /permission|no write access|operation not permitted/i.test(error.message);
   return { error: error.message, code: permission ? 'PATCH_PERMISSION_DENIED' : 'PATCH_FAILED',
     recovery: permission && platform === 'darwin'
       ? 'macOS denied modification of Figma. Check System Settings → Privacy & Security → App Management for the app hosting your agent/Node process, then restart that host and retry. Full Disk Access alone is insufficient. Managed devices may require administrator assistance.'

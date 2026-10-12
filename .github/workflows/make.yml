@@ -24,10 +24,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - if: runner.os != 'Windows'
-        run: npm run test:make
-      - if: runner.os == 'Windows'
-        run: node --test tests/agent-skills.test.js tests/node-install.test.js tests/cdp-port.test.js tests/cdp-diagnostics.test.js tests/lazy-command-map.test.js tests/update-check.test.js
+      - name: Full offline Make, installation, and platform suite
+        run: node tests/run-make-tests.mjs
       - name: Verify Node installation and Copilot registration without a shell
         run: node tests/node-install-smoke.mjs
       - run: npm pack --dry-run

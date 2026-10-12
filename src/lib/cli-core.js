@@ -518,7 +518,7 @@ function startDaemon(forceRestart = false, mode = 'auto') {
   const newToken = generateDaemonToken();
 
   const daemonScript = join(__dirname, 'daemon.js');
-  const child = spawn('node', [daemonScript], {
+  const child = spawn(process.execPath, [daemonScript], {
     detached: true,
     stdio: 'ignore',
     env: { ...process.env, DAEMON_PORT: String(DAEMON_PORT), DAEMON_MODE: mode }
@@ -559,11 +559,11 @@ function getFigmaPath() {
 function startFigma() {
   const port = getCdpPort();
   const figmaPath = getFigmaPath();
-  startFigmaApp(figmaPath, port);
+  return startFigmaApp(figmaPath, port);
 }
 
 function killFigma() {
-  killFigmaApp();
+  return killFigmaApp();
 }
 
 function getManualStartCommand() {

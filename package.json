@@ -19,6 +19,7 @@
     "skills",
     "!src/.figma-client-*.mjs",
     "REFERENCE.md",
+    "docs/PORTABILITY.md",
     ".claude-plugin"
   ],
   "keywords": [
@@ -42,7 +43,7 @@
     "test:parity": "node tests/live/parity-harness.mjs",
     "examples": "node examples/autolayout-patterns.mjs",
     "postinstall": "node src/install-skills.js",
-    "test:make": "node --test tests/make-*.test.js tests/agent-skills.test.js tests/node-install.test.js tests/cdp-*.test.js tests/lazy-command-map.test.js tests/update-check.test.js"
+    "test:make": "node tests/run-make-tests.mjs"
   },
   "engines": {
     "node": ">=18"

@@ -9,7 +9,7 @@ import { findNpmCli } from '../src/lib/node-install.js';
 
 const source = fileURLToPath(new URL('../', import.meta.url));
 const sandbox = mkdtempSync(join(tmpdir(), 'figma-node-rehearsal-'));
-const root = join(sandbox, 'CLI package with spaces');
+const root = join(sandbox, 'CLI package with spaces Ω');
 const home = join(sandbox, 'profile');
 mkdirSync(root); mkdirSync(home);
 try {
@@ -39,6 +39,7 @@ try {
   assert.deepEqual(status.results.map(x => x.name).sort(), ['figma-cli', 'figma-make']);
   assert.ok(status.results.every(x => x.agent === 'copilot' && x.status === 'up-to-date'));
   assert.match(run([cli, 'make', '--help']), /replace/);
+  assert.match(run([cli, 'connect', '--help']), /--make/);
   assert.match(run([cli, 'render', '--help']), /Render JSX/);
   const configured = JSON.parse(run([cli, 'connection', '--save-port', '9444']));
   assert.equal(configured.effective.port, 9444);

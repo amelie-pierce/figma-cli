@@ -38,7 +38,9 @@ For a Node installation, read `nodeExecutable` and `cliEntry` from the local
 both paths exist. This lets a local Copilot agent find the CLI outside its folder
 without shell or PATH lookup. Keep the record's machine-specific values local.
 See the README's **Run directly from Node.js** example. Initial connection/setup
-commands may still invoke operating-system helpers.
+commands still invoke operating-system helpers. Make has a dedicated
+`connect --make` path that invokes them directly without a shell. Older Design,
+Safe, and Browser setup paths still contain shell-dependent operations.
 
 ## Connect (pick one mode)
 First run `connection` for a read-only endpoint diagnostic. Port precedence is

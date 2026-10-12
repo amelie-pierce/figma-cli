@@ -235,8 +235,11 @@ test('replacement saves private original and metadata before one dispatch, then 
   assert.equal(metadata.fileKey, 'ExactKey');
   assert.equal(metadata.sha256, hash(original));
   assert.equal(metadata.replacementSha256, hash(replacement));
-  assert.equal((await stat(result.backupPath)).mode & 0o777, 0o600);
-  assert.equal((await stat(dirname(result.backupPath))).mode & 0o777, 0o700);
+  // Windows access control uses ACLs; POSIX permission bits are not equivalent.
+  if (process.platform !== 'win32') {
+    assert.equal((await stat(result.backupPath)).mode & 0o777, 0o600);
+    assert.equal((await stat(dirname(result.backupPath))).mode & 0o777, 0o700);
+  }
   assert.equal(state.dispatches.length, 1);
   assert.deepEqual(state.dispatches[0].changes, { from: 0, to: original.length, insert: replacement });
   assert.equal(result.sha256, hash(replacement));
