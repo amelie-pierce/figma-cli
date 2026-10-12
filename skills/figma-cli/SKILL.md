@@ -22,6 +22,10 @@ If the user requests Node execution or shell launchers are unavailable, invoke
 this package's `src/index.js` with `process.execPath` and an argument array using
 `shell: false`. Preserve the workspace's configured port/environment. Resolve the
 package location at runtime; do not publish a user's absolute machine path.
+For a Node installation, read `nodeExecutable` and `cliEntry` from the local
+`~/.figma-cli/node-runtime.json` record (owner `amelie-pierce/figma-cli`) and verify
+both paths exist. This lets a local Copilot agent find the CLI outside its folder
+without shell or PATH lookup. Keep the record's machine-specific values local.
 See the README's **Run directly from Node.js** example. Initial connection/setup
 commands may still invoke operating-system helpers.
 

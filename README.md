@@ -14,10 +14,9 @@ computer as Figma Desktop:
 ```text
 Install the amelie-pierce fork of figma-cli and set it up for direct Figma Make editing.
 
-Use Node.js 22 LTS and install:
-npm install -g https://github.com/amelie-pierce/figma-cli/archive/refs/tags/v2.2.5-make.2.tar.gz
+Use Node.js 22 LTS. Download and extract https://github.com/amelie-pierce/figma-cli/archive/refs/heads/main.zip with available download/file tools. Run the extracted install.mjs with Node and --agent all (or --agent copilot for Copilot only), using an argument array and shell: false. Do not use Bash, CMD, PowerShell, or npm shell shims. The installer locates npm-cli.js and installs dependencies with lifecycle scripts disabled.
 
-Run `figma-cli skills status`. Ensure both figma-cli and figma-make skills are available for Claude Code, Codex, and Copilot. Use `figma-cli skills install` if registration is incomplete, preserving existing customized skills.
+Read the local ~/.figma-cli/node-runtime.json record to locate Node and src/index.js. Use those to run `skills status --agent copilot` (or --agent all). Ensure both figma-cli and figma-make skills are ready. Preserve customized skills if the installer reports a conflict.
 
 Read the figma-make skill. Reuse an existing Figma Desktop connection, or set up a dedicated free debugging port. Explain any required app patch or restart before proceeding.
 
@@ -48,7 +47,7 @@ Installation registers every bundled skill, including its reference files, in:
 These follow the documented discovery locations for
 [Claude Code](https://code.claude.com/docs/en/skills),
 [Codex](https://developers.openai.com/codex/skills/), and
-[Copilot](https://code.visualstudio.com/docs/copilot/customization/agent-skills).
+[Copilot](https://code.visualstudio.com/docs/agent-customization/agent-skills).
 Reload skills or start a new agent session after installation. In Codex, invoke
 `$figma-make`; in Claude Code or Copilot, invoke `/figma-make` or ask to edit a Make
 project directly. Discovery makes the skills available; agent permissions and
@@ -76,6 +75,55 @@ the table above if you no longer want them.
 This release is distributed from GitHub, not the public npm registry. To update,
 install a newer tag from **this fork** and run `skills status` again. The upstream
 npm update notification is disabled so it cannot replace the Make extension.
+
+### Install with Node.js, including GitHub Copilot
+
+Download and extract [this fork's ZIP](https://github.com/amelie-pierce/figma-cli/archive/refs/heads/main.zip).
+The archive includes `install.mjs`; the older `v2.2.5-make.2` tag does not.
+Use a Node.js 22 runner to launch `install.mjs` from the extracted folder with
+arguments `--agent copilot`. An IDE Node launch configuration works without an
+integrated terminal. To register Claude Code and Codex too, use `--agent all`.
+
+For a Node-capable agent or an existing Node script, set its working directory
+to the extracted folder and run:
+
+```js
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
+
+const result = spawnSync(process.execPath, [
+  resolve('install.mjs'), '--agent', 'copilot',
+], { shell: false, stdio: 'inherit', timeout: 330000 });
+if (result.error) throw result.error;
+if (result.status !== 0) throw new Error(`Installer exited with ${result.status}`);
+```
+
+The installer locates npm's `npm-cli.js` from the Node installation and runs it
+with Node directly. It uses the lockfile when present, disables dependency
+lifecycle scripts and executable shims, then registers and verifies both skills.
+It never invokes Bash, CMD, PowerShell, `npm.cmd`, or a shell launcher. Standard
+Node/npm layouts on Windows, macOS, and Linux are supported. If npm is installed
+separately, supply `--npm-cli` followed by its `npm-cli.js` path. Existing registry,
+proxy, and TLS settings are respected. Node with npm and registry access are
+required; no global installation or PATH modification is performed.
+
+After installation, keep that folder in place and use its `src/index.js` as the
+CLI entry point. The installer saves its location and Node executable in
+`~/.figma-cli/node-runtime.json`; both skills teach agents to read this local
+record when the CLI is not on PATH. These generated machine paths stay local. Copilot discovers `figma-cli` and `figma-make` under
+`~/.copilot/skills`, as documented by
+[GitHub](https://docs.github.com/en/copilot/concepts/agents/about-agent-skills) and
+[VS Code](https://code.visualstudio.com/docs/agent-customization/agent-skills).
+In a **local** Copilot CLI or VS Code agent session, reload skills and use
+`/figma-make` or ask to edit an open Make project. Confirm both skills in Copilot's
+Skills customization view, and use `skills status --agent copilot` through the
+Node entry point to check their installed content. Copilot must have an allowed
+local Node execution tool; skill discovery alone does not grant execution access.
+A cloud Copilot session cannot reach your local Figma Desktop.
+
+The installer does not connect, patch, or restart Figma. Skill conflicts are
+preserved and reported with a nonzero exit status. Installation tests verify
+registration and CLI execution; they do not certify a live Copilot model session.
 
 ### Run directly from Node.js
 

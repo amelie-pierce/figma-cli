@@ -2,6 +2,15 @@
 
 Full command reference for the Figma CLI. For quick start, see CLAUDE.md.
 
+## Node installation
+
+Launch the extracted package's `install.mjs` with Node, optionally passing
+`--agent copilot` (or `all`, `claude`, `codex`). It installs dependencies using
+npm's JavaScript entry point with `--ignore-scripts` and `--no-bin-links`, then
+registers and verifies the skills without a shell. `--npm-cli PATH` selects a
+separately installed `npm-cli.js`. It does not connect to Figma. See
+[Node installation and Copilot setup](README.md#install-with-nodejs-including-github-copilot).
+
 ## Direct Node.js invocation
 
 `figma-cli` examples name the command, not a required shell. A Node runner can

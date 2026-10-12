@@ -19,6 +19,10 @@ commands rather than assuming an upstream installation includes it.
   the installed `src/index.js` and invoke it with `process.execPath`, an argument
   array, and `shell: false`. Carry over the configured port/environment instead of
   invoking a `.sh` or `.cmd` wrapper. Use portable paths in shared instructions.
+  Node installations record `nodeExecutable` and `cliEntry` in
+  `~/.figma-cli/node-runtime.json`; read this local record when the package is not
+  on PATH. Verify its owner is `amelie-pierce/figma-cli` and both files still exist.
+  Keep these machine-specific values local; do not copy them into shared docs.
 - Check `make --help` for the commands needed by the task. If `make`, `create`, or
   `import` is missing, report the installed capability gap; do not invent a fork
   URL or assume upstream has the extension.
