@@ -20,7 +20,11 @@ export function makeWorkspace(action) {
     if (action === 'ensure-code' && !radios[0].checked) radios[0].click();
     return { root: document, mode: 'legacy-code', ready: radios[0].checked && treesIn(document).length === 1 };
   }
-  const roots = [...document.querySelectorAll('[data-testid="figmake-workspace-container"]')].filter(visible);
+  const candidates = [...document.querySelectorAll('[data-testid="figmake-workspace-container"]')];
+  const roots = candidates.filter(visible);
+  if (candidates.length === 1 && !roots.length) {
+    throw new Error('Make workspace is hidden or has no layout. Select this project tab in Figma Desktop, show its workspace, and let the editor finish loading before retrying.');
+  }
   if (roots.length !== 1) throw new Error('Make workspace is unavailable or ambiguous. Run make ui to inspect this layout.');
   const root = roots[0];
   const navigation = [...root.querySelectorAll('nav[aria-label="Editor views"]')].filter(visible);

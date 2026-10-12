@@ -4,6 +4,7 @@ export function makeUiSnapshot() {
     const rect = element.getBoundingClientRect();
     const style = getComputedStyle(element);
     return { tag: element.tagName, visible: rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden',
+      layout: { width: rect.width, height: rect.height, display: style.display, visibility: style.visibility },
       attributes: Object.fromEntries(['role', 'aria-label', 'aria-selected', 'aria-expanded', 'aria-current', 'data-testid', 'data-state', 'data-active', 'tabindex', 'style', 'class', 'type'].map(name => [name, element.getAttribute(name)?.slice(0, 500)]).filter(([, value]) => value != null)),
       checked: element.type === 'radio' ? element.checked : undefined };
   };

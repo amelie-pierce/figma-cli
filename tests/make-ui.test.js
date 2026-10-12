@@ -31,6 +31,8 @@ test('UI diagnostics omit editor/input contents, preserve UI labels and bound li
   });
   const serialized = JSON.stringify(result);
   assert.match(serialized, /Files/);
+  assert.equal(result.editorViews.layout.width, 100);
+  assert.equal(result.editorViews.layout.height, 20);
   assert.doesNotMatch(serialized, /private source|private input/);
   assert.ok(result.groups.every(group => group.nodes.length === 50));
 });

@@ -92,7 +92,8 @@ function fixture(options = {}) {
   const leaf = { ...box, get textContent() { return state.breadcrumbLeaf; } };
   const crumbs = { ...box, get children() { return [{ ...box, textContent: 'Test project' },
     { ...box, get textContent() { return state.breadcrumbFolder; } }, leaf]; } };
-  const workspace = { ...box, querySelectorAll: selector => document.querySelectorAll(selector) };
+  const workspace = { ...box, getBoundingClientRect: () => ({ width: state.workspaceWidth ?? 300, height: 200 }),
+    querySelectorAll: selector => document.querySelectorAll(selector) };
   const document = {
     title: 'Test Make file', body: { get innerText() { return state.offline ? "Some changes won't be synced" : ''; } },
     querySelectorAll(selector) {
@@ -204,6 +205,14 @@ test('Files workspace refuses multiple visible pane headers before selecting or 
   const { client, state } = await setup(t, { workspace: true, code: true, headers: 2 });
   await assert.rejects(client.inspect(), /Multiple visible Make Files panes/);
   assert.equal(state.tabClicks, 0);
+  assert.equal(state.dispatches.length, 0);
+});
+
+test('restored zero-size workspace reports manual readiness recovery without selecting hidden controls', async t => {
+  const { client, state } = await setup(t, { workspace: true, workspaceWidth: 0 });
+  await assert.rejects(client.inspect(), /Select this project tab in Figma Desktop/);
+  assert.equal(state.tabClicks, 0);
+  assert.equal(state.closeClicks, 0);
   assert.equal(state.dispatches.length, 0);
 });
 

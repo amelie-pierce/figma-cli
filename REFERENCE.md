@@ -62,6 +62,10 @@ manually; the CLI does not guess. If no Files tab exists, open one in the worksp
 reading source/input values. Use it for an unsupported layout. The old error
 `Expected exactly one Make Code tab` may indicate an outdated CLI adapter, not a
 missing project or a Desktop debugging/patch permission problem.
+After a Desktop restart, a restored background project may have a zero-size
+workspace until selected. `make ui` includes control dimensions to distinguish
+this state. Select that project tab and show its workspace manually; the CLI
+refuses to operate on hidden/unlaid-out workspace controls.
 
 ```sh
 figma-cli make list
