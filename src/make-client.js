@@ -36,7 +36,7 @@ function makeEditorAction(action) {
     selectedName: selected.length === 1 ? selected[0].closest('[role="treeitem"]')?.getAttribute('aria-label') : null,
   };
   if (action.type === 'ensure-code' || action.type === 'inspect') return summary;
-  if (action.type !== 'read' && action.type !== 'replace') throw new Error('Unknown Make editor action.');
+  if (!['read', 'replace', 'diagnostics'].includes(action.type)) throw new Error('Unknown Make editor action.');
   if (!ready) throw new Error('Make Code editor is not ready.');
   if (busy) throw new Error('Make is generating changes; wait until generation finishes.');
   if (offline) throw new Error('Make reports that some changes will not be synced.');
@@ -104,6 +104,23 @@ function makeEditorAction(action) {
     throw new Error('Make editor heading does not match the selected source file.');
   }
   const original = view.state.doc.toString();
+  if (action.type === 'diagnostics') {
+    if (original !== action.original) throw new Error('Make source changed while waiting for diagnostics.');
+    const fields = (view.state.values || []).filter(value => value?.diagnostics && typeof value.diagnostics.between === 'function');
+    const diagnostics = [];
+    const seen = new Set();
+    for (const field of fields) field.diagnostics.between(0, original.length, (from, to, value) => {
+      const entries = value.spec?.diagnostics || (value.spec?.diagnostic ? [value.spec.diagnostic] : []);
+      for (const entry of entries) {
+        if (typeof entry.message !== 'string') continue;
+        const item = { from, to, line: original.slice(0, from).split('\n').length,
+          severity: entry.severity, message: entry.message };
+        const key = JSON.stringify(item);
+        if (!seen.has(key)) { seen.add(key); diagnostics.push(item); }
+      }
+    });
+    return { available: fields.length > 0, diagnostics };
+  }
   if (action.type === 'read') return { content: original };
   // The comparison and dispatch share one synchronous page invocation, so a
   // user edit cannot slip between the final content check and replacement.
@@ -265,6 +282,17 @@ export class MakeClient {
     return this._operation(async (deadline) => ({ fileKey: this.fileKey, ...await this._ensureCode(deadline) }));
   }
 
+  diagnostics(path) {
+    return this._operation(async deadline => {
+      const { entry, content, sha256: hash } = await this._read(path, deadline);
+      // Selecting a file starts a language-server request; avoid reporting the
+      // initial empty lint state as if it were a completed response.
+      await this._bounded(() => new Promise(resolve => setTimeout(resolve, 1000)), deadline);
+      const result = await this._editor({ type: 'diagnostics', entry, original: content }, deadline);
+      return { fileKey: this.fileKey, path, sha256: hash, ...result };
+    });
+  }
+
   preview() {
     return this._operation(async deadline => {
       const contexts = new Map();
@@ -301,6 +329,12 @@ export class MakeClient {
           text: document.body.innerText.slice(0, 12000),
           errorOverlay: [...document.querySelectorAll('vite-error-overlay')].map(el => el.shadowRoot?.textContent || el.textContent),
           width: innerWidth, scrollWidth: document.documentElement.scrollWidth,
+          height: innerHeight, scrollHeight: document.documentElement.scrollHeight,
+          regions: [...document.querySelectorAll('[data-panel], [role="tablist"], [role="tabpanel"]')].map(el => {
+            const rect = el.getBoundingClientRect();
+            return { id: el.id, role: el.getAttribute('role'), label: el.getAttribute('aria-label'),
+              x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) };
+          }),
           buttons: [...document.querySelectorAll('button')].map(el => ({ text: el.textContent, disabled: el.disabled })),
           controls: document.querySelectorAll('input,select,textarea,[role="switch"],[role="combobox"]').length
         }))()`;
@@ -322,8 +356,32 @@ export class MakeClient {
     });
   }
 
-  read(path) {
+  read(path, { remote = false } = {}) {
     return this._operation(async (deadline) => {
+      if (remote) {
+        validateImportFiles([{ path, content: '' }]);
+        await this._ensureCode(deadline);
+        const existing = await listMakeFiles(this._treeTransport(deadline), {
+          timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
+        });
+        if (!path.startsWith('node_modules/') && !existing.some(entry => entry.kind === 'file' && entry.path === path)) {
+          throw new Error(`Make source file is missing: ${path}`);
+        }
+        const candidates = [...existing].sort((a, b) => Number(b.path.startsWith('src/')) - Number(a.path.startsWith('src/')));
+        const bridge = await this._fileBridge(candidates, deadline);
+        try {
+          const reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
+            'fs/file/read', { path: `code/${path}`, encoding: 'base64' }, randomUUID(),
+          ]);
+          if (!reply.success || reply.data?.path !== `code/${path}` || reply.data?.encoding !== 'base64' || typeof reply.data?.content !== 'string') {
+            throw new Error(`Make remote source read failed: ${path}`);
+          }
+          const bytes = Buffer.from(reply.data.content, 'base64');
+          if (bytes.toString('base64') !== reply.data.content) throw new Error('Invalid remote source encoding');
+          const content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+          return { fileKey: this.fileKey, path, content, sha256: sha256(content) };
+        } finally { await bridge.dispose(); }
+      }
       const result = await this._read(path, deadline);
       return { fileKey: this.fileKey, path, content: result.content, sha256: result.sha256 };
     });

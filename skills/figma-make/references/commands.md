@@ -10,16 +10,25 @@ These examples are templates; choose paths/content for the actual requested work
 | Check readiness | `figma-cli make inspect --file KEY` |
 | Inventory source | `figma-cli make files --file KEY` |
 | Read source and hash | `figma-cli make read src/App.tsx --file KEY` |
+| Read saved Markdown or installed kit source | `figma-cli make read AGENTS.md --remote --file KEY` |
 | Create a new module | `figma-cli make create src/Component.tsx --file KEY --from -` |
 | Import new modules | `figma-cli make import --file KEY --manifest - --timeout 120000` |
 | Replace existing source | `figma-cli make replace src/App.tsx --file KEY --from - --expected-sha256 HASH` |
 | Verify expected content | `figma-cli make verify --file KEY --manifest - --timeout 120000` |
 | Inspect the running preview | `figma-cli make preview --file KEY` |
+| Read source editor diagnostics | `figma-cli make diagnostics src/App.tsx --file KEY` |
 
 Read commands return `{fileKey,path,content,sha256}`. `--out` is optional and writes
 a local source copy; omit it in a direct-to-Make/no-local-app-code workflow.
 `--from -` and `--manifest -` accept blocking stdin, including large source payloads.
 No special stdin preloader or temporary source file is needed.
+
+Use `read --remote` when Make displays Markdown as a preview instead of editable
+text, or to inspect an attached kit under `node_modules/`. It reads saved UTF-8
+source through the observed filesystem connection without changing the file.
+Project paths must appear in the source inventory; installed
+package paths under `node_modules/` may be hidden from that inventory. This reads
+saved content, so use the ordinary read for unsaved editor changes.
 
 ## Transfer source safely
 
@@ -90,6 +99,11 @@ verify each before continuing. Do not treat import as an upsert.
 - `changed: false` means replacement found identical content; it is not a new save.
 - `preview` reports the current rendered app. Check the intended headings/content
   as well as `errorOverlay`; an empty overlay alone does not prove the right app ran.
+- `diagnostics` reports the selected editor's current lint ranges. Only
+  `available: true` confirms that lint state was readable; an empty array with
+  `available: false` does not mean error-free. Language-server updates can lag a save.
+  Preview `regions` reports panel and tab bounds for layout checks; a rendered app
+  is not evidence that its TypeScript editor is free of errors.
 
 The adapter uses Figma Desktop's loaded Make editor and an observed authenticated
 filesystem socket. It is an experimental private protocol, not a public Figma API.

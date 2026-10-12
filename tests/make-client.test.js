@@ -32,6 +32,7 @@ function fixture(options = {}) {
   const view = {
     state: {
       get readOnly() { return state.readonly; },
+      get values() { return state.lintValues; },
       doc: { toString: () => state.content, get length() { return state.content.length; } },
     },
     dispatch(transaction) {
@@ -141,6 +142,77 @@ test('inspect/list/read use Code and return exact file identity and content hash
     fileKey: 'ExactKey', path: 'src/App.tsx', content: state.content, sha256: hash(state.content),
   });
   assert.equal(state.dispatches.length, 0);
+});
+
+test('diagnostics reads editor ranges without changing source and distinguishes unavailable lint', async (t) => {
+  const { client, state } = await setup(t, {}, 4000);
+  assert.deepEqual((await client.diagnostics('src/App.tsx')).diagnostics, []);
+  assert.equal((await client.diagnostics('src/App.tsx')).available, false);
+  state.lintValues = [{ diagnostics: { between(_from, _to, visit) {
+    const value = { spec: { diagnostics: [{ severity: 'error', message: 'Missing component type' }] } };
+    visit(0, 6, value); visit(0, 6, value);
+  } } }];
+  const result = await client.diagnostics('src/App.tsx');
+  assert.equal(result.available, true);
+  assert.equal(result.sha256, hash(state.content));
+  assert.deepEqual(result.diagnostics, [{ from: 0, to: 6, line: 1, severity: 'error', message: 'Missing component type' }]);
+  assert.equal(state.dispatches.length, 0);
+});
+
+test('remote read returns exact saved UTF-8 including a BOM and disposes the read-only bridge', async (t) => {
+  const { client, state } = await setup(t);
+  const content = '\uFEFF# Kit guidance\nReadable source 😀\n';
+  let disposed = false;
+  client._fileBridge = async () => ({
+    invoke: async (_fn, [type, data]) => {
+      assert.equal(type, 'fs/file/read');
+      assert.deepEqual(data, { path: 'code/src/App.tsx', encoding: 'base64' });
+      return { success: true, data: { ...data, content: Buffer.from(content).toString('base64') } };
+    },
+    dispose: async () => { disposed = true; },
+  });
+  assert.deepEqual(await client.read('src/App.tsx', { remote: true }), {
+    fileKey: 'ExactKey', path: 'src/App.tsx', content, sha256: hash(content),
+  });
+  assert.equal(disposed, true);
+  assert.equal(state.dispatches.length, 0);
+});
+
+test('remote read admits hidden package source but rejects missing project paths and traversal', async (t) => {
+  const { client } = await setup(t);
+  let calls = 0;
+  client._fileBridge = async () => ({
+    invoke: async (_fn, [type, data]) => {
+      calls++;
+      assert.equal(type, 'fs/file/read');
+      return { success: true, data: { ...data, content: '' } };
+    },
+    dispose: async () => {},
+  });
+  const path = 'node_modules/example/guidelines/Guidelines.md';
+  assert.equal((await client.read(path, { remote: true })).path, path);
+  await assert.rejects(client.read('missing.md', { remote: true }), /missing/);
+  await assert.rejects(client.read('node_modules/../../private', { remote: true }));
+  assert.equal(calls, 1);
+});
+
+test('remote read rejects mismatched identity, encoding and malformed text, always releasing the bridge', async (t) => {
+  for (const data of [
+    { path: 'code/other.tsx', encoding: 'base64', content: '' },
+    { path: 'code/src/App.tsx', encoding: 'utf8', content: '' },
+    { path: 'code/src/App.tsx', encoding: 'base64', content: 'not base64!' },
+    { path: 'code/src/App.tsx', encoding: 'base64', content: Buffer.from([0xff]).toString('base64') },
+  ]) {
+    const { client, state } = await setup(t);
+    let disposed = false;
+    client._fileBridge = async () => ({
+      invoke: async () => ({ success: true, data }),
+      dispose: async () => { disposed = true; },
+    });
+    await assert.rejects(client.read('src/App.tsx', { remote: true }));
+    assert.equal(disposed, true);
+    assert.equal(state.dispatches.length, 0);
+  }
 });
 
 test('replacement saves private original and metadata before one dispatch, then verifies its server acknowledgement', async (t) => {

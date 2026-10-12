@@ -23,6 +23,8 @@ figma-cli make list
 figma-cli make inspect --file <make-file-key>
 figma-cli make files --file <make-file-key>
 figma-cli make read src/App.tsx --file <make-file-key>
+figma-cli make read AGENTS.md --remote --file <make-file-key>
+figma-cli make diagnostics src/App.tsx --file <make-file-key>
 figma-cli make replace src/App.tsx --file <make-file-key> --from - --expected-sha256 <hash-from-read>
 figma-cli make create src/Component.tsx --file <make-file-key> --from -
 figma-cli make import --file <make-file-key> --manifest - --timeout 120000

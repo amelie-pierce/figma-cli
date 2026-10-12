@@ -55,10 +55,14 @@ target(make.command('preview').description('Inspect the running Make preview thr
 target(make.command('files').description('Expand and list the complete source-file tree'))
   .action(options => withClient(options, async client => report(await client.files())));
 
+target(make.command('diagnostics <path>').description('Read the selected source editor diagnostics when available'))
+  .action((path, options) => withClient(options, async client => report(await client.diagnostics(path))));
+
 target(make.command('read <path>').description('Read a source file and its SHA-256'))
+  .option('--remote', 'Read saved source through the filesystem bridge, including Markdown guidance')
   .option('--out <local-file>', 'Write source to a new local file instead of stdout')
   .action((path, options) => withClient(options, async client => {
-    const result = await client.read(path);
+    const result = await client.read(path, { remote: options.remote });
     if (!options.out) return report(result);
     const outputPath = resolve(options.out);
     writeFileSync(outputPath, result.content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
