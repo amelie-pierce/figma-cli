@@ -4,7 +4,7 @@
 
 `figma-ds-cli` is a CLI tool for managing Figma design systems. It connects to Figma Desktop via Chrome DevTools Protocol and executes JavaScript against the Figma Plugin API.
 
-**Location:** `/Users/sil/claude/figma-cli`
+**Location:** the local figma-cli checkout
 **npm package:** `figma-ds-cli` (v1.1.0)
 **GitHub:** https://github.com/silships/figma-cli
 
@@ -139,7 +139,7 @@ page.children.filter(n => n.name.startsWith('Stream-')).forEach((f, i) => {
 
 4. **Node IDs** are in format `PAGE:NODE` like `1:92`. Get them from query output.
 
-5. **Working directory** must be `/Users/sil/claude/figma-cli` to run commands.
+5. **Working directory** must be the local figma-cli checkout to run commands.
 
 ## File Structure
 

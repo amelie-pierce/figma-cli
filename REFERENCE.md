@@ -2,6 +2,14 @@
 
 Full command reference for the Figma CLI. For quick start, see CLAUDE.md.
 
+## Direct Node.js invocation
+
+`figma-cli` examples name the command, not a required shell. A Node runner can
+invoke the installed `src/index.js` with `process.execPath`, an argument array,
+and `shell: false`. Preserve the configured `FIGMA_PORT` or pass `--port`.
+See [the portable Node example](README.md#run-directly-from-nodejs) and
+[stdin transfer pattern](skills/figma-make/references/commands.md#transfer-source-safely).
+
 ## Agent skills
 
 `figma-cli skills install` registers all bundled skills for Claude Code, Codex,

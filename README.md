@@ -23,6 +23,8 @@ Read the figma-make skill. Reuse an existing Figma Desktop connection, or set up
 
 Verify the connection with `figma-cli make list`. Then ask me for the Make URL and desired changes.
 
+If shell launchers are unavailable, invoke the installed JavaScript entry point with Node.js and an argument array (shell: false), preserving the configured port. Do not embed personal absolute paths in shared instructions.
+
 For Make work, write readable React/TSX directly through the CLI using stdin. Keep modules separate, avoid local application source files and computer-use tools, and verify saved source and the preview after editing. Keep publishing separate from editing.
 ```
 
@@ -74,6 +76,45 @@ the table above if you no longer want them.
 This release is distributed from GitHub, not the public npm registry. To update,
 install a newer tag from **this fork** and run `skills status` again. The upstream
 npm update notification is disabled so it cannot replace the Make extension.
+
+### Run directly from Node.js
+
+The CLI is a JavaScript program. An IDE or agent with a Node.js runtime can run
+it directly, without a Bash, CMD, PowerShell, or npm-generated launcher. Once the
+package and dependencies are installed, set the runner's working directory to
+the package root (the directory containing `package.json` and `src/`).
+
+```js
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
+
+const cliEntry = resolve('src/index.js');
+const result = spawnSync(process.execPath, [
+  cliEntry, '--port', '9333', 'make', 'list',
+], {
+  shell: false,
+  encoding: 'utf8',
+  env: process.env,
+  timeout: 15000,
+});
+
+if (result.stdout) process.stdout.write(result.stdout);
+if (result.stderr) process.stderr.write(result.stderr);
+if (result.error) throw result.error;
+if (result.status !== 0) throw new Error(`CLI exited with ${result.status}`);
+```
+
+Use your configured Figma port; `9333` is an example. If the package is a local
+dependency instead, resolve its entry point with
+`createRequire(import.meta.url).resolve('@amelie-pierce/figma-cli/src/index.js')`
+using `createRequire` from `node:module`. No personal absolute path is needed.
+Pass source or manifests through the process API's `input` option, and pass each
+CLI argument as a separate array element. See the
+[Node source-transfer example](skills/figma-make/references/commands.md#transfer-source-safely).
+
+This is a launch option for environments where Node execution is allowed.
+Initial setup commands such as `connect` can invoke operating-system helpers;
+the direct Make editing workflow uses the existing Desktop connection.
 
 ### Connect and edit Make
 

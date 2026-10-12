@@ -16,6 +16,15 @@ If the `figma-cli` command is not found, the tool isn't installed yet — see
 **Installation** at the bottom. Never show raw terminal commands to the user;
 run them silently and give friendly feedback.
 
+## Direct Node.js invocation
+
+If the user requests Node execution or shell launchers are unavailable, invoke
+this package's `src/index.js` with `process.execPath` and an argument array using
+`shell: false`. Preserve the workspace's configured port/environment. Resolve the
+package location at runtime; do not publish a user's absolute machine path.
+See the README's **Run directly from Node.js** example. Initial connection/setup
+commands may still invoke operating-system helpers.
+
 ## Connect (pick one mode)
 - `figma-cli connect` — **Yolo** (default): patches Figma Desktop once, fully automatic.
 - `figma-cli connect --browser` — **Browser**: drives Figma in a Chromium browser via

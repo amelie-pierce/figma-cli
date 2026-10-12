@@ -32,40 +32,54 @@ saved content, so use the ordinary read for unsaved editor changes.
 
 ## Transfer source safely
 
-Build JSON with a serializer; do not splice React source into shell command text.
-Use a process API with an argument array and stdin. For example, when Python is
-available, run a quoted heredoc in the shell so backticks and `$()` in source stay
-literal. The Python snippet below shows the pattern; its `new_source` is a prepared
-in-memory string, not a file to create locally.
+Build JSON with a serializer. Use Node's process API with an argument array and
+stdin, keeping `shell: false`. This invokes the JavaScript entry point directly,
+so it does not depend on Bash, CMD, PowerShell, Python, or a shell launcher.
+Set the runner's working directory to the installed package root, or resolve the
+entry point from a local dependency as described in the README. Preserve the
+workspace's configured Figma port and other required environment settings.
 
-```python
-import json
-import subprocess
+```js
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
 
-cli = "figma-cli"  # Replace with the workspace's resolved launcher.
-key = "EXACT_MAKE_FILE_KEY"
+const cliEntry = resolve('src/index.js'); // Working directory: CLI package root.
+const key = 'EXACT_MAKE_FILE_KEY';
+const port = process.env.FIGMA_PORT || '9333'; // Use the configured Figma port.
 
-def run_make(*args, payload=None):
-    completed = subprocess.run(
-        [cli, "make", *args, "--file", key],
-        input=payload, text=True, capture_output=True, timeout=135,
-    )
-    if completed.returncode:
-        # Preserve partial acknowledgements/backup information. Never auto-retry.
-        raise RuntimeError(completed.stderr or completed.stdout)
-    return json.loads(completed.stdout)
+function runMake(args, input) {
+  const result = spawnSync(process.execPath, [
+    cliEntry, '--port', port, 'make', ...args, '--file', key,
+  ], {
+    shell: false,
+    encoding: 'utf8',
+    env: process.env,
+    input,
+    timeout: 135000,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  // Preserve partial acknowledgements and backup information, including on error.
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.error || result.status !== 0) {
+    if (result.stdout) process.stderr.write(result.stdout);
+    throw result.error || new Error(`CLI exited with ${result.status}`);
+  }
+  return JSON.parse(result.stdout);
+}
 
-original = run_make("read", "src/App.tsx")
-# Prepare new_source from original["content"] and the requested change.
-# Only add required imports after their modules have been created.
-saved = run_make(
-    "replace", "src/App.tsx", "--from", "-",
-    "--expected-sha256", original["sha256"], payload=new_source,
-)
-verification = run_make(
-    "verify", "--manifest", "-", "--timeout", "120000",
-    payload=json.dumps({"files": [{"path": "src/App.tsx", "content": new_source}]}),
-)
+const original = runMake(['read', 'src/App.tsx']);
+// Prepare newSource in memory from original.content and the requested change.
+// Only add required imports after their modules have been created.
+const saved = runMake([
+  'replace', 'src/App.tsx', '--from', '-',
+  '--expected-sha256', original.sha256,
+], newSource);
+console.log(saved); // Retain the returned backup path.
+
+const verification = runMake([
+  'verify', '--manifest', '-', '--timeout', '120000',
+], JSON.stringify({ files: [{ path: 'src/App.tsx', content: newSource }] }));
+console.log(verification);
 ```
 
 Use the same manifest shape for `import` and `verify`:

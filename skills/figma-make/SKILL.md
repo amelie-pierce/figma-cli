@@ -14,7 +14,11 @@ commands rather than assuming an upstream installation includes it.
 
 - Read workspace instructions and use their configured CLI launcher. Otherwise
   resolve `figma-cli` from PATH. The command examples below use `figma-cli` as a
-  placeholder for that resolved executable; do not bypass its runtime/port setup.
+  placeholder for that resolved executable; preserve its runtime/port setup.
+  When the user requests Node execution or shell launchers are unavailable, resolve
+  the installed `src/index.js` and invoke it with `process.execPath`, an argument
+  array, and `shell: false`. Carry over the configured port/environment instead of
+  invoking a `.sh` or `.cmd` wrapper. Use portable paths in shared instructions.
 - Check `make --help` for the commands needed by the task. If `make`, `create`, or
   `import` is missing, report the installed capability gap; do not invent a fork
   URL or assume upstream has the extension.
