@@ -81,9 +81,16 @@ function fixture(options = {}) {
   const tree = { ...box, parentElement: {}, querySelectorAll: () => [...(state.folderPresent ? [folderRow] : []), fileRow] };
   viewport.parentElement = tree;
   const stop = { ...box, innerText: 'Stop', getAttribute: () => 'Stop' };
-  const filesTab = { ...box, get innerText() { return state.selected ? state.rowName : 'Files'; },
-    click() { state.tabClicks++; state.code = true; } };
-  const closeTab = { ...box, click() { state.closeClicks++; }, parentElement: { querySelectorAll: () => [filesTab, closeTab] } };
+  // Each Files tab is distinct; its title is a filename (state.tabTitles), never the project name.
+  const filesTabPairs = [];
+  const filesTabPair = index => filesTabPairs[index] ??= (() => {
+    const tab = { ...box, get innerText() { return state.tabTitles?.[index] ?? (state.selected ? state.rowName : 'Files'); },
+      click() { state.tabClicks++; state.clickedTabs = [...(state.clickedTabs || []), index]; state.code = true; } };
+    const close = { ...box, click() { state.closeClicks++; }, parentElement: { querySelectorAll: () => [tab, close] } };
+    return [tab, close];
+  })();
+  const [filesTab, closeTab] = filesTabPair(0);
+  const closeTabs = () => Array.from({ length: state.filesTabs }, (_, index) => filesTabPair(index)[1]);
   const browserTab = { ...box, innerText: 'Browser', click() { state.previewClicks = (state.previewClicks || 0) + 1; state.code = false; } };
   const addTab = { ...box, getAttribute: () => String(!!state.menuOpen),
     click() { state.addClicks = (state.addClicks || 0) + 1; state.menuOpen = true; } };
@@ -91,7 +98,7 @@ function fixture(options = {}) {
     click() { state.filesTabs++; state.code = true; state.menuOpen = false; state.filesClicks = (state.filesClicks || 0) + 1; } };
   const menu = { ...box, querySelectorAll: () => Array(state.menuOptions ?? 1).fill(filesOption) };
   const navigation = { ...box, querySelectorAll: selector => selector === 'button[aria-label="Close Files tab"]'
-    ? Array(state.filesTabs).fill(closeTab) : [browserTab, filesTab, closeTab] };
+    ? closeTabs() : [browserTab, filesTab, closeTab] };
   const showFiles = { ...box, click() { state.treeVisible = true; } };
   const filesHeader = { ...box, querySelectorAll: () => state.treeVisible ? [] : [showFiles] };
   const leaf = { ...box, get textContent() { return state.breadcrumbLeaf; } };
@@ -102,7 +109,7 @@ function fixture(options = {}) {
   const document = {
     title: 'Test Make file', body: { get innerText() { return state.offline ? "Some changes won't be synced" : ''; } },
     querySelectorAll(selector) {
-      if (selector === 'nav[aria-label="Editor views"] button[aria-label="Close Files tab"]') return Array(state.filesTabs).fill(closeTab);
+      if (selector === 'nav[aria-label="Editor views"] button[aria-label="Close Files tab"]') return closeTabs();
       if (selector === 'nav[aria-label="Editor views"] button[aria-label="Add workspace tab"]') return Array(state.addControls ?? 1).fill(addTab);
       if (selector === '[role="menu"]') return state.menuOpen ? Array(state.menuCount ?? 1).fill(menu) : [];
       if (selector === 'input[type="radio"][value="code"]') return state.workspace ? [] : [radio];
@@ -199,14 +206,41 @@ test('Files workspace reuses one visible pane among multiple tabs and reveals a 
   }
 });
 
-test('Files workspace refuses to guess which inactive tab to open', async t => {
-  for (const filesTabs of [2]) {
-    const { client, state } = await setup(t, { workspace: true, filesTabs });
-    await assert.rejects(client.inspect(), /Multiple Make Files tabs/);
-    assert.equal(state.tabClicks, 0);
-    assert.equal(state.closeClicks, 0);
-    assert.equal(state.dispatches.length, 0);
-  }
+test('Files workspace reuses one inactive Files tab whose title is a filename, not the project name', async t => {
+  const { client, state } = await setup(t, { workspace: true, filesTabs: 1, tabTitles: ['Inputs.tsx'] });
+  const info = await client.inspect();
+  assert.equal(info.codeReady, true);
+  assert.equal(info.workspaceMode, 'files-workspace');
+  assert.equal((await client.read('src/App.tsx')).sha256, hash(state.content));
+  assert.deepEqual(state.clickedTabs, [0]);
+  assert.equal(state.addClicks || 0, 0);
+  assert.equal(state.filesTabs, 1);
+  assert.equal(state.closeClicks, 0);
+  assert.equal(state.dispatches.length, 0);
+});
+
+test('several inactive Files tabs on the exact project page reuse the first in tab order', async t => {
+  const { client, state } = await setup(t, { workspace: true, filesTabs: 3,
+    tabTitles: ['Inputs.tsx', 'ToggleControls.d.ts', 'HInge Connector Selector'] });
+  assert.equal((await client.inspect()).codeReady, true);
+  assert.deepEqual((await client.files()).map(entry => entry.path), ['src', 'src/App.tsx']);
+  assert.deepEqual(state.clickedTabs, [0]);
+  assert.equal(state.addClicks || 0, 0);
+  assert.equal(state.filesTabs, 3);
+  assert.equal(state.closeClicks, 0);
+  assert.equal(state.dispatches.length, 0);
+});
+
+test('inactive Files tabs on another project page are never selected', async t => {
+  const { client, state } = await setup(t, { workspace: true, filesTabs: 2, tabTitles: ['App.tsx', 'Inputs.tsx'] });
+  // The renderer navigated to a different project after connecting by exact key.
+  state.key = 'OtherKey';
+  await assert.rejects(client.inspect(), /no longer matches the requested file key/);
+  await assert.rejects(client.files(), /no longer matches the requested file key/);
+  assert.equal(state.tabClicks, 0);
+  assert.equal(state.addClicks || 0, 0);
+  assert.equal(state.filesTabs, 2);
+  assert.equal(state.dispatches.length, 0);
 });
 
 test('Files workspace opens one new tab when none exists and reuses it on subsequent reads', async t => {

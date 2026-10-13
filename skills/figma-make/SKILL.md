@@ -32,8 +32,8 @@ commands rather than assuming an upstream installation includes it.
 - The adapter supports both Code/Preview and Files/Browser workspaces. Files tab
   titles may become filenames. A missing old Code tab is not a CDP permission
   failure: update the CLI adapter and use `make ui --file KEY` for bounded UI
-  metadata. Preserve customized adapters when updating. If multiple Files tabs
-  exist with none active, ask the user to select the intended one. When no Files
+  metadata. Preserve customized adapters when updating. If Files tabs exist with
+  none active, the CLI reuses the first one on that exact project page. When no Files
   tab exists, the CLI automatically opens one through Add workspace tab → Files.
   Missing, disabled, or ambiguous menu controls stop the operation with an error.
   Do not patch/restart Desktop to fix a selector mismatch.

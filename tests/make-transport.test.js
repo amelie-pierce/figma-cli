@@ -89,6 +89,17 @@ test('connects by exact key or canonical URL, never by a title or substring', as
   await assert.rejects(client.connect('https://evil.test/make/ExactKey'), /exact Figma Make file key/);
 });
 
+test('selects the requested project page by key when another project page is titled with its Files filename', async (t) => {
+  const { port } = await fakeCDP(t, { targets: (make) => [
+    make('OtherKey', { title: 'App.tsx – Figma Make' }),
+    make('ExactKey', { title: 'App.tsx – Figma Make' }),
+  ] });
+  const client = clientFor(t, port);
+  await client.connect('ExactKey');
+  assert.equal(client.target.fileKey, 'ExactKey');
+  assert.equal(client.target.url, 'https://www.figma.com/make/ExactKey/Title');
+});
+
 test('rejects duplicate tabs for the same file instead of choosing one', async (t) => {
   const { port, requests } = await fakeCDP(t, { targets: (make) => [make(), make('ExactKey', { id: 'duplicate' })] });
   await assert.rejects(clientFor(t, port).connect('ExactKey'), /Multiple open/);

@@ -53,7 +53,10 @@ export function makeWorkspace(action) {
   }
   if (!treesIn(root).length && action === 'ensure-code') {
     if (headers.length === 1) return { root, mode: 'files-workspace', ready: false };
-    if (files.length !== 1) throw new Error('Multiple Make Files tabs are open with none active. Select the intended Files tab, then retry.');
+    // Every Files tab in this page belongs to the page's project: the caller's
+    // guard verified the exact file key in location before this ran, and each
+    // project is a separate CDP target. Any of them shows the same source tree,
+    // so reuse the first in tab order. Titles are filenames, never identities.
     files[0].click();
   }
   return { root, mode: 'files-workspace', ready: treesIn(root).length === 1 && [...root.querySelectorAll('[data-testid="files-workspace-header"]')].filter(visible).length === 1 };
