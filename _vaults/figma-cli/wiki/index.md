@@ -19,7 +19,7 @@ Wiki notes never link into `raw/`, which is untracked.
 
 ## Authority order
 
-When sources disagree: live code (`src/`, `tests/`) wins, then the repository docs (`CLAUDE.md`, `REFERENCE.md`, `skills/figma-make/SKILL.md`), then these wiki notes, then session memory.
+When sources disagree: live code (`src/`, `tests/`) wins, then the repository docs (`AGENTS.md`, `REFERENCE.md`, `skills/figma-make/SKILL.md`), then these wiki notes, then session memory.
 Volatile detail such as selectors, error strings and option names stays by pointer to the source file, not copied here.
 
 ## Taxonomy
