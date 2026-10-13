@@ -5,7 +5,9 @@ import { MakeTransport } from '../make-transport.js';
 import { MakeClient } from '../make-client.js';
 import { decodeMakeSource } from '../make-source.js';
 import { requireSessionOnly } from '../make-session.js';
-import { driftExitCode } from '../make-drift.js';
+import { driftExitCode, digest } from '../make-drift.js';
+import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, planSync, validatePlanDigest, VENDOR_ROOT,
+  writeApplyOutputs } from '../make-sync.js';
 
 const make = program.command('make')
   .description('Experimental direct source-file editing in Figma Make Desktop')
@@ -20,6 +22,7 @@ function failure(error) {
     ...(error.endpoint ? { code: error.code, port: error.port, endpoint: error.endpoint, reason: error.reason, recovery: error.recovery } : {}),
     ...(error.backupPath ? { backupPath: error.backupPath } : {}),
     ...(error.version ? { version: error.version } : {}),
+    ...(error.completedWrites ? { completedWrites: error.completedWrites } : {}),
     ...(error.code === 'MAKE_SESSION_ONLY_REQUIRED' ? { code: error.code } : {}),
     ...(error.sessionWrites ? { sessionWrites: error.sessionWrites, requestedPaths: error.requestedPaths, observedWrites: error.observedWrites } : {}) }));
   process.exitCode = 1;
@@ -198,4 +201,85 @@ target(make.command('save-version').description('Save only the exact expected pe
       throw new Error(`Make version was saved but the local receipt failed: ${error.message}`);
     }
     report(result);
+  }));
+
+target(make.command('export-delta').description('Export a clean saved Make delta for atomic-cli intake-make-delta'), 120000)
+  .requiredOption('--manifest <source>', 'Trusted VENDOR.json baseline')
+  .requiredOption('--who <identity>', 'Engineer requesting the export')
+  .requiredOption('--out <file>', 'New private delta JSON file')
+  .requiredOption('--candidate-dir <dir>', 'Workspace candidates at full Make paths; files differing from the baseline are reported as conflicts')
+  .option('--path <path>', 'Exact vendor path; repeat to limit the delta', (path, paths = []) => [...paths, path])
+  .option('--dependency <path>', 'Exact unchanged support file; repeat as needed', (path, paths = []) => [...paths, path])
+  .action(options => withClient(options, async client => {
+    const out = resolve(options.out);
+    if (existsSync(out)) throw new Error('Delta output already exists.');
+    const scan = await client.inventoryVendor(VENDOR_ROOT, { includeBytes: true });
+    const delta = exportDelta({ ...scan, baselineBytes: sourceBytes(options.manifest), candidateDir: options.candidateDir,
+      fileKey: client.fileKey, who: options.who, paths: options.path, dependencyPaths: options.dependency });
+    writeFileSync(out, `${JSON.stringify(delta, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    report({ outputPath: out, fileKey: client.fileKey, version: delta.make.savedVersionGitSha, conflicts: delta.conflicts,
+      files: delta.files.map(({ path, status, before, after, workspace, conflict }) => ({ path, status, before, after, workspace, conflict })) });
+  }));
+
+target(make.command('sync').description('Plan or apply an explicit package-bound workspace-to-Make sync'), 120000)
+  .requiredOption('--package <dir>', 'atomic-cli package-make-kit output directory')
+  .requiredOption('--manifest <file>', 'Trusted VENDOR.json baseline')
+  .requiredOption('--request <file>', 'Explicit sync request JSON')
+  .requiredOption('--candidate-dir <dir>', 'Root containing explicitly scoped workspace component candidates')
+  .option('--generation-manifest <file>', 'Committed generated.manifest.json bytes, needed for token updates')
+  .option('--plan-out <file>', 'New reviewed plan JSON file (dry-run default)')
+  .option('--apply <file>', 'Apply this reviewed plan only')
+  .option('--receipt-out <file>', 'New private receipt JSON file (required with --apply)')
+  .option('--backup-dir <dir>', 'Private backup directory for replaced/deleted Make files')
+  .option('--title <title>', 'Saved Make version title', 'AtomicAUI explicit sync')
+  .action(options => withClient(options, async client => {
+    if (!!options.apply === !!options.planOut) throw new Error('Choose exactly one of --plan-out or --apply.');
+    if (options.apply && !options.receiptOut) throw new Error('Apply requires --receipt-out.');
+    const output = resolve(options.apply ? options.receiptOut : options.planOut);
+    if (existsSync(output) || (options.apply && existsSync(afterManifestPath(output)))) {
+      throw new Error('Output file already exists; no sync was attempted.');
+    }
+    const requestBytes = sourceBytes(options.request);
+    const request = parseRequest(requestBytes, client.fileKey);
+    const packageData = parsePackage(resolve(options.package));
+    const baselineBytes = sourceBytes(options.manifest);
+    const generationManifestBytes = options.generationManifest ? sourceBytes(options.generationManifest) : null;
+    const scan = await client.inventoryVendor(VENDOR_ROOT, { includeBytes: true });
+    const { plan, vendorBytes } = planSync({ request, requestSha256: digest(requestBytes), packageData,
+      baselineBytes, candidateDir: options.candidateDir, generationManifestBytes,
+      ...scan, fileKey: client.fileKey });
+    if (!options.apply) {
+      writeFileSync(output, `${JSON.stringify(plan, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+      return report({ planPath: output, digest: plan.digest, fileKey: plan.fileKey, makeVersion: plan.makeVersion,
+        workspaceCommit: plan.workspaceCommit, unresolved: plan.unresolved, outOfScopeDrift: plan.outOfScopeDrift,
+        actions: plan.actions });
+    }
+    const reviewed = validatePlanDigest(JSON.parse(sourceBytes(options.apply).toString('utf8')));
+    if (reviewed.digest !== plan.digest) throw new Error('Reviewed sync plan is stale; no Make files were written.');
+    let result;
+    try {
+      result = await applySync(client, { plan, vendorBytes, packageData,
+        candidateDir: options.candidateDir, generationManifestBytes, title: options.title,
+        backupDir: options.backupDir ? resolve(options.backupDir) : undefined });
+    } catch (error) {
+      if (error.completedWrites?.length || error.version) {
+        const vendorWritten = error.completedWrites?.some(write => write.path === `${VENDOR_ROOT}/VENDOR.json`);
+        const manifestPath = writeApplyOutputs(output, { schema: 'figma-cli/make-sync-receipt@1', outcome: 'uncertain',
+          planDigest: plan.digest, fileKey: client.fileKey, requestId: request.requestId,
+          completedWrites: error.completedWrites, version: error.version || null,
+          error: error.message }, vendorWritten ? vendorBytes : null);
+        error.message += ` Recovery receipt: ${output}. Run make drift with --manifest ${manifestPath || 'the trusted baseline'} to read the saved version and pending paths before reconciling.`;
+      }
+      throw error;
+    }
+    const { version, drift, writes } = result;
+    const receipt = { schema: 'figma-cli/make-sync-receipt@1', requestId: request.requestId, who: request.who,
+      direction: request.direction, fileKey: client.fileKey, scope: plan.scope, choices: request.choices,
+      planDigest: plan.digest, baselineManifestSha256: plan.baselineManifestSha256,
+      beforeManifestSha256: plan.vendorBefore.sha256,
+      workspaceCommit: plan.workspaceCommit, previousMakeVersion: plan.makeVersion,
+      makeVersion: version, files: writes, generatedTreeDigest: plan.generatedTreeDigest,
+      verification: 'saved-clean-drift-matched; fresh-sandbox-reload-pending' };
+    const manifestPath = writeApplyOutputs(output, receipt, vendorBytes);
+    report({ receiptPath: output, afterManifestPath: manifestPath, makeVersion: version, drift: { ok: drift.ok, counts: drift.counts, batches: drift.batches } });
   }));

@@ -289,7 +289,16 @@ under `src/vendor/atomic-aui`, compares raw bytes and SHA-256, and fails when
 the inventory or saved state cannot be verified. `--receipt` can pin an external
 manifest hash and saved git SHA; `--json` returns the full result. Make's saved
 state is read from the Make provider's direct React props; unrelated app graphs
-are not traversed.
+are not traversed. Large trees are read in bounded renderer batches, with the
+saved version checked at every boundary. When present, `tokens/generated.manifest.json`
+must describe the exact generated tree, including hidden files.
+
+`make export-delta` writes an explicit saved-version Make delta for workspace
+`atomic-cli intake-make-delta --from`. `make sync` accepts a committed
+`package-make-kit` artifact, a trusted VENDOR.json baseline and a recorded
+request. It writes a reviewable digest-bound plan by default; `--apply PLAN`
+rechecks the full inventory and candidate hashes, uses durable writes, saves a
+version and writes a receipt. See [the sync contract](REFERENCE.md#make-delta-and-sync).
 Source can travel entirely through stdin, with no local application source copies.
 See [the Make skill](skills/figma-make/SKILL.md) and [command reference](REFERENCE.md).
 Reads and replacements use Make's experimental private filesystem protocol through

@@ -21,6 +21,9 @@ These examples are templates; choose paths/content for the actual requested work
 | Save exact pending files as a Make version (git mode) | `figma-cli make save-version --file KEY --title "Reviewed edit" --expected-path src/App.tsx --expected-path src/New.ts --receipt-out receipt.json` |
 | Verify expected session content | `figma-cli make verify --file KEY --manifest - --timeout 120000` |
 | Check vendor drift and saved state, including hidden files | `figma-cli make drift --file KEY --manifest VENDOR.json --json` |
+| Export a clean Make component delta for workspace intake | `figma-cli make export-delta --file KEY --manifest VENDOR.json --who NAME --candidate-dir candidates --out delta.json [--dependency PATH]` |
+| Review an explicit workspace package sync | `figma-cli make sync --file KEY --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --plan-out plan.json` |
+| Apply the unchanged reviewed sync plan | `figma-cli make sync --file KEY --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --apply plan.json --receipt-out receipt.json` |
 | Inspect the running preview | `figma-cli make preview --file KEY` |
 | Read source editor diagnostics | `figma-cli make diagnostics src/App.tsx --file KEY` |
 
@@ -39,6 +42,10 @@ They remain pending until `save-version` receives the complete changed-path set,
 creates a Make version and confirms a clean pending state. Snapshot mode is
 refused. After an uncertain result, inspect state before retrying. Reload the
 exact Make tab and compare hashes plus `make drift` to prove persistence.
+`make sync` enforces this sequence for explicitly scoped workspace changes;
+its plan and receipt stay outside the Make source tree. See the
+[sync contract](../../../REFERENCE.md#make-delta-and-sync) for request
+schema, Core token gate and conflict choices.
 
 `read` returns the session's UTF-8 source through the observed filesystem connection,
 at any folder depth and including Markdown that Make shows as a preview, without

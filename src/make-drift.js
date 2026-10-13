@@ -87,3 +87,38 @@ export function compareVendor(manifest, inventory, { manifestFile, stateBefore, 
       savedVersionGitSha: receipt.savedVersionGitSha } : null,
     persistence: stateAfter || null, counts, files };
 }
+
+export function verifyGeneratedManifest(bytes, inventory) {
+  if (!Buffer.isBuffer(bytes)) throw new Error('Generated manifest is missing.');
+  let value;
+  try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+  catch { throw new Error('Generated manifest is not valid UTF-8 JSON.'); }
+  if (value?.schema !== 'atomic-cli/generated-manifest@1' || !Array.isArray(value.files) ||
+      !value.tree || value.files.length > 10000) throw new Error('Generated manifest has an unsupported schema.');
+  const recorded = new Map();
+  for (const file of value.files) {
+    const path = sourcePath(file?.path);
+    if (recorded.has(path) || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || !HASH.test(file.sha256)) {
+      throw new Error(`Invalid generated manifest entry: ${path}`);
+    }
+    recorded.set(path, file);
+  }
+  for (const required of ['.generated', 'splash-bootstrap.js']) {
+    if (!recorded.has(required)) throw new Error(`Generated manifest omits required file: ${required}`);
+  }
+  const sorted = [...recorded.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const summary = { fileCount: sorted.length, bytes: sorted.reduce((n, f) => n + f.bytes, 0),
+    digest: digest(sorted.map(f => `${f.path}\t${f.bytes}\t${f.sha256}\n`).join('')) };
+  if (summary.fileCount !== value.tree.fileCount || summary.bytes !== value.tree.bytes ||
+      summary.digest !== value.tree.digest) throw new Error('Generated manifest summary is inconsistent.');
+  const actual = new Map([...inventory].filter(([path]) => path.startsWith('tokens/generated/'))
+    .map(([path, entry]) => [path.slice('tokens/generated/'.length), entry]));
+  if (actual.size !== recorded.size) throw new Error('Generated tree has missing or extra files.');
+  for (const [path, expected] of recorded) {
+    const file = actual.get(path);
+    if (!file || file.bytes !== expected.bytes || file.sha256 !== expected.sha256) {
+      throw new Error(`Generated tree differs from manifest: ${path}`);
+    }
+  }
+  return summary;
+}

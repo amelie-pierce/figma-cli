@@ -4,11 +4,13 @@
 
 ### Added
 
+- `make export-delta` emits saved Make component changes in the workspace `intake-make-delta` path format. `make sync` writes digest-bound dry-run plans and applies explicit workspace-to-Make requests through durable writes, version save, drift verification and receipts, writing the after-VENDOR.json beside the receipt. Export-delta flags files whose workspace copy also changed as conflicts.
 - Git-mode `make write`, `make delete`, and `make save-version` use Make's client VFS and its own version operation, with hash checks, backups, editor/tree/sandbox agreement, an exact pending-file gate, and version receipts. Snapshot-mode files are refused. Live scratch proof survived a fresh sandbox reload.
 - Read-only `make drift` checks a complete vendor inventory, including hidden files, against VENDOR.json, reports byte counts and SHA-256, and fails on drift, missing evidence or pending/unverified persistence. An optional external receipt pins the manifest and saved git SHA.
 
 ### Changed
 
+- `make drift` inventories large vendor trees in bounded renderer batches and checks `generated.manifest.json` against the full generated tree when present.
 - Make mode detection reads direct provider props so large unrelated React state no longer hides snapshot or git mode.
 - Make writes (`make replace`, `create`, `import`, `remove`) are session-only: they reach the open session's working copy and are lost when the file is reopened unless saved in Make, which figma-cli never does. They now refuse unless `--session-only` is passed, and report `persistence: "session-only"` with `verification: "session-readback-matched"` or `"session-delete-accepted"` instead of `server-acknowledged` / `acknowledged`, which wrongly implied a save. Import errors list `sessionWrites` instead of `acknowledged`. Docs, the figma-make skill and help text say that reads (`read`, `files`, `verify`) see the same working copy
 
