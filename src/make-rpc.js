@@ -109,7 +109,7 @@ export function captureMakeFileSocket(fileKey, capturePath, timeoutMs, captureMs
       const workspaceId = this.workspaceId;
       if (this.disposed || !matchesFile() || !socket || socket.readyState !== WebSocket.OPEN ||
           typeof workspaceId !== 'string' || !workspaceId) throw new Error('Make filesystem connection is unavailable.');
-      if (!['fs/file/write', 'fs/file/read', 'fs/file/delete'].includes(type)) throw new Error('Unsupported Make filesystem operation.');
+      if (!['fs/file/write', 'fs/file/read', 'fs/file/delete', 'fs/dir/list'].includes(type)) throw new Error('Unsupported Make filesystem operation.');
       if (!data || typeof data.path !== 'string' || !data.path.startsWith('code/') ||
           data.path.split('/').some(part => !part || part === '.' || part === '..') || /[\\\u0000-\u001f\u007f]/.test(data.path)) {
         throw new Error('Invalid Make filesystem path.');

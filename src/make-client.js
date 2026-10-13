@@ -10,6 +10,8 @@ import { captureMakeFileSocket } from './make-rpc.js';
 import { sessionOnly } from './make-session.js';
 import { makeWorkspace, openMakeFilesTab } from './make-workspace.js';
 import { makeUiSnapshot } from './make-ui.js';
+import { makePersistenceState } from './make-persistence.js';
+import { compareVendor, digest, externalReceipt, sourcePath, vendorManifest } from './make-drift.js';
 
 const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
 
@@ -406,6 +408,12 @@ export class MakeClient {
   }
 
   async _bridgeRead(bridge, path) {
+    const bytes = await this._bridgeReadBytes(bridge, path);
+    const content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    return { content, base64: bytes.toString('base64') };
+  }
+
+  async _bridgeReadBytes(bridge, path) {
     const reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
       'fs/file/read', { path: `code/${path}`, encoding: 'base64' }, randomUUID(),
     ]);
@@ -414,8 +422,66 @@ export class MakeClient {
     }
     const bytes = Buffer.from(reply.data.content, 'base64');
     if (bytes.toString('base64') !== reply.data.content) throw new Error('Invalid remote source encoding');
-    const content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-    return { content, base64: reply.data.content };
+    return bytes;
+  }
+
+  async _driftState(deadline) {
+    const state = await this._evaluate(`(${makePersistenceState.toString()})()`, deadline);
+    if (!state || state.ambiguous || !['git', 'snapshot'].includes(state.mode) ||
+        state.pendingCount == null) return null;
+    return state;
+  }
+
+  drift(manifestBytes, { root = 'src/vendor/atomic-aui', receiptBytes } = {}) {
+    const manifest = vendorManifest(manifestBytes, root);
+    return this._operation(async deadline => {
+      const receipt = externalReceipt(receiptBytes, { fileKey: this.fileKey, manifestSha256: manifest.sha256 });
+      const stateBefore = await this._driftState(deadline);
+      const bridge = await this._fileBridge(deadline);
+      const inventory = new Map();
+      try {
+        const directories = [root];
+        const seen = new Set();
+        while (directories.length) {
+          const directory = directories.shift();
+          if (seen.has(directory)) throw new Error(`Make directory was listed twice: ${directory}`);
+          seen.add(directory);
+          if (seen.size + inventory.size > this.maxEntries) throw new Error('Make drift inventory exceeds the entry limit.');
+          const remotePath = `code/${directory}`;
+          const reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
+            'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
+          ]);
+          if (reply?.success !== true || reply.data?.path !== remotePath || !Array.isArray(reply.data.files)) {
+            throw new Error(`Make directory listing is unavailable: ${directory}`);
+          }
+          const names = new Set();
+          for (const entry of reply.data.files) {
+            const name = entry?.name;
+            sourcePath(name);
+            if (name.includes('/') || entry.path !== name || names.has(name) ||
+                (entry.isFile === true) === (entry.isDirectory === true)) {
+              throw new Error(`Make directory listing is ambiguous: ${directory}`);
+            }
+            names.add(name);
+            const path = `${directory}/${name}`;
+            if (entry.isDirectory) directories.push(path);
+            else {
+              if (inventory.has(path.slice(root.length + 1))) throw new Error(`Duplicate Make file: ${path}`);
+              const bytes = await this._bridgeReadBytes(bridge, path);
+              if (Number.isSafeInteger(entry.size) && bytes.length !== entry.size) {
+                throw new Error(`Make file changed during inventory: ${path}`);
+              }
+              inventory.set(path.slice(root.length + 1), { path: path.slice(root.length + 1), bytes: bytes.length, sha256: digest(bytes) });
+            }
+          }
+        }
+      } finally { await bridge.dispose(); }
+      const stateAfter = await this._driftState(deadline);
+      const result = compareVendor(manifest, inventory, {
+        manifestFile: inventory.get('VENDOR.json'), stateBefore, stateAfter, receipt,
+      });
+      return { fileKey: this.fileKey, ...result };
+    });
   }
 
   async _fileBridge(deadline) {

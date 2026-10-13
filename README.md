@@ -13,10 +13,12 @@ pane when one is shown, otherwise the first Files tab of that exact project page
 
 > **Make writes are session-only.** `make replace`, `create`, `import` and
 > `remove` change only the open session's working copy. They are lost when the
-> Make file is reopened unless saved in Make, which saves only through its own
-> Save and creates a new version; figma-cli never triggers it. These commands
+> Make file is reopened unless Make creates a saved version; figma-cli does not
+> create one. These commands
 > refuse unless `--session-only` is passed. Reads (`read`, `files`, `verify`) see
-> the same working copy, so a match does not prove persistence. See
+> the same working copy, so a match alone does not prove persistence. `make drift`
+> checks the current saved version, pending state and complete vendor inventory,
+> including hidden files. See
 > [Make writes are session-only](REFERENCE.md#make-writes-are-session-only).
 
 This fork of [silships/figma-cli](https://github.com/silships/figma-cli) adds direct
@@ -280,6 +282,10 @@ verify source. Plugin/Safe mode is for Design and does not supply the Make adapt
 The Make skill handles readable React/TSX, new modules, dependencies, hash-guarded
 replacement, backups, session-content verification, and preview inspection.
 Writes are session-only; save them in Make to keep them.
+For a vendor kit, `make drift --file KEY --manifest VENDOR.json` reads every file
+under `src/vendor/atomic-aui`, compares raw bytes and SHA-256, and fails when
+the inventory or saved state cannot be verified. `--receipt` can pin an external
+manifest hash and saved git SHA; `--json` returns the full result.
 Source can travel entirely through stdin, with no local application source copies.
 See [the Make skill](skills/figma-make/SKILL.md) and [command reference](REFERENCE.md).
 Reads and replacements use Make's experimental private filesystem protocol through

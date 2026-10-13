@@ -83,6 +83,7 @@ figma-cli make replace src/App.tsx --file <make-file-key> --from - --expected-sh
 figma-cli make create src/Component.tsx --file <make-file-key> --from - --session-only
 figma-cli make import --file <make-file-key> --manifest - --timeout 120000 --session-only
 figma-cli make verify --file <make-file-key> --manifest - --timeout 120000
+figma-cli make drift --file <make-file-key> --manifest VENDOR.json --timeout 120000 --json
 figma-cli make preview --file <make-file-key>
 ```
 
@@ -91,8 +92,8 @@ figma-cli make preview --file <make-file-key>
 Every Make write (`replace`, `create`, `import`, `remove`) goes through the
 filesystem connection into the open session's working copy, a per-session
 sandbox. **It is not saved to the project.** Make saves source only through its
-own Save on the in-progress manual-edit card, which creates a new Make version,
-and figma-cli never triggers it. When the file is reopened, the working copy is
+own save flow: git-mode files create a version, while older snapshot-mode files
+use the manual-edit Save card. figma-cli never triggers either flow. When the file is reopened, the working copy is
 rebuilt from the last saved version and session writes are gone: on 2026-10-13,
 39 files written with `make import` read back with matching SHA-256 in the same
 session and were missing after a reopen.
@@ -106,8 +107,20 @@ session and were missing after a reopen.
 - Reads (`read`, `files`, `verify`) read the same working copy. They equal the
   saved project only when no session write or manual edit is pending, so they
   confirm session state, not persistence.
-- Whether a Make Save captures bridge writes is UNVERIFIED. A path that writes
-  through Make's editor and then runs its Save is not implemented.
+- The save flow depends on the Make file's mode. The CLI's current write commands
+  still cannot prove that their bytes reached a saved version.
+
+`make drift --file KEY --manifest VENDOR.json [--receipt receipt.json] [--root PATH] [--json]`
+is read-only. It recursively lists the root through Make's filesystem bridge with
+hidden entries included, reads every file as raw bytes, and reports per-file byte
+counts and SHA-256. Manifest paths are relative to the root; `VENDOR.json` itself
+must match the supplied manifest. It reports matched, mismatched, missing and extra
+files, Make's saving mode, saved git SHA and pending-change count. Exit status is
+zero only when all files match and Make reports a clean saved git version. Snapshot
+mode and missing or changing persistence state fail closed. Optional external
+receipts must pin `fileKey`, the raw `manifestSha256` and full
+`savedVersionGitSha`; a stale receipt fails. `--manifest -` reads stdin. The
+default root is `src/vendor/atomic-aui`; the default timeout is 120 seconds.
 
 `read` returns the file in the open session's working copy and its SHA-256 as JSON, read through Make's
 filesystem connection, so any listed text file works at any folder depth,

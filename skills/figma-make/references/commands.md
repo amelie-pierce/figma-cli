@@ -16,6 +16,7 @@ These examples are templates; choose paths/content for the actual requested work
 | Import new modules (session-only) | `figma-cli make import --file KEY --manifest - --timeout 120000 --session-only` |
 | Replace existing source (session-only) | `figma-cli make replace src/App.tsx --file KEY --from - --expected-sha256 HASH --session-only` |
 | Verify expected session content | `figma-cli make verify --file KEY --manifest - --timeout 120000` |
+| Check vendor drift and saved state, including hidden files | `figma-cli make drift --file KEY --manifest VENDOR.json --json` |
 | Inspect the running preview | `figma-cli make preview --file KEY` |
 | Read source editor diagnostics | `figma-cli make diagnostics src/App.tsx --file KEY` |
 
@@ -27,7 +28,7 @@ No special stdin preloader or temporary source file is needed.
 Every write command needs `--session-only`; without it the CLI refuses before
 connecting (`code: "MAKE_SESSION_ONLY_REQUIRED"`). Writes change only the open
 session's working copy and are lost when the file is reopened unless the user
-saves them in Make, which creates a new version.
+saves them in Make, which creates a new version through the file's saving mode.
 
 `read` returns the session's UTF-8 source through the observed filesystem connection,
 at any folder depth and including Markdown that Make shows as a preview, without

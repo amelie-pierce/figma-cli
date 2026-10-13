@@ -7,7 +7,7 @@ date: 2026-10-13
 # figma-cli knowledge vault
 
 figma-cli controls Figma Desktop over the Chrome DevTools Protocol (CDP), with no API key.
-This fork adds `make` commands that read Figma Make source and write it into the open session's working copy; writes are session-only (see [make/persistence.md](make/persistence.md)).
+This fork adds `make` commands for Figma Make source. Existing write commands change the open session's working copy; saved-state and inventory checks are described in [make/persistence.md](make/persistence.md) and [make/drift.md](make/drift.md).
 Source lives in `src/` (CLI entry `src/index.js`, Make code in `src/make-*.js` and `src/commands/make.js`); tests live in `tests/`.
 
 ## Operating mode
@@ -26,7 +26,7 @@ Volatile detail such as selectors, error strings and option names stays by point
 
 | Folder | Holds |
 |---|---|
-| [make/](make/index.md) | Figma Make: CDP page discovery, workspace and Files-tab resolution, file selection limits, the filesystem bridge and session-only persistence |
+| [make/](make/index.md) | Figma Make: page discovery, source access, saving modes and vendor drift checks |
 | [testing/](testing/index.md) | Test layout, suites and fixtures |
 
 ## Note conventions

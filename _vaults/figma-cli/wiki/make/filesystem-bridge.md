@@ -19,7 +19,7 @@ Make source commands reach a file in one of two ways.
 
 ## Filesystem bridge: any depth, any text file
 
-`read`, `replace`, `create`/`import`, `verify` and `remove` send Make's own `fs/file/read|write|delete` messages on the page's existing authenticated WebSocket (`src/make-rpc.js:112`, `src/make-client.js:557`, `src/make-client.js:636`, `src/make-rpc.js:151`). No tree selection is involved, so depth and file type do not matter.
+`read`, `replace`, `create`/`import`, `verify` and `remove` send Make's own `fs/file/read|write|delete` messages on the page's existing authenticated WebSocket (`src/make-rpc.js:112`, `src/make-client.js:416`, `src/make-client.js:604`). No tree selection is involved, so depth and file type do not matter. `make drift` also sends read-only `fs/dir/list` with `includeHidden: true` to inventory dotfiles that the tree cannot show (`src/make-client.js:451`).
 
 That socket is Make's `/api/agentcontrol/subscribe`, which drives a per-session sandbox: the same protocol carries process, terminal, language-server and git workload messages. **The bridge reads and writes the sandbox's working copy, not the saved project.** Writes are lost when the file is reopened unless saved in Make, and Make's client file tree and open editor are not notified of them. Every write command therefore needs `--session-only` and reports `persistence: "session-only"` (`src/make-session.js:12`, `src/commands/make.js:42`). Details and evidence: [persistence.md](persistence.md). All 112 AtomicAUI files, 51 of them Markdown and up to 5 path segments deep, read and verified this way (2026-10-13).
 
