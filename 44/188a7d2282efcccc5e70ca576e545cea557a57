@@ -1,0 +1,49 @@
+REFERENCE.md
+  s_647c41ae60ec86::t_9b50a576415ca6 59-62
+src/make-workspace.js
+  s_647c41ae60ec86::t_752f75b1b33331 56-59
+tests/make-client.test.js
+  s_647c41ae60ec86::t_98cfaa4269adeb 84-93,101,112,209-243
+CLAUDE.md
+  s_647c41ae60ec86::t_c0790c198f7883 1-2
+_vaults/figma-cli/wiki/make/files-tab-resolution.md
+  s_647c41ae60ec86::t_92c8f0f0ee51ba 1-30
+_vaults/figma-cli/wiki/make/index.md
+  s_647c41ae60ec86::t_92c8f0f0ee51ba 1-4
+skills/figma-make/SKILL.md
+  s_647c41ae60ec86::t_9b50a576415ca6 35-36
+_vaults/figma-cli/wiki/testing/test-layout.md
+  s_647c41ae60ec86::t_92c8f0f0ee51ba 1-13
+  s_647c41ae60ec86::t_516d63800a3e63 14
+_vaults/figma-cli/wiki/testing/index.md
+  s_647c41ae60ec86::t_92c8f0f0ee51ba 1-3
+tests/make-transport.test.js
+  s_647c41ae60ec86::t_abd4ccd00ba7dc 92-102
+AGENTS.md
+  s_647c41ae60ec86::t_c0790c198f7883 1-9,13-794
+  s_647c41ae60ec86::t_c6ceb67389f808 10-12
+_vaults/figma-cli/wiki/index.md
+  s_647c41ae60ec86::t_92c8f0f0ee51ba 1-37
+README.md
+  s_647c41ae60ec86::t_9b50a576415ca6 11-12
+_vaults/figma-cli/wiki/make/cdp-page-discovery.md
+  s_647c41ae60ec86::t_92c8f0f0ee51ba 1-16
+.gitignore
+  s_647c41ae60ec86::t_92c8f0f0ee51ba 12-17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "44188a7d2282efcccc5e70ca576e545cea557a57",
+  "prompts": {},
+  "sessions": {
+    "s_647c41ae60ec86": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8a530ff-d6b9-41db-a99d-8496904a8846",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
