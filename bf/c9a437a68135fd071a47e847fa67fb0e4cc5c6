@@ -1,0 +1,34 @@
+tests/make-sync.test.js
+  s_ea5a0479eb0fba::t_0dee70dd12f9d6 3,6,118-119,126,131-132,163-174,216,218,229-236
+CHANGELOG.md
+  s_ea5a0479eb0fba::t_c1f0413a67cb0b 7
+REFERENCE.md
+  s_ea5a0479eb0fba::t_c1f0413a67cb0b 87,161,163,166-169,183-185,226-227,230-233
+skills/figma-make/SKILL.md
+  s_ea5a0479eb0fba::t_c1f0413a67cb0b 137-138
+src/make-sync.js
+  s_ea5a0479eb0fba::t_b8a8e0943a49dc 1,98,104-106,250-255,276,278-279,286,332-343
+_vaults/figma-cli/wiki/make/sync.md
+  s_ea5a0479eb0fba::t_0dee70dd12f9d6 12-13
+  s_ea5a0479eb0fba::t_c1f0413a67cb0b 14-15,36-39
+skills/figma-make/references/commands.md
+  s_ea5a0479eb0fba::t_c1f0413a67cb0b 24
+src/commands/make.js
+  s_ea5a0479eb0fba::t_b8a8e0943a49dc 9-10,210,217,220-221,239-241,270,278,282-283
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bfc9a437a68135fd071a47e847fa67fb0e4cc5c6",
+  "prompts": {},
+  "sessions": {
+    "s_ea5a0479eb0fba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d51eb851-28d2-497a-840a-cc5f579dff26",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
