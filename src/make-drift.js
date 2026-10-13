@@ -70,10 +70,6 @@ export function compareVendor(manifest, inventory, { manifestFile, stateBefore, 
     reasons.push('Make VENDOR.json differs from the supplied manifest');
   }
   if (counts.mismatched || counts.missing || counts.extra) reasons.push('Vendor inventory differs from the manifest');
-  const generatedManifest = inventory.get('tokens/generated.manifest.json');
-  if (generatedManifest && !manifest.files.has('tokens/generated.manifest.json')) {
-    reasons.push('Generated manifest exists in Make but is absent from VENDOR.json');
-  }
   if (!stateBefore || !stateAfter) reasons.push('Make saving mode or pending state is unavailable');
   else {
     if (JSON.stringify(stateBefore) !== JSON.stringify(stateAfter)) reasons.push('Make version or pending state changed during inventory');

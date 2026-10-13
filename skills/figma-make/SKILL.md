@@ -134,7 +134,8 @@ For exact commands and safe in-memory examples, read
    before `--apply`. Apply rechecks the plan digest, Make version and inventory
    hashes, then writes a receipt. A component-only request requires full
    generated-token equality with the package; a token update also needs the
-   committed `generated.manifest.json` sibling supplied separately.
+   committed `generated.manifest.json` sibling supplied separately. Commit the
+   `<receipt>.VENDOR.json` apply writes; it is the next trusted manifest.
 4. Run applicable syntax/type checks without violating the user's file constraints.
    Use `make preview --file KEY` to inspect the rendered headings, controls, error
    overlay, and overflow measurements. Preview inspection is not an interaction

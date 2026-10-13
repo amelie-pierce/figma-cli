@@ -6,7 +6,8 @@ import { MakeClient } from '../make-client.js';
 import { decodeMakeSource } from '../make-source.js';
 import { requireSessionOnly } from '../make-session.js';
 import { driftExitCode, digest } from '../make-drift.js';
-import { applySync, exportDelta, parsePackage, parseRequest, planSync, validatePlanDigest, VENDOR_ROOT } from '../make-sync.js';
+import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, planSync, validatePlanDigest, VENDOR_ROOT,
+  writeApplyOutputs } from '../make-sync.js';
 
 const make = program.command('make')
   .description('Experimental direct source-file editing in Figma Make Desktop')
@@ -67,9 +68,6 @@ make.command('list').description('List open Make projects on the configured desk
 
 target(make.command('inspect').description('Inspect editor readiness without changing source'))
   .action(options => withClient(options, async client => report(await client.inspect())));
-
-target(make.command('state').description('Read Make saving mode, saved git SHA and pending paths without changing source'))
-  .action(options => withClient(options, async client => report(await client.persistence())));
 
 target(make.command('ui').description('Report bounded Make workspace control metadata without reading source or selecting tabs'))
   .action(options => withClient(options, async client => report(await client.ui())));
@@ -209,17 +207,18 @@ target(make.command('export-delta').description('Export a clean saved Make delta
   .requiredOption('--manifest <source>', 'Trusted VENDOR.json baseline')
   .requiredOption('--who <identity>', 'Engineer requesting the export')
   .requiredOption('--out <file>', 'New private delta JSON file')
+  .requiredOption('--candidate-dir <dir>', 'Workspace candidates at full Make paths; files differing from the baseline are reported as conflicts')
   .option('--path <path>', 'Exact vendor path; repeat to limit the delta', (path, paths = []) => [...paths, path])
   .option('--dependency <path>', 'Exact unchanged support file; repeat as needed', (path, paths = []) => [...paths, path])
   .action(options => withClient(options, async client => {
     const out = resolve(options.out);
     if (existsSync(out)) throw new Error('Delta output already exists.');
     const scan = await client.inventoryVendor(VENDOR_ROOT, { includeBytes: true });
-    const delta = exportDelta({ ...scan, baselineBytes: sourceBytes(options.manifest),
+    const delta = exportDelta({ ...scan, baselineBytes: sourceBytes(options.manifest), candidateDir: options.candidateDir,
       fileKey: client.fileKey, who: options.who, paths: options.path, dependencyPaths: options.dependency });
     writeFileSync(out, `${JSON.stringify(delta, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-    report({ outputPath: out, fileKey: client.fileKey, version: delta.make.savedVersionGitSha,
-      files: delta.files.map(({ path, status, before, after }) => ({ path, status, before, after })) });
+    report({ outputPath: out, fileKey: client.fileKey, version: delta.make.savedVersionGitSha, conflicts: delta.conflicts,
+      files: delta.files.map(({ path, status, before, after, workspace, conflict }) => ({ path, status, before, after, workspace, conflict })) });
   }));
 
 target(make.command('sync').description('Plan or apply an explicit package-bound workspace-to-Make sync'), 120000)
@@ -237,7 +236,9 @@ target(make.command('sync').description('Plan or apply an explicit package-bound
     if (!!options.apply === !!options.planOut) throw new Error('Choose exactly one of --plan-out or --apply.');
     if (options.apply && !options.receiptOut) throw new Error('Apply requires --receipt-out.');
     const output = resolve(options.apply ? options.receiptOut : options.planOut);
-    if (existsSync(output)) throw new Error('Output file already exists; no sync was attempted.');
+    if (existsSync(output) || (options.apply && existsSync(afterManifestPath(output)))) {
+      throw new Error('Output file already exists; no sync was attempted.');
+    }
     const requestBytes = sourceBytes(options.request);
     const request = parseRequest(requestBytes, client.fileKey);
     const packageData = parsePackage(resolve(options.package));
@@ -266,7 +267,7 @@ target(make.command('sync').description('Plan or apply an explicit package-bound
           planDigest: plan.digest, fileKey: client.fileKey, requestId: request.requestId,
           completedWrites: error.completedWrites, version: error.version || null,
           error: error.message }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-        error.message += ` Recovery receipt: ${output}.`;
+        error.message += ` Recovery receipt: ${output}. Run make drift with the trusted --manifest to read the saved version and pending paths before reconciling.`;
       }
       throw error;
     }
@@ -274,10 +275,10 @@ target(make.command('sync').description('Plan or apply an explicit package-bound
     const receipt = { schema: 'figma-cli/make-sync-receipt@1', requestId: request.requestId, who: request.who,
       direction: request.direction, fileKey: client.fileKey, scope: plan.scope, choices: request.choices,
       planDigest: plan.digest, baselineManifestSha256: plan.baselineManifestSha256,
-      beforeManifestSha256: plan.vendorBefore.sha256, afterManifestSha256: plan.vendorAfter.sha256,
+      beforeManifestSha256: plan.vendorBefore.sha256,
       workspaceCommit: plan.workspaceCommit, previousMakeVersion: plan.makeVersion,
       makeVersion: version, files: writes, generatedTreeDigest: plan.generatedTreeDigest,
       verification: 'saved-clean-drift-matched; fresh-sandbox-reload-pending' };
-    writeFileSync(output, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-    report({ receiptPath: output, makeVersion: version, drift: { ok: drift.ok, counts: drift.counts, batches: drift.batches } });
+    const manifestPath = writeApplyOutputs(output, receipt, vendorBytes);
+    report({ receiptPath: output, afterManifestPath: manifestPath, makeVersion: version, drift: { ok: drift.ok, counts: drift.counts, batches: drift.batches } });
   }));

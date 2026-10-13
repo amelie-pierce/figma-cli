@@ -4,7 +4,7 @@
 
 ### Added
 
-- `make export-delta` emits saved Make component changes in the workspace `intake-make-delta` path format. `make sync` writes digest-bound dry-run plans and applies explicit workspace-to-Make requests through durable writes, version save, drift verification and receipts.
+- `make export-delta` emits saved Make component changes in the workspace `intake-make-delta` path format. `make sync` writes digest-bound dry-run plans and applies explicit workspace-to-Make requests through durable writes, version save, drift verification and receipts, writing the after-VENDOR.json beside the receipt. Export-delta flags files whose workspace copy also changed as conflicts.
 - Git-mode `make write`, `make delete`, and `make save-version` use Make's client VFS and its own version operation, with hash checks, backups, editor/tree/sandbox agreement, an exact pending-file gate, and version receipts. Snapshot-mode files are refused. Live scratch proof survived a fresh sandbox reload.
 - Read-only `make drift` checks a complete vendor inventory, including hidden files, against VENDOR.json, reports byte counts and SHA-256, and fails on drift, missing evidence or pending/unverified persistence. An optional external receipt pins the manifest and saved git SHA.
 

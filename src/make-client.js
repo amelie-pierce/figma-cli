@@ -306,11 +306,6 @@ export class MakeClient {
     return this._operation(async (deadline) => ({ fileKey: this.fileKey, ...await this._ensureCode(deadline) }));
   }
 
-  persistence() {
-    return this._operation(async deadline => ({ fileKey: this.fileKey,
-      persistence: (await this._driftState(deadline)).state }));
-  }
-
   ui() {
     return this._operation(async deadline => ({ fileKey: this.fileKey,
       ...await this._evaluate(`(${makeUiSnapshot.toString()})()`, deadline) }));

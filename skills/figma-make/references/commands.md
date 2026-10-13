@@ -8,7 +8,6 @@ These examples are templates; choose paths/content for the actual requested work
 | --- | --- |
 | Discover open projects | `figma-cli make list` |
 | Check readiness | `figma-cli make inspect --file KEY` |
-| Check Make saved version and pending paths | `figma-cli make state --file KEY` |
 | Diagnose workspace controls without selecting tabs or reading source | `figma-cli make ui --file KEY` |
 | Inventory source | `figma-cli make files --file KEY` |
 | Read session source and hash (any depth, Markdown too) | `figma-cli make read src/App.tsx --file KEY` |
@@ -22,7 +21,7 @@ These examples are templates; choose paths/content for the actual requested work
 | Save exact pending files as a Make version (git mode) | `figma-cli make save-version --file KEY --title "Reviewed edit" --expected-path src/App.tsx --expected-path src/New.ts --receipt-out receipt.json` |
 | Verify expected session content | `figma-cli make verify --file KEY --manifest - --timeout 120000` |
 | Check vendor drift and saved state, including hidden files | `figma-cli make drift --file KEY --manifest VENDOR.json --json` |
-| Export a clean Make component delta for workspace intake | `figma-cli make export-delta --file KEY --manifest VENDOR.json --who NAME --out delta.json [--dependency PATH]` |
+| Export a clean Make component delta for workspace intake | `figma-cli make export-delta --file KEY --manifest VENDOR.json --who NAME --candidate-dir candidates --out delta.json [--dependency PATH]` |
 | Review an explicit workspace package sync | `figma-cli make sync --file KEY --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --plan-out plan.json` |
 | Apply the unchanged reviewed sync plan | `figma-cli make sync --file KEY --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --apply plan.json --receipt-out receipt.json` |
 | Inspect the running preview | `figma-cli make preview --file KEY` |

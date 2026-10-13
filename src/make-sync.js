@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { digest, sourcePath, vendorManifest, verifyGeneratedManifest } from './make-drift.js';
 import { requireGitMode } from './make-durable.js';
@@ -95,11 +95,14 @@ export function parseRequest(bytes, fileKey) {
       typeof request.requestId !== 'string' || !request.requestId.trim() ||
       !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(request.requestedAt || '') ||
       new Date(request.requestedAt).toISOString() !== request.requestedAt ||
-      !['workspace-to-make', 'make-to-workspace'].includes(request.direction) ||
+      typeof request.direction !== 'string' ||
       !COMMIT.test(request.workspaceCommit || '') ||
       !Array.isArray(request.files) || !request.files.length || request.files.length > 1000 ||
       typeof request.choices !== 'object' || request.choices === null) {
     throw new Error('Sync request must record identity, direction, exact files and conflict choices.');
+  }
+  if (request.direction !== 'workspace-to-make') {
+    throw new Error('make sync only applies workspace-to-make. Export Make changes with make export-delta, then use workspace intake-make-delta and a reviewed workspace PR.');
   }
   const paths = new Set();
   const folded = new Set();
@@ -244,7 +247,12 @@ export function validatePlanDigest(plan) {
   return plan;
 }
 
-export function exportDelta({ inventory, contents, baselineBytes, state, fileKey, who, paths, dependencyPaths = [] }) {
+function readCandidate(candidateDir, path) {
+  try { return readArtifact(candidateDir, path); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+}
+
+export function exportDelta({ inventory, contents, baselineBytes, candidateDir, state, fileKey, who, paths, dependencyPaths = [] }) {
   requireGitMode(state);
   if (state.pendingCount !== 0 || state.pendingPaths.length) throw new Error('Unsaved Make changes refuse export.');
   if (!who?.trim()) throw new Error('Export requires --who.');
@@ -265,15 +273,17 @@ export function exportDelta({ inventory, contents, baselineBytes, state, fileKey
     const before = baseline.files.get(path) || null;
     const after = inventory.get(path) || null;
     if (same(before, after) && !dependencies.has(path)) continue;
+    const workspace = fileInfo(readCandidate(candidateDir, fullPath(path)));
     files.push({ path: fullPath(path), status: same(before, after) ? 'dependency' : !before ? 'added' : !after ? 'deleted' : 'changed',
-      before, after, ...(after ? { contentBase64: contents.get(path).toString('base64') } : {}) });
+      before, after, workspace, conflict: !same(workspace, before),
+      ...(after ? { contentBase64: contents.get(path).toString('base64') } : {}) });
   }
   if (contents.has(GENERATION_MANIFEST)) verifyGeneratedManifest(contents.get(GENERATION_MANIFEST), inventory);
   if (selected && [...selected].some(path => !all.has(path))) throw new Error('Selected path is absent from baseline and Make.');
   if ([...dependencies].some(path => !all.has(path) || !inventory.has(path))) throw new Error('Dependency is absent from saved Make.');
   if (!files.length) throw new Error('No exportable saved changes in scope.');
   return { schema: 'figma-cli/make-delta@1', who, make: { fileKey, savedVersionGitSha: state.savedVersion },
-    baselineManifestSha256: digest(baselineBytes), files };
+    baselineManifestSha256: digest(baselineBytes), conflicts: files.filter(file => file.conflict).map(file => file.path), files };
 }
 
 export async function applySync(client, { plan, vendorBytes, packageData, candidateDir, generationManifestBytes, title, backupDir }) {
@@ -282,7 +292,6 @@ export async function applySync(client, { plan, vendorBytes, packageData, candid
   if (plan.actions.some(action => action.choice?.action === 'override-workspace')) {
     throw new Error('Override-workspace requires workspace review and a new committed package before Make apply.');
   }
-  if (plan.direction !== 'workspace-to-make') throw new Error('Make-to-workspace applies through workspace intake/review, not Make VFS.');
   const changed = plan.actions.filter(action => action.operation !== 'keep');
   if (!changed.length && plan.vendorBefore.sha256 === plan.vendorAfter.sha256) throw new Error('Sync has no Make changes to save.');
   const writes = [];
@@ -319,4 +328,16 @@ export async function applySync(client, { plan, vendorBytes, packageData, candid
     error.completedWrites = writes;
     throw error;
   }
+}
+
+export function afterManifestPath(receiptPath) {
+  return `${receiptPath.replace(/\.json$/, '')}.VENDOR.json`;
+}
+
+export function writeApplyOutputs(receiptPath, receipt, vendorBytes) {
+  const manifestPath = afterManifestPath(receiptPath);
+  writeFileSync(manifestPath, vendorBytes, { mode: 0o600, flag: 'wx' });
+  writeFileSync(receiptPath, `${JSON.stringify({ ...receipt, afterManifestPath: manifestPath,
+    afterManifestSha256: digest(vendorBytes) }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  return manifestPath;
 }

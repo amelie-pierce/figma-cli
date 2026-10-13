@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { applySync, exportDelta, parseRequest, planSync, validatePlanDigest } from '../src/make-sync.js';
+import { applySync, exportDelta, parseRequest, planSync, validatePlanDigest, writeApplyOutputs } from '../src/make-sync.js';
 import { digest, verifyGeneratedManifest } from '../src/make-drift.js';
 
 const root = 'src/vendor/atomic-aui';
@@ -115,17 +115,21 @@ test('request rejects undeclared dependencies, invalid direction and token candi
     f.args.request.files[0].dependencies = [`${root}/lib/Missing.tsx`];
     assert.throws(() => parseRequest(text(JSON.stringify(f.args.request)), 'Scratch'), /Dependency absent/);
     f.args.request.files[0].dependencies = [];
+    assert.throws(() => parseRequest(text(JSON.stringify({ ...f.args.request, direction: 'make-to-workspace' })), 'Scratch'),
+      /make export-delta.*intake-make-delta/);
     f.args.inventory.get('tokens/generated/.generated').sha256 = digest('tampered');
     assert.throws(() => planSync(f.args), /Generated tokens differ/);
   } finally { f.dispose(); }
 });
 
 test('export emits intake-make-delta files shape and refuses unsaved or generated-token edits', () => {
-  const f = fixture({ make: 'changed' });
+  const f = fixture({ make: 'changed', workspace: 'base' });
   try {
     const delta = exportDelta({ ...f.args, who: 'Engineer' });
     assert.deepEqual(delta.files.map(file => file.path), [path]);
     assert.equal(delta.files[0].status, 'changed');
+    assert.equal(delta.files[0].conflict, false);
+    assert.deepEqual(delta.conflicts, []);
     assert.equal(Buffer.from(delta.files[0].contentBase64, 'base64').toString(), 'changed');
     assert.deepEqual(JSON.parse(JSON.stringify(delta)).files.map(file => ({ path: file.path })), [{ path }]);
     assert.throws(() => exportDelta({ ...f.args, state: { ...state, pendingCount: 1, pendingPaths: [path] }, who: 'Engineer' }), /Unsaved/);
@@ -154,6 +158,18 @@ test('export includes explicitly named unchanged dependencies and checks tokens 
     f.args.inventory.get('tokens/generated/.generated').sha256 = digest('tampered');
     assert.throws(() => exportDelta({ ...f.args, who: 'Engineer', paths: [path] }), /Generated token/);
   } finally { f.dispose(); }
+});
+
+test('export reports files whose workspace candidate also differs from the baseline as conflicts', () => {
+  for (const [workspace, conflict] of [['other', true], [null, true], ['base', false]]) {
+    const f = fixture({ make: 'changed', workspace });
+    try {
+      const delta = exportDelta({ ...f.args, who: 'Engineer' });
+      assert.equal(delta.files[0].conflict, conflict);
+      assert.deepEqual(delta.files[0].workspace?.sha256 ?? null, workspace == null ? null : digest(workspace));
+      assert.deepEqual(delta.conflicts, conflict ? [path] : []);
+    } finally { f.dispose(); }
+  }
 });
 
 test('snapshot mode and pending edits refuse planning', () => {
@@ -197,7 +213,9 @@ test('apply uses durable paths, saves exact set and checks drift; unresolved ref
   try {
     const { plan, vendorBytes } = planSync(f.args);
     const calls = [];
+    const written = new Map();
     const client = { writeDurable: async (name, value, options) => {
+      written.set(name, value);
       calls.push(['write', name, options.expectedSha256]);
       return { backupPath: '/private/backup' };
     }, deleteDurable: async () => { throw new Error('unexpected delete'); },
@@ -208,6 +226,14 @@ test('apply uses durable paths, saves exact set and checks drift; unresolved ref
     assert.equal(result.version.versionNumber, 2);
     assert.deepEqual(calls.map(call => call[0]), ['write', 'write', 'save', 'drift']);
     assert.deepEqual(calls[2][1], [path, `${root}/VENDOR.json`]);
+    const receiptPath = join(f.directory, 'receipt.json');
+    const manifestPath = writeApplyOutputs(receiptPath, { planDigest: plan.digest }, vendorBytes);
+    assert.equal(manifestPath, join(f.directory, 'receipt.VENDOR.json'));
+    assert.deepEqual(readFileSync(manifestPath), Buffer.from(written.get(`${root}/VENDOR.json`)));
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+    assert.equal(receipt.afterManifestPath, manifestPath);
+    assert.equal(receipt.afterManifestSha256, digest(readFileSync(manifestPath)));
+    assert.equal(receipt.afterManifestSha256, plan.vendorAfter.sha256);
     plan.unresolved.push(path);
     await assert.rejects(applySync(client, { plan, vendorBytes }), /Unresolved/);
   } finally { f.dispose(); }

@@ -74,7 +74,6 @@ refuses to operate on hidden/unlaid-out workspace controls.
 ```sh
 figma-cli make list
 figma-cli make inspect --file <make-file-key>
-figma-cli make state --file <make-file-key>
 figma-cli make ui --file <make-file-key>
 figma-cli make files --file <make-file-key>
 figma-cli make read src/App.tsx --file <make-file-key>
@@ -85,7 +84,7 @@ figma-cli make create src/Component.tsx --file <make-file-key> --from - --sessio
 figma-cli make import --file <make-file-key> --manifest - --timeout 120000 --session-only
 figma-cli make verify --file <make-file-key> --manifest - --timeout 120000
 figma-cli make drift --file <make-file-key> --manifest VENDOR.json --timeout 120000 --json
-figma-cli make export-delta --file <make-file-key> --manifest VENDOR.json --who engineer --out delta.json
+figma-cli make export-delta --file <make-file-key> --manifest VENDOR.json --who engineer --candidate-dir candidates --out delta.json
 figma-cli make sync --file <make-file-key> --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --plan-out plan.json
 figma-cli make sync --file <make-file-key> --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --apply plan.json --receipt-out receipt.json
 figma-cli make write src/App.tsx --file <make-file-key> --from - --expected-sha256 <hash-from-read>
@@ -159,13 +158,15 @@ generated tree, including `.generated` and `splash-bootstrap.js`.
 
 ### Make delta and sync
 
-`make state` reads the saving mode, saved git SHA and pending paths without
-changing source. `make export-delta` requires a clean saved git-mode Make file, a trusted
+`make export-delta` requires a clean saved git-mode Make file, a trusted
 VENDOR.json baseline, an engineer identity and a new output path. It emits
-`{schema,who,make,baselineManifestSha256,files}`. Each file has a full Make
+`{schema,who,make,baselineManifestSha256,conflicts,files}`. Each file has a full Make
 vendor path (`src/vendor/atomic-aui/<path>`), status (`added`, `changed`,
 `deleted`, or `dependency`), before/after byte counts and SHA-256, and base64
-bytes for present files. Repeat `--dependency PATH` to include unchanged support
+bytes for present files. `--candidate-dir` holds the workspace copies at the same
+full Make paths; each file records the `workspace` hash (null when absent) and
+`conflict: true` when that copy also differs from the baseline. `conflicts` lists
+those paths so intake resolves them in the reviewed workspace PR. Repeat `--dependency PATH` to include unchanged support
 files explicitly. Workspace `atomic-cli intake-make-delta --from delta.json` consumes
 its `files[].path` values. Generated tokens, sync metadata and kit scaffolding
 cannot enter that delta. `--path` may be repeated to select an exact scope.
@@ -179,8 +180,9 @@ the existing Make generated manifest and complete token tree to match the
 package. The trusted VENDOR.json bytes must match Make's copy.
 
 The request is JSON with schema `figma-cli/make-sync-request@1`, `fileKey`,
-`requestId`, `requestedAt`, `who`, `direction` (`workspace-to-make` or
-`make-to-workspace`), `workspaceCommit` (full package commit), `files`, and
+`requestId`, `requestedAt`, `who`, `direction` (`workspace-to-make`; Make
+changes go through `make export-delta`, workspace `intake-make-delta` and a
+reviewed workspace PR, so `make sync` refuses `make-to-workspace`), `workspaceCommit` (full package commit), `files`, and
 `choices`. Each file records a full Make path, `baselineSha256` and
 `workspaceSha256` (null means absent), and an explicit `dependencies` array of
 other full paths in scope. Candidate component bytes are under `--candidate-dir`
@@ -221,12 +223,14 @@ or candidate hash refuses before writes. Apply uses Make client VFS, exact
 pending-path save and final drift. A partial write or uncertain save needs
 inspection and reconciliation; do not replay it blindly. A recovery receipt
 records completed writes and any known saved version when apply fails after
-mutations begin. `--backup-dir` can keep replacement backups in a chosen private
+mutations begin; run `make drift` with the trusted `--manifest` to read the saved
+version and pending paths before reconciling. `--backup-dir` can keep replacement backups in a chosen private
 directory. The success receipt records
 identity, direction, scope, choices, before/after hashes, workspace commit and
-Make version. A fresh sandbox reload remains the separate persistence check.
-`make-to-workspace` plans are review evidence; workspace intake and review own
-their apply.
+Make version. Apply also writes the exact VENDOR.json bytes it wrote to Make
+next to the receipt (`<receipt>.VENDOR.json`) and records `afterManifestPath` and
+`afterManifestSha256`. Commit that file with the workspace sync; it is the next
+trusted `--manifest`. A fresh sandbox reload remains the separate persistence check.
 
 `read` returns the file in the open session's working copy and its SHA-256 as JSON, read through Make's
 filesystem connection, so any listed text file works at any folder depth,

@@ -9,8 +9,10 @@ date: 2026-10-13
 `make export-delta` exports additions, edits and deletions from a clean saved
 Make version relative to an external VENDOR.json baseline. Its full vendor
 paths are accepted by workspace `atomic-cli intake-make-delta --from`; generated
-tokens and sync metadata are excluded (`src/commands/make.js:208`,
-`src/make-sync.js:247`). The workspace path mapping is defined by
+tokens and sync metadata are excluded (`src/commands/make.js:206`,
+`src/make-sync.js:255`). A required `--candidate-dir` of workspace copies marks
+every exported file whose workspace copy also differs from the baseline as a
+conflict for intake. The workspace path mapping is defined by
 `tools/atomic-cli/src/lib/make-kit.ts` at workspace commit
 `bf50e2b0465f8908c3069b4ad2127b31a5f6a98d`.
 
@@ -31,8 +33,10 @@ durable writes, exact-path save and final drift; unresolved conflicts and
 out-of-scope drift refuse
 apply (`src/make-sync.js:91`, `src/make-sync.js:138`, `src/make-sync.js:240`,
 `src/make-sync.js:279`, `src/commands/make.js:225`). `override-workspace` is a
-review handoff, so Make apply waits for a new committed candidate. Make-to-workspace changes enter through the
-export/intake and workspace review path; this CLI does not write the workspace.
+review handoff, so Make apply waits for a new committed candidate. `make sync`
+refuses `make-to-workspace`; Make changes enter through export-delta,
+intake-make-delta and a reviewed workspace PR. Apply writes the exact
+after-VENDOR.json beside the receipt as the next trusted `--manifest`.
 
 The inventory walks hidden files in 24-call renderer batches and checks saved
 version/pending state at each boundary, then validates
