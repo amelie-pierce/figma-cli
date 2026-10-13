@@ -78,6 +78,28 @@ test('mode detection reads bounded React state for git and snapshot modes', () =
   } finally { globalThis.document = previous; }
 });
 
+test('persistence discovery fails closed when a traversal budget hides a later live provider', () => {
+  const previous = globalThis.document;
+  const state = pending => ({ codeFileChanges: { isGitSourceOfTruth: true, hasBaseline: true,
+    baselineMakeVersionGitSha: gitSha, changedFiles: pending ? [{ path: 'src/App.tsx' }] : [], isLoading: false, error: null } });
+  const tree = (fillers, props, hooks = null) => {
+    let child = { memoizedProps: state(true), memoizedState: null, child: null, sibling: null };
+    for (let i = 0; i < fillers; i++) child = { memoizedProps: props(), memoizedState: hooks, child, sibling: null };
+    return { memoizedProps: state(false), memoizedState: null, child, sibling: null };
+  };
+  const longHooks = { memoizedState: null, next: null };
+  for (let i = 0, hook = longHooks; i < 100; i++) hook = hook.next = { memoizedState: null, next: null };
+  const results = [];
+  try {
+    for (const root of [tree(0, () => null), tree(50001, () => ({})), tree(100001, () => null), tree(1, () => null, longHooks)]) {
+      globalThis.document = { querySelectorAll: () => [{ '__reactFiber$test': root }] };
+      results.push(makePersistenceState());
+    }
+  } finally { globalThis.document = previous; }
+  assert.deepEqual(results[0], { ambiguous: true, count: 2 });
+  for (const result of results.slice(1)) assert.equal(result, null);
+});
+
 test('read-only client inventory includes nested dotfiles and never sends writes', async () => {
   const fs = new Map([...Object.entries(expected).map(([path, bytes]) => [`${root}/${path}`, bytes]), [`${root}/VENDOR.json`, manifestBytes]]);
   const calls = [];

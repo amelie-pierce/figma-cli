@@ -13,8 +13,10 @@ export function makePersistenceState() {
   const fibers = [root];
   const seen = new Set();
   const snapshots = [];
+  let exhausted = false;
   function inspect(value, depth) {
-    if (!value || typeof value !== 'object' || depth > 3 || seen.has(value) || seen.size > 50000) return;
+    if (!value || typeof value !== 'object' || depth > 3 || seen.has(value)) return;
+    if (seen.size >= 50000) { exhausted = true; return; }
     seen.add(value);
     try {
       if (Object.hasOwn(value, 'codeFileChanges')) {
@@ -39,17 +41,19 @@ export function makePersistenceState() {
     } catch { /* Cross-origin DOM references are irrelevant to this state. */ }
   }
   let count = 0;
-  while (fibers.length && count++ < 100000) {
+  while (fibers.length) {
+    if (count++ >= 100000) { exhausted = true; break; }
     const fiber = fibers.pop();
     if (!fiber) continue;
     inspect(fiber.memoizedProps, 0);
     let hook = fiber.memoizedState;
     let hooks = 0;
     while (hook && hooks++ < 100) { inspect(hook.memoizedState, 0); hook = hook.next; }
+    if (hook) exhausted = true;
     if (fiber.sibling) fibers.push(fiber.sibling);
     if (fiber.child) fibers.push(fiber.child);
   }
-  if (!snapshots.length) return null;
+  if (exhausted || !snapshots.length) return null;
   const unique = [...new Set(snapshots.map(state => JSON.stringify(state)))];
   return unique.length === 1 ? snapshots[0] : { ambiguous: true, count: unique.length };
 }
