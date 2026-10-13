@@ -56,8 +56,10 @@ Both the older Code/Preview radio tabs and the newer Files/Browser workspace are
 supported. Files tabs are identified by their controls, even after their title
 changes to a filename. The current visible file tree and header identify the active
 Files pane; the full breadcrumb must match the selected source path before a read
-or write. If several Files tabs exist and none is active, select the intended one
-manually; the CLI does not guess. If no Files tab exists, the CLI opens one through
+or write. If Files tabs exist but none is active, the CLI selects the first one in
+tab order. Every Files tab on a page belongs to that page's project, whose exact
+file key is checked before each action, so tabs are never matched by title. Only
+if no Files tab exists does the CLI open one through
 **Add workspace tab → Files**, waiting for the menu and file tree to become ready.
 Unavailable, disabled, or ambiguous controls stop the operation without a source edit.
 `make ui --file KEY` reports bounded control metadata without selecting tabs or
