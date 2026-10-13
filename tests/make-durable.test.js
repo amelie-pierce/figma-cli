@@ -102,6 +102,17 @@ test('save reports the created version when the clean baseline is not observed',
     { id: 'version-id', gitSha: next, previous: base });
 });
 
+test('save keeps polling through transient post-save states', async () => {
+  const { client } = fakeClient({ paths: ['src/ours.ts'],
+    version: { id: 'version-id', versionNumber: 3, gitSha: next } });
+  const states = [state(['src/ours.ts']), { ...state(['src/ours.ts']), isLoading: true }, null,
+    { ...state(), savedVersion: null }, { ...state(), savedVersion: next }];
+  client._driftState = async () => ({ state: states.length > 1 ? states.shift() : states[0] });
+  const result = await client.saveVersion('Saved', ['src/ours.ts']);
+  assert.equal(result.verification, 'saved-version-clean-pending');
+  assert.equal(result.gitSha, next);
+});
+
 test('page action never invokes a save for a VFS read', async () => {
   const prior = globalThis.document;
   let saved = 0;

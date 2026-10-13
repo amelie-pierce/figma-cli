@@ -568,8 +568,9 @@ export class MakeClient {
         gitSha: version.gitSha, previousGitSha: before.savedVersion, changedFiles };
       try {
         for (;;) {
-          const after = requireGitMode((await this._driftState(deadline)).state);
-          if (after.savedVersion === version.gitSha && after.pendingCount === 0) return { ...saved, verification: 'saved-version-clean-pending' };
+          const after = (await this._driftState(deadline)).state;
+          if (after?.mode === 'git' && after.hasBaseline && !after.isLoading && !after.error &&
+              after.savedVersion === version.gitSha && after.pendingCount === 0) return { ...saved, verification: 'saved-version-clean-pending' };
           await this._bounded(() => new Promise(resolve => setTimeout(resolve, 100)), deadline);
         }
       } catch (cause) {
