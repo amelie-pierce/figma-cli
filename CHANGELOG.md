@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Read-only `make drift` checks a complete vendor inventory, including hidden files, against VENDOR.json, reports byte counts and SHA-256, and fails on drift, missing evidence or pending/unverified persistence. An optional external receipt pins the manifest and saved git SHA.
+
 ### Changed
 
 - Make writes (`make replace`, `create`, `import`, `remove`) are session-only: they reach the open session's working copy and are lost when the file is reopened unless saved in Make, which figma-cli never does. They now refuse unless `--session-only` is passed, and report `persistence: "session-only"` with `verification: "session-readback-matched"` or `"session-delete-accepted"` instead of `server-acknowledged` / `acknowledged`, which wrongly implied a save. Import errors list `sessionWrites` instead of `acknowledged`. Docs, the figma-make skill and help text say that reads (`read`, `files`, `verify`) see the same working copy

@@ -5,6 +5,7 @@ import { MakeTransport } from '../make-transport.js';
 import { MakeClient } from '../make-client.js';
 import { decodeMakeSource } from '../make-source.js';
 import { requireSessionOnly } from '../make-session.js';
+import { driftExitCode } from '../make-drift.js';
 
 const make = program.command('make')
   .description('Experimental direct source-file editing in Figma Make Desktop')
@@ -33,9 +34,9 @@ function timeout(value) {
   if (!Number.isInteger(n) || n < 500 || n > 120000) throw new Error('Timeout must be 500–120000 milliseconds');
   return n;
 }
-function target(command) {
+function target(command, timeoutDefault = 15000) {
   return command.requiredOption('--file <key-or-url>', 'Exact open Make file key or URL')
-    .option('--timeout <ms>', 'Maximum operation time', timeout, 15000);
+    .option('--timeout <ms>', 'Maximum operation time', timeout, timeoutDefault);
 }
 // Make writes reach only the open session's working copy; refuse before
 // connecting unless the caller accepted that with --session-only.
@@ -128,4 +129,27 @@ target(make.command('verify').description('Compare the open session\'s working c
     if (bytes.length > 32 * 1024 * 1024) throw new Error('Make verification manifest is limited to 32 MiB.');
     const manifest = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
     report(await client.verifyFiles(manifest.files));
+  }));
+
+target(make.command('drift').description('Read-only vendor inventory, manifest comparison and saved/pending-state check'), 120000)
+  .requiredOption('--manifest <source>', 'VENDOR.json file, or - for stdin')
+  .option('--receipt <file>', 'External receipt pinning the manifest and saved git SHA')
+  .option('--root <path>', 'Vendor root in Make', 'src/vendor/atomic-aui')
+  .option('--json', 'Print the complete machine-readable result')
+  .action(options => withClient(options, async client => {
+    const result = await client.drift(sourceBytes(options.manifest), {
+      root: options.root, receiptBytes: options.receipt ? sourceBytes(options.receipt) : undefined,
+    });
+    if (options.json) report(result);
+    else {
+      console.log(`Make ${result.fileKey}: ${result.persistence?.mode || 'unknown'} mode, saved ${result.persistence?.savedVersion || 'unverified'}, pending ${result.persistence?.pendingCount ?? 'unknown'}`);
+      console.log(`Persistence scan skipped ${result.scanTruncation.arrayItems} array items past 30 and ${result.scanTruncation.depth} values deeper than 3 levels`);
+      console.log(`Vendor ${result.root}: ${Object.entries(result.counts).map(([status, count]) => `${status}=${count}`).join(' ')}`);
+      console.log(`VENDOR.json: ${result.manifest.inMake?.sha256 || 'missing'} (${result.manifest.inMake?.bytes ?? 0} bytes)`);
+      for (const file of result.files) {
+        console.log(`${file.status}\t${file.path}\t${file.actual?.bytes ?? '-'}\t${file.actual?.sha256 ?? '-'}${file.expected ? `\texpected ${file.expected.bytes} ${file.expected.sha256}` : ''}`);
+      }
+      for (const reason of result.reasons) console.log(`drift: ${reason}`);
+    }
+    process.exitCode = driftExitCode(result);
   }));

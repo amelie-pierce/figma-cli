@@ -13,9 +13,10 @@ commands rather than assuming an upstream installation includes it.
 ## Make writes are session-only
 
 Every write (`replace`, `create`, `import`, `remove`) reaches only the open
-session's working copy. It is lost when the Make file is reopened unless it is
-saved in Make: Make saves source only through its own Save on the in-progress
-manual-edit card, which creates a new version, and the CLI never triggers it.
+session's working copy. It is lost when the Make file is reopened unless Make
+creates a saved version. Git-mode files create versions through Make's version
+flow; older snapshot-mode files use the in-progress manual-edit Save card. The
+CLI does not trigger either save flow.
 The write commands refuse unless `--session-only` is passed. Before writing,
 tell the user that the change is session-only and that they must save it in
 Make to keep it; do not pass the flag without that understanding. Reads
@@ -117,7 +118,10 @@ For exact commands and safe in-memory examples, read
    not atomic; do not run concurrent writers or assume rollback is automatic.
 3. Verify the expected final source with `make verify --manifest -`. Compare only
    files in scope; retain genuine vendor files byte-for-byte when unmodified.
-   This verifies the session's working copy, not a saved version.
+   This verifies the session's working copy, not a saved version. For a vendor
+   tree, run `make drift --file KEY --manifest VENDOR.json` to compare the complete
+   hidden-file inventory and check Make's saved/pending state. Use an external
+   `--receipt` when one exists.
 4. Run applicable syntax/type checks without violating the user's file constraints.
    Use `make preview --file KEY` to inspect the rendered headings, controls, error
    overlay, and overflow measurements. Preview inspection is not an interaction
