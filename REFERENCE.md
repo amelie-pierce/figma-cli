@@ -148,10 +148,10 @@ background Make page closes that socket while hidden and reconnects it when
 focus emulation starts; the reconnect's `control/provision` message identifies
 the socket and its workspace, which is usable once Make's
 `control/workspace_create_ack` arrives. A Make request to read an uncached
-source file also identifies it. If the socket stayed open (for example, the
-project tab is in the foreground), the adapter opens up to eight selectable
-files to provoke such a read; when none does, the command fails with no write
-and suggests moving the tab to the background for a minute. The hook is restored after
+source file also identifies it. If the socket stayed open since it provisioned
+unobserved, the adapter closes it (never while Make is generating) so Make
+reconnects and provisions under the hook; when nothing is captured, the command
+fails with no write and suggests moving the tab to the background for a minute. The hook is restored after
 capture. The adapter reuses the connection in the same Make page; it never
 extracts credentials or opens a separate authenticated connection. The cached
 socket reference expires with the page/socket. Each write is acknowledged and

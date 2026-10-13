@@ -26,7 +26,7 @@ function fixture(options = {}) {
     folderExpanded: true, folderPresent: true, folderVisible: true,
     editorCount: 1, workspace: false, filesTabs: 1, headers: 1, treeVisible: true,
     breadcrumbFolder: 'src', breadcrumbLeaf: 'App.tsx', tabClicks: 0, closeClicks: 0,
-    clientHeight: 200, workspaceId: 'workspace', provisionOnFocus: true, fetchOnSelect: false,
+    clientHeight: 200, workspaceId: 'workspace', provisionOnFocus: true, reconnectOnClose: true, fetchOnSelect: false,
     fs: { [path]: original }, fsWrites: [], frames: [], sockets: [],
     dispatches: [], expressions: [], ...options,
   };
@@ -38,7 +38,11 @@ function fixture(options = {}) {
       super(); this.url = url; this.readyState = 1; state.sockets.push(this);
     }
     send(payload) { serve(this, payload); }
-    close() { this.readyState = 3; this.dispatchEvent(new Event('close')); }
+    close() {
+      this.readyState = 3; this.dispatchEvent(new Event('close'));
+      // A visible Make page reconnects its agent socket after it closes.
+      if (state.focusEnabled && state.reconnectOnClose && this.url === 'wss://www.figma.com/api/agentcontrol/subscribe') provision();
+    }
   }
   const deliver = (socket, data) => Promise.resolve().then(() =>
     socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(data) })));
@@ -251,6 +255,12 @@ function fixture(options = {}) {
           return { result: { value: value === undefined ? undefined : JSON.parse(JSON.stringify(value)) } };
         } catch (error) { return remoteError(error); }
       }
+      if (method === 'Runtime.queryObjects') {
+        const prototype = objects.get(params.prototypeObjectId);
+        const objectId = `object-${objects.size + 1}-${Math.random()}`;
+        objects.set(objectId, state.sockets.filter(socket => prototype.isPrototypeOf(socket)));
+        return { objects: { objectId } };
+      }
       if (method === 'Runtime.releaseObject') objects.delete(params.objectId);
       return {};
     },
@@ -296,7 +306,7 @@ test('inspect/list/read use Code and return exact saved content and hash through
 
 test('Files workspace opens without Code radios and reads after the tab becomes a filename', async t => {
   // Without an observable filesystem socket, read falls back to the editor.
-  const { client, state } = await setup(t, { workspace: true, provisionOnFocus: false });
+  const { client, state } = await setup(t, { workspace: true, provisionOnFocus: false, reconnectOnClose: false });
   const info = await client.inspect();
   assert.equal(info.workspaceMode, 'files-workspace');
   assert.equal(info.codeReady, true);
@@ -587,11 +597,21 @@ test('a provisioned socket is used only after Make acknowledges creating its wor
   assert.equal(state.frames.some(frame => frame.type === 'error'), false);
 });
 
-test('bridge capture falls back to a fresh file read when Make keeps its socket open', async (t) => {
-  const { client, state } = await setup(t, { provisionOnFocus: false, fetchOnSelect: true });
+test('an open agent socket that provisioned unobserved is reconnected so its provisioning identifies it', async (t) => {
+  const { client, state } = await setup(t, { provisionOnFocus: false });
   assert.equal((await client.read('src/App.tsx', { remote: true })).source, 'filesystem');
-  assert.equal(state.selected, true);
-  assert.equal(state.frames.filter(frame => frame.type === 'control/provision').length, 0);
+  assert.equal(state.makeSocket.readyState, 3, 'the unidentified socket was closed');
+  assert.equal(state.selected, false, 'no file had to be opened');
+  assert.equal(state.frames.filter(frame => frame.type === 'control/provision').length, 1);
+  // The reconnected socket is cached, so the next operation leaves it open.
+  assert.equal((await client.read('src/App.tsx', { remote: true })).source, 'filesystem');
+  assert.equal(state.sockets.filter(socket => socket.readyState === 1).length, 1);
+});
+
+test('an unidentified agent socket is left open while Make is generating', async (t) => {
+  const { client, state } = await setup(t, { provisionOnFocus: false, busy: true });
+  await assert.rejects(client.read('src/App.tsx', { remote: true }), error => error.code === 'MAKE_FILESYSTEM_UNAVAILABLE');
+  assert.equal(state.makeSocket.readyState, 1);
 });
 
 test('a captured socket is reused by later operations until it closes', async (t) => {
@@ -619,7 +639,7 @@ test('capture ignores provisioning from another host or an insecure socket', asy
 });
 
 test('without a filesystem connection, read falls back to the editor but replacement writes nothing', async (t) => {
-  const { client, state, backupDir } = await setup(t, { provisionOnFocus: false });
+  const { client, state, backupDir } = await setup(t, { provisionOnFocus: false, reconnectOnClose: false });
   assert.equal((await client.read('src/App.tsx')).source, 'editor');
   await assert.rejects(client.read('src/App.tsx', { remote: true }), /no files were written/);
   await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }), /no files were written/);

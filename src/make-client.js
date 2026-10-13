@@ -391,7 +391,7 @@ export class MakeClient {
       }
       let bridge;
       try {
-        bridge = await this._fileBridge(existing, deadline);
+        bridge = await this._fileBridge(deadline);
       } catch (error) {
         if (remote || error.code !== 'MAKE_FILESYSTEM_UNAVAILABLE' || path.startsWith('node_modules/')) throw error;
         const result = await this._read(path, deadline);
@@ -417,7 +417,7 @@ export class MakeClient {
     return { content, base64: reply.data.content };
   }
 
-  async _fileBridge(existing, deadline) {
+  async _fileBridge(deadline) {
     const response = await this.transport.send('Runtime.evaluate', {
       expression: `(${captureMakeFileSocket.toString()})(${JSON.stringify(this.fileKey)}, null, ${Math.min(5000, this._remaining(deadline))}, ${this._remaining(deadline)})`,
       returnByValue: false,
@@ -454,22 +454,48 @@ export class MakeClient {
       // Usually captured already: from a socket cached earlier in this page, or
       // from the reconnect that focus emulation triggered at operation start.
       if (await captured(1500, 8000)) return { invoke, dispose };
-      // Fallback for a page whose socket stayed open: Make reads a source file
-      // it has not cached when that file is opened. Files the tree cannot
-      // select are skipped rather than failing the capture.
-      const candidates = existing.filter(entry => entry.kind === 'file').sort((a, b) =>
-        Number(b.path.startsWith('src/vendor/')) - Number(a.path.startsWith('src/vendor/')));
-      for (const candidate of candidates.slice(0, 8)) {
-        try { await this._select(candidate.path, deadline); }
-        catch (error) { if (/selection was refused/.test(error.message)) continue; throw error; }
-        if (await captured(700)) return { invoke, dispose };
-      }
+      // A page whose agent socket stayed open since it provisioned unobserved
+      // sends nothing that identifies it. Close that socket so Make reconnects
+      // and provisions under the armed hook (about 1.5 s, observed live), but
+      // never while Make is generating.
+      const state = await this._editor({ type: 'inspect' }, deadline);
+      if (!state.busy && await this._reconnectAgentSocket(deadline) && await captured(4000, 8000)) return { invoke, dispose };
     } catch (error) { await dispose(); throw error; }
     await dispose();
     const error = new Error('No Make filesystem connection was observed; no files were written. Make opens one when its page reconnects; ' +
       'if the project tab is in the foreground, switch to another Figma tab, wait a minute, and run the command again.');
     error.code = 'MAKE_FILESYSTEM_UNAVAILABLE';
     throw error;
+  }
+
+  async _reconnectAgentSocket(deadline) {
+    const prototype = await this.transport.send('Runtime.evaluate', { expression: 'WebSocket.prototype' }, { timeoutMs: this._remaining(deadline) });
+    if (!prototype.result?.objectId) return 0;
+    try {
+      const sockets = await this.transport.send('Runtime.queryObjects', { prototypeObjectId: prototype.result.objectId }, { timeoutMs: this._remaining(deadline) });
+      if (!sockets.objects?.objectId) return 0;
+      try {
+        const result = await this.transport.send('Runtime.callFunctionOn', {
+          objectId: sockets.objects.objectId, arguments: [{ value: this.fileKey }], returnByValue: true,
+          functionDeclaration: `function(fileKey) {
+            const record = globalThis[Symbol.for('figma-cli.make.filesystem.' + fileKey)];
+            const host = new URL(location.href).hostname;
+            let closed = 0;
+            for (const socket of this) {
+              try {
+                const url = new URL(socket.url);
+                if (socket.readyState !== WebSocket.OPEN || socket === record?.socket || url.protocol !== 'wss:' ||
+                    url.hostname !== host || url.pathname !== '/api/agentcontrol/subscribe') continue;
+                socket.close();
+                closed++;
+              } catch {}
+            }
+            return closed;
+          }`,
+        }, { timeoutMs: this._remaining(deadline) });
+        return result.result?.value || 0;
+      } finally { await this.transport.send('Runtime.releaseObject', { objectId: sockets.objects.objectId }, { timeoutMs: 400 }); }
+    } finally { await this.transport.send('Runtime.releaseObject', { objectId: prototype.result.objectId }, { timeoutMs: 400 }); }
   }
 
   async _backup(path, content, metadata) {
@@ -496,7 +522,7 @@ export class MakeClient {
         timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
       });
       validateImportFiles(validated, existing);
-      const bridge = await this._fileBridge(existing, deadline);
+      const bridge = await this._fileBridge(deadline);
       await this._bounded(() => this.transport.send('Network.enable', {}, {
         timeoutMs: this._remaining(deadline),
       }), deadline);
@@ -569,7 +595,7 @@ export class MakeClient {
           throw new Error(`Make source file is missing: ${file.path}`);
         }
       }
-      const bridge = await this._fileBridge(existing, deadline);
+      const bridge = await this._fileBridge(deadline);
       try {
         const verified = [];
         for (const file of validated) {
@@ -597,7 +623,7 @@ export class MakeClient {
         timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
       });
       if (!existing.some(entry => entry.path === path && entry.kind === 'file')) throw new Error('Exact source file not found.');
-      const bridge = await this._fileBridge(existing, deadline);
+      const bridge = await this._fileBridge(deadline);
       let backupPath;
       try {
         let content;
@@ -640,7 +666,7 @@ export class MakeClient {
       if (!existing.some(entry => entry.kind === 'file' && entry.path === path)) {
         throw new Error(`Make source file is missing: ${path}`);
       }
-      const bridge = await this._fileBridge(existing, deadline);
+      const bridge = await this._fileBridge(deadline);
       try {
         const original = await this._bridgeRead(bridge, path);
         const originalSha256 = sha256(original.content);
