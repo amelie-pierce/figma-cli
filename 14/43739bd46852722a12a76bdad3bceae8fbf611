@@ -1,0 +1,85 @@
+REFERENCE.md
+  s_8ce0a02126cb27::t_c461139cae4fcb 215-218,222-225
+  s_8ce0a02126cb27::t_951bab6987336f 88-90,155-161,164-165,170-214,219-221,226-229
+  s_8ce0a02126cb27::t_18ee717e05d01c 77,162-163,166-169
+skills/figma-make/SKILL.md
+  s_8ce0a02126cb27::t_ac53240077cc99 131-137
+tests/make-durable.test.js
+  s_8ce0a02126cb27::t_a624b6d8bedd84 157-167
+CHANGELOG.md
+  s_8ce0a02126cb27::t_951bab6987336f 7,13
+src/make-drift.js
+  s_8ce0a02126cb27::t_dcf405bb0922bd 109-111
+  s_8ce0a02126cb27::t_2dd952ab313078 116-117
+  s_8ce0a02126cb27::t_673dbe31c7dee4 73-76,94-108,112-115,118-127
+  s_45ca94368b564c::t_c6f052aa711920 128
+_vaults/figma-cli/wiki/index.md
+  s_8ce0a02126cb27::t_63a69a11994a93 10
+_vaults/figma-cli/wiki/make/sync.md
+  s_8ce0a02126cb27::t_e0a45df36dbe47 45-57,59-68
+  s_8ce0a02126cb27::t_63a69a11994a93 1-11,14-21,23-29,35-38,41,43-44
+  s_8ce0a02126cb27::t_c461139cae4fcb 30-31,34
+  s_8ce0a02126cb27::t_780e24251919d3 12,39-40,42,58
+  s_8ce0a02126cb27::t_fd3d535e8e9874 13,22,32-33
+src/make-client.js
+  s_8ce0a02126cb27::t_86487ee17ac21f 14,663,667-670
+  s_8ce0a02126cb27::t_6bdc51b2d65dec 457,484-487
+  s_8ce0a02126cb27::t_15db45229d5d19 309-313
+  s_8ce0a02126cb27::t_a120a01e3e5242 594-608,611-624,626-648,650,652-654,656-662,664-665,671
+  s_8ce0a02126cb27::t_048ebb6235b90b 609-610
+src/make-sync.js
+  s_8ce0a02126cb27::t_5a03d5fa5720ce 56,59,62,247,254,261,264,267-268,273
+  s_8ce0a02126cb27::t_eb55e2d7bbf2cd 271
+  s_8ce0a02126cb27::t_3fb465f401a426 290-317
+  s_8ce0a02126cb27::t_25db5d802e3e35 148-150,174,234,281-284
+  s_8ce0a02126cb27::t_bdf43c456204ff 1,75-87,99,143,277-278,280,285-288
+  s_8ce0a02126cb27::t_0f04452b6b5f77 2-28,30-55,57-58,60-61,63-69,72-74,88-95,98,100-104,106-107,109,111-142,144-147,151-173,175-200,202-211,215-222,229-233,235-246,248-253,255-260,262-263,265-266,269-270,272,274-276,322
+  s_8ce0a02126cb27::t_2dd952ab313078 29,70-71,96-97,105,108,110,224-228
+  s_8ce0a02126cb27::t_4bc68296c26711 279,289,318-321
+  s_8ce0a02126cb27::t_040bca5118022e 201,212-214,223
+README.md
+  s_8ce0a02126cb27::t_951bab6987336f 292-301
+src/commands/make.js
+  s_8ce0a02126cb27::t_15db45229d5d19 71-73
+  s_8ce0a02126cb27::t_254f6a549f3b49 8,207-212,214-218,220-233,235-252,255-257,274-283
+  s_8ce0a02126cb27::t_fe0daed0a2f277 9
+  s_8ce0a02126cb27::t_4bc68296c26711 24,234,258-273
+  s_8ce0a02126cb27::t_5a03d5fa5720ce 213,219
+  s_8ce0a02126cb27::t_25db5d802e3e35 253-254
+tests/make-sync.test.js
+  s_8ce0a02126cb27::t_ccd397c7e79597 215-238
+  s_8ce0a02126cb27::t_8c20ae00dab7e5 1-136,186-214
+  s_8ce0a02126cb27::t_da2d6dca8c5539 167-185
+  s_8ce0a02126cb27::t_1ebf6fe486cc9e 137-166
+skills/figma-make/references/commands.md
+  s_8ce0a02126cb27::t_18ee717e05d01c 11,25
+  s_8ce0a02126cb27::t_ac53240077cc99 26-27,46-49
+_vaults/figma-cli/wiki/make/index.md
+  s_8ce0a02126cb27::t_63a69a11994a93 8
+tests/make-drift.test.js
+  s_8ce0a02126cb27::t_aa1c172a4cab1b 173-193
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1443739bd46852722a12a76bdad3bceae8fbf611",
+  "prompts": {},
+  "sessions": {
+    "s_45ca94368b564c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a13450-8b97-7680-9e63-24696f7bd1a2",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_8ce0a02126cb27": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a134fe-d6eb-7f23-bea4-d5bb28e934cb",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
