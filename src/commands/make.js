@@ -173,20 +173,29 @@ target(make.command('delete <path>').description('Delete one git-mode Make file 
 
 target(make.command('save-version').description('Save only the exact expected pending git-mode paths using Make createVersion'), 120000)
   .requiredOption('--title <title>', 'Make version title')
-  .option('--expected-path <path>', 'One pending path; repeat for every expected path (at least one)', (path, paths) => [...paths, path], [])
+  .requiredOption('--expected-path <path>', 'One pending path; repeat for every expected path', (path, paths = []) => [...paths, path])
   .option('--receipt-out <path>', 'Write version ID, git SHA and changed-file set to a new private JSON file')
   .action(options => withClient(options, async client => {
     const outputPath = options.receiptOut ? resolve(options.receiptOut) : null;
     if (outputPath && existsSync(outputPath)) throw new Error('Receipt path already exists; no Make version was requested.');
-    const result = await client.saveVersion(options.title, options.expectedPath);
-    if (outputPath) {
-      try {
-        writeFileSync(outputPath, `${JSON.stringify(result, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-        result.receiptPath = outputPath;
-      } catch (error) {
-        report(result);
-        throw new Error(`Make version was saved but the local receipt failed: ${error.message}`);
+    const writeReceipt = version => {
+      if (!outputPath) return;
+      writeFileSync(outputPath, `${JSON.stringify(version, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      version.receiptPath = outputPath;
+    };
+    let result;
+    try { result = await client.saveVersion(options.title, options.expectedPath); }
+    catch (error) {
+      if (error.version) {
+        try { writeReceipt(error.version); }
+        catch (receiptError) { error.message += ` The local receipt also failed: ${receiptError.message}`; }
       }
+      throw error;
+    }
+    try { writeReceipt(result); }
+    catch (error) {
+      report(result);
+      throw new Error(`Make version was saved but the local receipt failed: ${error.message}`);
     }
     report(result);
   }));

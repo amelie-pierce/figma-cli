@@ -257,6 +257,10 @@ export class MakeClient {
             operationError.backupPath = result.backupPath;
             operationError.message += ` Original backup: ${result.backupPath}.`;
           }
+          if (result?.versionId) {
+            operationError.version = result;
+            operationError.message += ` Make version ${result.versionNumber} (${result.gitSha}) was created; do not retry the save.`;
+          }
         }
       } finally {
         this._running = false;

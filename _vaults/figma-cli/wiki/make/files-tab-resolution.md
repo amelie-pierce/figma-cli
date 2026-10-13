@@ -18,10 +18,10 @@ Two "tab" meanings exist. A Figma Desktop tab is a CDP page target per project (
 1. Legacy Code/Preview radios: use the Code radio (`src/make-workspace.js:11`).
 2. A visible Files pane exists: reuse it; expand a collapsed tree with `Show files` (`src/make-workspace.js:50`).
 3. Files tabs exist but none is active (for example Browser is active): click the first Files tab in tab order (`src/make-workspace.js:54`). Every Files tab in the page belongs to the page's project, which the guard has already checked by file key, and all show the same source tree, so the first is a deterministic, safe choice.
-4. No Files tab exists: report `needsFilesTab`, and `_ensureCode` opens one through **Add workspace tab → Files**, once per operation (`src/make-workspace.js:45`, `src/make-client.js:267`, `src/make-workspace.js:67`).
+4. No Files tab exists: report `needsFilesTab`, and `_ensureCode` opens one through **Add workspace tab → Files**, once per operation (`src/make-workspace.js:45`, `src/make-client.js:272`, `src/make-workspace.js:67`).
 5. More than one visible Files pane is ambiguous and stops the operation (`src/make-workspace.js:49`).
 
-`_ensureCode` then polls `inspect` until the tree and header are ready (`src/make-client.js:267`). Operations enable focus emulation so hidden Desktop tabs keep updating their virtualized tree (`src/make-client.js:235`).
+`_ensureCode` then polls `inspect` until the tree and header are ready (`src/make-client.js:272`). Operations enable focus emulation so hidden Desktop tabs keep updating their virtualized tree (`src/make-client.js:236`).
 
 ## Figma behaviour to expect
 

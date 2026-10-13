@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { MakeClient } from '../src/make-client.js';
 import { makeDurablePageAction, requireExactPending, requireGitMode } from '../src/make-durable.js';
 
@@ -198,4 +200,28 @@ test('absence read-back keeps waiting when an existing ancestor cannot be listed
     ? { success: true, data: { path: 'code', files: [{ name: 'src' }] } } : { success: false }) });
   client._sourceTree = async () => [];
   await assert.rejects(client._durableAgreement('src/a.ts', null, Date.now() + 300), /timed out/);
+});
+
+test('save-version CLI requires an expected path before connecting', () => {
+  const cli = fileURLToPath(new URL('../src/index.js', import.meta.url));
+  const result = spawnSync(process.execPath, [cli, '--port', '1', 'make', 'save-version', '--file', 'ExactKey', '--title', 'Empty'],
+    { env: { ...process.env, FIGMA_CLI_NO_UPDATE_CHECK: '1' }, encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /--expected-path/);
+  assert.doesNotMatch(result.stderr, /CDP|port/i);
+});
+
+test('a created version survives a focus-emulation cleanup failure', async () => {
+  const sent = [];
+  const client = new MakeClient({ timeoutMs: 5000, transport: { close() {}, evaluate: async () => true,
+    send: async (method, params) => {
+      sent.push(params.enabled);
+      if (method === 'Emulation.setFocusEmulationEnabled' && params.enabled === false) throw new Error('renderer gone');
+      return {};
+    } } });
+  client.fileKey = 'ScratchKey';
+  const saved = { fileKey: 'ScratchKey', versionId: 'version-id', versionNumber: 5, gitSha: next };
+  const error = await client._operation(async () => saved).catch(cause => cause);
+  assert.match(error.message, /focus emulation could not be disabled.*version 5/);
+  assert.equal(error.version, saved);
 });

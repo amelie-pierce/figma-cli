@@ -127,7 +127,8 @@ and changed-file set; `--receipt-out` writes these to a new private JSON file.
 The CLI then checks that Make reports the new baseline and no pending changes.
 At least one expected path is required, so a clean file never gets an empty version.
 If the version is created but the clean baseline is not observed, the error
-reports the version ID, number and git SHA; do not retry the save.
+reports the version ID, number and git SHA, and `--receipt-out` is still
+written; do not retry the save.
 After a timeout or uncertain result, inspect Make before retrying. A fresh
 sandbox reload plus `make drift` and source hashes gives persistence proof;
 the save response alone does not.
