@@ -1,0 +1,19 @@
+tests/cdp-diagnostics.test.js
+  s_3d34f992e216fb::t_b2d2df185821cc 38,55-56,69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "45901aace86853ca37717e541bfc63e08c422a31",
+  "prompts": {},
+  "sessions": {
+    "s_3d34f992e216fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ecd37600-8ae8-421c-bffc-9138af05c6f7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
