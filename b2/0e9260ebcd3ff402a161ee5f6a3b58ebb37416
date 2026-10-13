@@ -1,0 +1,63 @@
+skills/figma-make/references/commands.md
+  s_193564f2123ccc::t_8521272bf0528c 13-14,22,27-35,114-118,129-130
+tests/make-client.test.js
+  s_193564f2123ccc::t_27ddbb08d0ebba 460
+  s_193564f2123ccc::t_a5b1f1b21f19a5 282,290,292,294,298-299,303-305,395,402-405,409,412-413,415,503,507-508,521,529-534,536,538,540-541,545-579,588-605,607-631,638,643,647-665,669-680,686-687,692,694,696,699-700,704,706,711,716,729-731,738-739,745-746,758-760,764,766,773-777,788-790,792,799-801
+  s_193564f2123ccc::t_7e5a5c3444aff1 43-44,48-51,53-56,75,79-86,580-587
+  s_193564f2123ccc::t_67826203627f87 219-229,606
+  s_193564f2123ccc::t_8a6c2107945e39 15-16,18-20,22,24,29-30,33-42,45-47,52,57-74,76-78,116-117,129-133,145-151,203-212,214-215,236-237,240-254
+_vaults/figma-cli/wiki/testing/test-layout.md
+  s_193564f2123ccc::t_026ac230f2e07e 11-13
+src/commands/make.js
+  s_193564f2123ccc::t_34789328451df9 68-69,80
+REFERENCE.md
+  s_193564f2123ccc::t_19bf7eec0bf02c 80,89-99,102-121,127-129,144-153,155-158,172-179
+  s_193564f2123ccc::t_8521272bf0528c 154
+_vaults/figma-cli/wiki/make/files-tab-resolution.md
+  s_193564f2123ccc::t_026ac230f2e07e 30
+src/make-client.js
+  s_193564f2123ccc::t_47ae58c9a240b1 42-43,138,632-633
+  s_193564f2123ccc::t_9c5e250a2a9ad0 441-445,449,456
+  s_193564f2123ccc::t_8521272bf0528c 470
+  s_193564f2123ccc::t_8d69a710bb289f 226-232,380-381,384-398,400-403,407-419,421-430,432-440,446-448,450-455,457-469,471-487,603-605,607,620-623,630-631,636-641,643,645-698
+  s_193564f2123ccc::t_7998ae898dc241 634-635
+skills/figma-make/references/recovery.md
+  s_193564f2123ccc::t_8521272bf0528c 19,39-47
+src/make-rpc.js
+  s_193564f2123ccc::t_27ddbb08d0ebba 148-153
+  s_193564f2123ccc::t_342b3af6a1ee93 1-7,20,22-24,26-44,46-63,68,84-92,94-97,100-101,106,108-111,133,137-147,155
+  s_193564f2123ccc::t_4636bb1c1d8c6e 8-11,21,25,64-67,69-83,102-104
+  s_193564f2123ccc::t_4b9b7c6e2d7fb5 12
+  s_193564f2123ccc::t_f2aed32e8407c4 45
+  s_193564f2123ccc::t_e497ded0e87042 93
+  s_193564f2123ccc::t_e3ba3dd58831f5 154
+README.md
+  s_193564f2123ccc::t_0cf8db132ddbd1 276-278
+_vaults/figma-cli/wiki/index.md
+  s_193564f2123ccc::t_7c98536b31ed03 29
+_vaults/figma-cli/wiki/make/filesystem-bridge.md
+  s_193564f2123ccc::t_7c98536b31ed03 1-40
+_vaults/figma-cli/wiki/make/index.md
+  s_193564f2123ccc::t_7c98536b31ed03 5
+tests/make-rpc.test.js
+  s_193564f2123ccc::t_ef55f0f4f83254 60-74,76,79-94,96,98-161,186-187
+  s_193564f2123ccc::t_7e5a5c3444aff1 75,77-78,162-185
+  s_193564f2123ccc::t_736a7b1af8d347 97
+  s_193564f2123ccc::t_ce929efb41d322 95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b20e9260ebcd3ff402a161ee5f6a3b58ebb37416",
+  "prompts": {},
+  "sessions": {
+    "s_193564f2123ccc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f7e2b6c2-7038-4d33-8c3a-3832993d8f9f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
