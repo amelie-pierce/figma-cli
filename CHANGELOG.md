@@ -4,6 +4,8 @@
 
 ### Changed
 
+- Make writes (`make replace`, `create`, `import`, `remove`) are session-only: they reach the open session's working copy and are lost when the file is reopened unless saved in Make, which figma-cli never does. They now refuse unless `--session-only` is passed, and report `persistence: "session-only"` with `verification: "session-readback-matched"` or `"session-delete-accepted"` instead of `server-acknowledged` / `acknowledged`, which wrongly implied a save. Import errors list `sessionWrites` instead of `acknowledged`. Docs, the figma-make skill and help text say that reads (`read`, `files`, `verify`) see the same working copy
+
 - `npm test` no longer writes to a connected Figma file. The extract → instantiate roundtrip test, which adds and removes a page in the live file, runs only with `FIGMA_CLI_LIVE_TESTS=1`
 
 ## 2.2.5 (2026-09-26)

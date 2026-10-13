@@ -75,6 +75,10 @@ function fixture(options = {}) {
       if (state.writeMode === 'lost') { state.hangReads = true; return; }
       reply = state.writeMode === 'rejected' ? { success: false }
         : { success: true, data: { path: message.data.path, size: Buffer.byteLength(written), writtenAtMs: 1, modifiedAtMs: 2 } };
+    } else if (message.type === 'fs/file/delete') {
+      state.fsDeletes = [...(state.fsDeletes || []), file];
+      delete state.fs[file];
+      reply = { success: true, data: { path: message.data.path } };
     } else reply = { success: false };
     deliver(socket, { type: message.type, requestId: message.requestId, ...reply });
   }
@@ -544,12 +548,33 @@ test('replacement backs up the saved original before one bridge write, then veri
   assert.equal(state.dispatches.length, 0);
   assert.equal(result.sha256, hash(replacement));
   assert.equal(result.changed, true);
-  assert.equal(result.verification, 'server-acknowledged');
+  // The bridge writes the session's working copy only; never claim a save.
+  assert.equal(result.verification, 'session-readback-matched');
   assert.equal(result.readback, 'matched');
-  assert.equal(result.persistence, 'acknowledged');
+  assert.equal(result.persistence, 'session-only');
+  assert.match(result.note, /lost when the file is reopened unless it is saved in Make/);
   assert.deepEqual(result.receipt, { path: 'src/App.tsx', bytes: Buffer.byteLength(replacement), writtenAtMs: 1, modifiedAtMs: 2 });
   assert.equal(state.methods.includes('Network.enable'), false);
   assert.equal(state.focusEnabled, false);
+});
+
+test('removal backs up the original, deletes it from the session and reports it session-only', async (t) => {
+  const { client, state, backupDir } = await setup(t);
+  const original = state.content;
+  const result = await client.remove('src/App.tsx', { expectedSha256: hash(original), backupDir });
+  assert.equal(await readFile(result.backupPath, 'utf8'), original);
+  assert.deepEqual(state.fsDeletes, ['src/App.tsx']);
+  assert.equal(Object.hasOwn(state.fs, 'src/App.tsx'), false);
+  assert.equal(result.verification, 'session-delete-accepted');
+  assert.equal(result.persistence, 'session-only');
+  assert.match(result.note, /lost when the file is reopened/);
+});
+
+test('removal refuses a stale hash before any backup or delete', async (t) => {
+  const { client, state, backupDir } = await setup(t);
+  await assert.rejects(client.remove('src/App.tsx', { expectedSha256: hash('stale'), backupDir }), /removal refused/);
+  assert.equal(state.fsDeletes, undefined);
+  assert.deepEqual(await readdir(backupDir), []);
 });
 
 test('replacement works for a deeply nested file whose folder chain cannot fit in the file-tree viewport', async (t) => {

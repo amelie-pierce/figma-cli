@@ -7,6 +7,7 @@ import { listMakeFiles, selectMakeFile } from './make-tree.js';
 import { watchMakeSave } from './make-save-observer.js';
 import { validateImportFiles } from './make-import.js';
 import { captureMakeFileSocket } from './make-rpc.js';
+import { sessionOnly } from './make-session.js';
 import { makeWorkspace, openMakeFilesTab } from './make-workspace.js';
 import { makeUiSnapshot } from './make-ui.js';
 
@@ -377,7 +378,7 @@ export class MakeClient {
     });
   }
 
-  // Saved source through the filesystem bridge; the editor is only a fallback
+  // The session's working copy through the filesystem bridge; the editor is only a fallback
   // when no filesystem connection can be observed, and never for --remote.
   read(path, { remote = false } = {}) {
     return this._operation(async (deadline) => {
@@ -529,7 +530,7 @@ export class MakeClient {
       const watchers = validated.map(file => watchMakeSave(this.transport, {
         path: file.path, content: file.content, timeoutMs: this._remaining(deadline),
       }));
-      const acknowledged = [];
+      const sessionWrites = [];
       const observedWrites = [];
       const removeDiagnostics = this.transport.onEvent(({ method, params }) => {
         if (!['Network.webSocketFrameSent', 'Network.webSocketFrameReceived'].includes(method)) return;
@@ -544,7 +545,7 @@ export class MakeClient {
       const pending = watchers.map((watcher, index) => watcher.promise.then(receipt => {
         const { path, bytes, sha256 } = validated[index];
         const result = { path, bytes, sha256, receipt };
-        acknowledged.push(result);
+        sessionWrites.push(result);
         return result;
       }));
       pending.forEach(promise => promise.catch(() => {}));
@@ -556,7 +557,7 @@ export class MakeClient {
             'fs/file/write', { path: `code/${file.path}`, content: Buffer.from(file.content).toString('base64'), encoding: 'base64' }, randomUUID(),
           ]);
           if (reply.success !== true || reply.data?.path !== `code/${file.path}` || reply.data?.size !== file.bytes) {
-            throw new Error(`Make did not acknowledge creation of ${file.path}.`);
+            throw new Error(`Make did not accept the session write of ${file.path}.`);
           }
           const readback = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
             'fs/file/read', { path: `code/${file.path}`, encoding: 'base64' }, randomUUID(),
@@ -566,12 +567,12 @@ export class MakeClient {
             throw new Error(`Make source readback did not match ${file.path}.`);
           }
         }
-        const saved = await this._bounded(() => Promise.all(pending), deadline);
-        return { fileKey: this.fileKey, files: saved, verification: 'server-acknowledged', persistence: 'acknowledged' };
+        const written = await this._bounded(() => Promise.all(pending), deadline);
+        return { fileKey: this.fileKey, files: written, verification: 'session-readback-matched', ...sessionOnly };
       } catch (cause) {
         const error = new Error(`Make import outcome may be partial or uncertain: ${cause.message} No retry or rollback was attempted. Inspect the file tree before resuming.`);
         error.outcome = 'uncertain';
-        error.acknowledged = acknowledged;
+        error.sessionWrites = sessionWrites;
         error.requestedPaths = validated.map(file => file.path);
         error.observedWrites = observedWrites;
         throw error;
@@ -634,8 +635,8 @@ export class MakeClient {
         const reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
           'fs/file/delete', { path: `code/${path}` }, randomUUID(),
         ]);
-        if (reply.success !== true) throw new Error('Make did not acknowledge removal.');
-        return { path, backupPath, sha256: sha256(content), verification: 'server-acknowledged', persistence: 'acknowledged' };
+        if (reply.success !== true) throw new Error('Make did not accept the session removal.');
+        return { path, backupPath, sha256: sha256(content), verification: 'session-delete-accepted', ...sessionOnly };
       } catch (error) {
         if (backupPath) { error.backupPath = backupPath; error.message += ' Removal outcome may be uncertain; inspect before retrying.'; }
         throw error;
@@ -645,8 +646,8 @@ export class MakeClient {
 
   // The whole replacement runs through the filesystem bridge, so a file at
   // any depth works without fitting its folder chain into the file-tree
-  // viewport. The bridge's own write reply is Make's server acknowledgement,
-  // so the editor-save observer the old editor path needed is not used.
+  // viewport. The bridge writes the session's working copy only; Make's own
+  // Save is never triggered, so the result is labelled session-only.
   replace(path, content, { expectedSha256, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     return this._operation(async (deadline) => {
       if (typeof content !== 'string') throw new Error('Replacement content must be a UTF-8 string.');
@@ -706,10 +707,10 @@ export class MakeClient {
         try {
           const reply = outcome?.reply;
           if (reply?.success !== true) {
-            throw new Error(reply?.success === false ? 'Make rejected the source write.' : 'Make did not acknowledge the source write.');
+            throw new Error(reply?.success === false ? 'Make rejected the session write.' : 'Make did not answer the session write.');
           }
           if (reply.data?.path !== remotePath || reply.data?.size !== replacement.length) {
-            throw new Error('Make write acknowledgement did not match the source path and byte count.');
+            throw new Error('Make session-write reply did not match the source path and byte count.');
           }
           const readback = await this._bridgeRead(bridge, path);
           if (readback.base64 !== encoded || sha256(readback.content) !== sha256(content)) {
@@ -720,7 +721,7 @@ export class MakeClient {
             ...([writtenAtMs, modifiedAtMs].every(value => Number.isSafeInteger(value) && value >= 0) ? { writtenAtMs, modifiedAtMs } : {}) };
         } catch (error) { throw uncertain(error); }
         return { path, backupPath, sha256: sha256(content), changed: true,
-          verification: 'server-acknowledged', readback: 'matched', persistence: 'acknowledged', receipt };
+          verification: 'session-readback-matched', readback: 'matched', ...sessionOnly, receipt };
       } finally { await bridge.dispose(); }
     });
   }
