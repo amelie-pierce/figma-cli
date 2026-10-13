@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { program } from '../lib/cli-core.js';
 import { MakeTransport } from '../make-transport.js';
@@ -10,14 +10,16 @@ import { driftExitCode } from '../make-drift.js';
 const make = program.command('make')
   .description('Experimental direct source-file editing in Figma Make Desktop')
   .addHelpText('after', '\nAll Make commands accept --port PORT (global option). Use connection --save-port PORT to persist it.' +
-    '\n\nReads (read, files, verify) see the open session\'s working copy. Writes (replace, create, import, remove)' +
-    '\nare session-only: they are lost when the file is reopened unless saved in Make, and require --session-only.');
+    '\n\nReads (read, files, verify) see the open session\'s working copy. The original writes' +
+    '\n(replace, create, import, remove) are session-only and require --session-only.' +
+    '\nGit-mode write/delete use Make client VFS; save-version records a saved version.');
 
 function report(value) { console.log(JSON.stringify(value, null, 2)); }
 function failure(error) {
   console.error(JSON.stringify({ error: error.message,
     ...(error.endpoint ? { code: error.code, port: error.port, endpoint: error.endpoint, reason: error.reason, recovery: error.recovery } : {}),
     ...(error.backupPath ? { backupPath: error.backupPath } : {}),
+    ...(error.version ? { version: error.version } : {}),
     ...(error.code === 'MAKE_SESSION_ONLY_REQUIRED' ? { code: error.code } : {}),
     ...(error.sessionWrites ? { sessionWrites: error.sessionWrites, requestedPaths: error.requestedPaths, observedWrites: error.observedWrites } : {}) }));
   process.exitCode = 1;
@@ -143,7 +145,7 @@ target(make.command('drift').description('Read-only vendor inventory, manifest c
     if (options.json) report(result);
     else {
       console.log(`Make ${result.fileKey}: ${result.persistence?.mode || 'unknown'} mode, saved ${result.persistence?.savedVersion || 'unverified'}, pending ${result.persistence?.pendingCount ?? 'unknown'}`);
-      console.log(`Persistence scan skipped ${result.scanTruncation.arrayItems} array items past 30 and ${result.scanTruncation.depth} values deeper than 3 levels`);
+      console.log('Persistence scan: direct Make provider props, bounded at 100000 React fibers');
       console.log(`Vendor ${result.root}: ${Object.entries(result.counts).map(([status, count]) => `${status}=${count}`).join(' ')}`);
       console.log(`VENDOR.json: ${result.manifest.inMake?.sha256 || 'missing'} (${result.manifest.inMake?.bytes ?? 0} bytes)`);
       for (const file of result.files) {
@@ -152,4 +154,48 @@ target(make.command('drift').description('Read-only vendor inventory, manifest c
       for (const reason of result.reasons) console.log(`drift: ${reason}`);
     }
     process.exitCode = driftExitCode(result);
+  }));
+
+target(make.command('write <path>').description('Write one git-mode Make file through Make client VFS; save-version is required to persist it'), 120000)
+  .requiredOption('--from <source>', 'Existing UTF-8 file, or - for stdin')
+  .option('--expected-sha256 <hash>', 'Required for an existing file; omit for a new file')
+  .option('--backup-dir <directory>', 'Private backup directory for replaced content')
+  .action((path, options) => withClient(options, async client => report(await client.writeDurable(path, decodeMakeSource(sourceBytes(options.from)), {
+    expectedSha256: options.expectedSha256, backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
+  }))));
+
+target(make.command('delete <path>').description('Delete one git-mode Make file through Make client VFS after backup; save-version is required'), 120000)
+  .requiredOption('--expected-sha256 <hash>', 'Current SHA-256 of the file to remove')
+  .option('--backup-dir <directory>', 'Private backup directory')
+  .action((path, options) => withClient(options, async client => report(await client.deleteDurable(path, {
+    expectedSha256: options.expectedSha256, backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
+  }))));
+
+target(make.command('save-version').description('Save only the exact expected pending git-mode paths using Make createVersion'), 120000)
+  .requiredOption('--title <title>', 'Make version title')
+  .requiredOption('--expected-path <path>', 'One pending path; repeat for every expected path', (path, paths = []) => [...paths, path])
+  .option('--receipt-out <path>', 'Write version ID, git SHA and changed-file set to a new private JSON file')
+  .action(options => withClient(options, async client => {
+    const outputPath = options.receiptOut ? resolve(options.receiptOut) : null;
+    if (outputPath && existsSync(outputPath)) throw new Error('Receipt path already exists; no Make version was requested.');
+    const writeReceipt = version => {
+      if (!outputPath) return;
+      writeFileSync(outputPath, `${JSON.stringify(version, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      version.receiptPath = outputPath;
+    };
+    let result;
+    try { result = await client.saveVersion(options.title, options.expectedPath); }
+    catch (error) {
+      if (error.version) {
+        try { writeReceipt(error.version); }
+        catch (receiptError) { error.message += ` The local receipt also failed: ${receiptError.message}`; }
+      }
+      throw error;
+    }
+    try { writeReceipt(result); }
+    catch (error) {
+      report(result);
+      throw new Error(`Make version was saved but the local receipt failed: ${error.message}`);
+    }
+    report(result);
   }));

@@ -11,15 +11,16 @@ When no Files tab is open, Make source commands automatically open one through
 **Add workspace tab → Files**. An existing Files tab is reused instead: the active
 pane when one is shown, otherwise the first Files tab of that exact project page.
 
-> **Make writes are session-only.** `make replace`, `create`, `import` and
+> **The original Make writes are session-only.** `make replace`, `create`, `import` and
 > `remove` change only the open session's working copy. They are lost when the
-> Make file is reopened unless Make creates a saved version; figma-cli does not
-> create one. These commands
+> Make file is reopened unless Make creates a saved version. These commands
 > refuse unless `--session-only` is passed. Reads (`read`, `files`, `verify`) see
 > the same working copy, so a match alone does not prove persistence. `make drift`
 > checks the current saved version, pending state and complete vendor inventory,
-> including hidden files. See
-> [Make writes are session-only](REFERENCE.md#make-writes-are-session-only).
+> including hidden files. Git-mode files can use `make write` / `make delete`
+> through Make's client VFS, followed by `make save-version` with the exact
+> expected pending paths. Snapshot-mode files are refused. See
+> [Make saving modes and write commands](REFERENCE.md#make-saving-modes-and-write-commands).
 
 This fork of [silships/figma-cli](https://github.com/silships/figma-cli) adds direct
 Figma Make source editing and bundles **figma-cli** (Design) and **figma-make**
@@ -43,7 +44,7 @@ Run `connection` through the Node entry point first. Report the exact endpoint a
 
 If shell launchers are unavailable, invoke the installed JavaScript entry point with Node.js and an argument array (shell: false), preserving the configured port. Do not embed personal absolute paths in shared instructions.
 
-For Make work, write readable React/TSX directly through the CLI using stdin. Keep modules separate, avoid local application source files and computer-use tools, and verify the session's source and the preview after editing; tell me that Make writes are session-only and must be saved in Make. Keep publishing separate from editing. If CLI access fails, report the blocker; do not fall back to computer-use, mouse/keyboard automation, or screenshot clicking.
+For Make work, write readable React/TSX directly through the CLI using stdin. Keep modules separate, avoid local application source files and computer-use tools, and verify source and preview after editing. Explain whether the selected command is session-only or saves a git-mode version, and verify saved changes after a fresh reopen. Keep publishing separate from editing. If CLI access fails, report the blocker; do not fall back to computer-use, mouse/keyboard automation, or screenshot clicking.
 ```
 
 ### Install for Claude Code, Codex, and GitHub Copilot
@@ -281,13 +282,14 @@ verify source. Plugin/Safe mode is for Design and does not supply the Make adapt
 
 The Make skill handles readable React/TSX, new modules, dependencies, hash-guarded
 replacement, backups, session-content verification, and preview inspection.
-Writes are session-only; save them in Make to keep them.
+The original four write commands are session-only. For git-mode files, use
+`make write` and `make save-version` when a saved version is required.
 For a vendor kit, `make drift --file KEY --manifest VENDOR.json` reads every file
 under `src/vendor/atomic-aui`, compares raw bytes and SHA-256, and fails when
 the inventory or saved state cannot be verified. `--receipt` can pin an external
 manifest hash and saved git SHA; `--json` returns the full result. Make's saved
-state is read from its React state, skipping array items past 30 and values nested
-more than 3 levels deep; `scanTruncation` reports both counts.
+state is read from the Make provider's direct React props; unrelated app graphs
+are not traversed.
 Source can travel entirely through stdin, with no local application source copies.
 See [the Make skill](skills/figma-make/SKILL.md) and [command reference](REFERENCE.md).
 Reads and replacements use Make's experimental private filesystem protocol through

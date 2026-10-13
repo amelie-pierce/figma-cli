@@ -1,6 +1,6 @@
 ---
 name: figma-make
-description: Build and edit React applications directly in an existing Figma Make project using the Make-enabled figma-cli. Use for Make source changes, component-library imports, session-source verification, and preview inspection; Make writes are session-only until saved in Make. Figma Design canvas and FigJam edits use their own workflows.
+description: Build and edit React applications directly in an existing Figma Make project using the Make-enabled figma-cli. Use for Make source changes, git-mode durable saves, session-source verification, and preview inspection. Figma Design canvas and FigJam edits use their own workflows.
 ---
 
 # Figma Make
@@ -10,14 +10,16 @@ preserve existing work, and verify both the session's files and the running app.
 This skill requires the Make-enabled extension of figma-cli. Check the installed
 commands rather than assuming an upstream installation includes it.
 
-## Make writes are session-only
+## Choose the saving mode
 
-Every write (`replace`, `create`, `import`, `remove`) reaches only the open
+The original writes (`replace`, `create`, `import`, `remove`) reach only the open
 session's working copy. It is lost when the Make file is reopened unless Make
 creates a saved version. Git-mode files create versions through Make's version
 flow; older snapshot-mode files use the in-progress manual-edit Save card. The
-CLI does not trigger either save flow.
-The write commands refuse unless `--session-only` is passed. Before writing,
+four commands do not trigger either save flow. Git-mode files can instead use
+`write` or `delete` through Make's client VFS, followed by `save-version`.
+Snapshot-mode files refuse this durable path; their Save card is separate.
+The four session-only commands refuse unless `--session-only` is passed. Before using them,
 tell the user that the change is session-only and that they must save it in
 Make to keep it; do not pass the flag without that understanding. Reads
 (`read`, `files`, `verify`) see the same working copy, so a match proves the
@@ -110,15 +112,19 @@ For exact commands and safe in-memory examples, read
 
 ## Apply and verify
 
-1. Separate new paths from existing paths. Use `create` or `import` only for new
-   files. Use `replace` with the prior SHA-256 for existing files. Every write
-   needs `--session-only` (see above). Keep all backup paths returned by the CLI.
+1. Separate new paths from existing paths. For git-mode durable work, use
+   `write` with the prior SHA-256 for an existing file, omit it for a new file,
+   and use `delete` with the prior SHA-256 for removals. Keep backup paths.
+   The original four commands retain their `--session-only` gate.
 2. Add supporting modules and dependencies before replacing the entry point, so
    the app spends less time with unresolved imports. Imports are sequential,
    not atomic; do not run concurrent writers or assume rollback is automatic.
-3. Verify the expected final source with `make verify --manifest -`. Compare only
+3. For durable work, call `save-version` with the exact pending path set and
+   record its version ID and git SHA. Verify the expected final source with
+   `make verify --manifest -`. Compare only
    files in scope; retain genuine vendor files byte-for-byte when unmodified.
-   This verifies the session's working copy, not a saved version. For a vendor
+   This verifies the working copy. For a saved version, reload the exact Make
+   tab, confirm a fresh sandbox, and repeat hashes and `make drift`. For a vendor
    tree, run `make drift --file KEY --manifest VENDOR.json` to compare the complete
    hidden-file inventory and check Make's saved/pending state. Use an external
    `--receipt` when one exists.
@@ -127,7 +133,7 @@ For exact commands and safe in-memory examples, read
    overlay, and overflow measurements. Preview inspection is not an interaction
    test, a production build, or proof of publication. State any untested boundary.
 5. Finish with the Make link, the source changes, and the checks actually completed.
-   State that the changes are session-only until the user saves them in Make.
+   Report the saved version or the session-only boundary.
    Keep publishing, sharing changes, installing elsewhere, and creating a fork
    separate from ordinary source editing unless the user requested them.
 

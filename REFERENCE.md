@@ -84,16 +84,20 @@ figma-cli make create src/Component.tsx --file <make-file-key> --from - --sessio
 figma-cli make import --file <make-file-key> --manifest - --timeout 120000 --session-only
 figma-cli make verify --file <make-file-key> --manifest - --timeout 120000
 figma-cli make drift --file <make-file-key> --manifest VENDOR.json --timeout 120000 --json
+figma-cli make write src/App.tsx --file <make-file-key> --from - --expected-sha256 <hash-from-read>
+figma-cli make write src/New.ts --file <make-file-key> --from -
+figma-cli make delete src/Old.ts --file <make-file-key> --expected-sha256 <hash-from-read>
+figma-cli make save-version --file <make-file-key> --title "Reviewed edit" --expected-path src/App.tsx --expected-path src/New.ts --receipt-out receipt.json
 figma-cli make preview --file <make-file-key>
 ```
 
-### Make writes are session-only
+### Make saving modes and write commands
 
 Every Make write (`replace`, `create`, `import`, `remove`) goes through the
 filesystem connection into the open session's working copy, a per-session
 sandbox. **It is not saved to the project.** Make saves source only through its
 own save flow: git-mode files create a version, while older snapshot-mode files
-use the manual-edit Save card. figma-cli never triggers either flow. When the file is reopened, the working copy is
+use the manual-edit Save card. The original four commands never trigger either flow. When the file is reopened, the working copy is
 rebuilt from the last saved version and session writes are gone: on 2026-10-13,
 39 files written with `make import` read back with matching SHA-256 in the same
 session and were missing after a reopen.
@@ -107,8 +111,27 @@ session and were missing after a reopen.
 - Reads (`read`, `files`, `verify`) read the same working copy. They equal the
   saved project only when no session write or manual edit is pending, so they
   confirm session state, not persistence.
-- The save flow depends on the Make file's mode. The CLI's current write commands
+- The save flow depends on the Make file's mode. The four session-only commands
   still cannot prove that their bytes reached a saved version.
+
+`make write` and `make delete` use Make's client VFS in git mode. An existing
+file requires `--expected-sha256`; a new file omits it. Replaced or deleted
+bytes receive a private backup. The CLI checks the client VFS, file tree, editor
+(for existing or newly written files), and session sandbox before reporting a
+pending write. Snapshot-mode files are refused. A pending write is not saved.
+
+`make save-version --title TITLE --expected-path PATH ...` calls Make's own
+in-page `createVersion` only when the complete pending path set matches the
+supplied paths. It records the version ID, number, full git SHA, previous SHA,
+and changed-file set; `--receipt-out` writes these to a new private JSON file.
+The CLI then checks that Make reports the new baseline and no pending changes.
+At least one expected path is required, so a clean file never gets an empty version.
+If the version is created but the clean baseline is not observed, the error
+reports the version ID, number and git SHA, and `--receipt-out` is still
+written; do not retry the save.
+After a timeout or uncertain result, inspect Make before retrying. A fresh
+sandbox reload plus `make drift` and source hashes gives persistence proof;
+the save response alone does not.
 
 `make drift --file KEY --manifest VENDOR.json [--receipt receipt.json] [--root PATH] [--json]`
 is read-only. It recursively lists the root through Make's filesystem bridge with
@@ -118,9 +141,9 @@ must match the supplied manifest. It reports matched, mismatched, missing and ex
 files, Make's saving mode, saved git SHA and pending-change count. Exit status is
 zero only when all files match and Make reports a clean saved git version. Snapshot
 mode and missing, conflicting or changing persistence state fail closed. Make's
-saving state is read from its React tree, which skips array items past index 30
-and values nested more than 3 levels deep; `scanTruncation` (`arrayItems`,
-`depth`) counts those skipped values, and human output prints them on one line.
+saving state is read from direct Make provider props in its React tree, so
+large unrelated graphs do not hide the saving mode. `scanTruncation` is always
+zero and remains in JSON output only for compatibility.
 Optional external
 receipts must pin `fileKey`, the raw `manifestSha256` and full
 `savedVersionGitSha`; a stale receipt fails. `--manifest -` reads stdin. The

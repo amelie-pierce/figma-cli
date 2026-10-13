@@ -1,4 +1,4 @@
 interface:
   display_name: "Figma Make"
   short_description: "Edit and verify React source directly in Figma Make"
-  default_prompt: "Use $figma-make to update this Make project with readable React source, verify the session source, and remind me to save in Make because CLI writes are session-only."
+  default_prompt: "Use $figma-make to update this Make project with readable React source, verify the source, and tell me whether the change is session-only or saved as a git-mode Make version."

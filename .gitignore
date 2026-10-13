@@ -9,6 +9,7 @@ docs/figma-api/
 # Local DESIGN.md extraction examples (Primer test) — never commit
 Primer-Web/
 *.markdown-preview.html
+/.make-live-backups/
 
 # figma-cli knowledge vault: track only the compiled wiki subtree.
 _vaults/*

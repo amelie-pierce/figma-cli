@@ -6,7 +6,7 @@ import { makePersistenceState } from '../src/make-persistence.js';
 
 const root = 'src/vendor/atomic-aui';
 const gitSha = 'a'.repeat(40);
-const clean = { mode: 'git', hasBaseline: true, savedVersion: gitSha, pendingCount: 0, isLoading: false, error: false };
+const clean = { mode: 'git', hasBaseline: true, savedVersion: gitSha, pendingCount: 0, pendingPaths: [], isLoading: false, error: false };
 const expected = { 'a.ts': Buffer.from('alpha\n'), 'tokens/generated/.generated': Buffer.from('sentinel\n') };
 const manifestBytes = Buffer.from(JSON.stringify({ files: Object.entries(expected).map(([path, bytes]) => ({ path, bytes: bytes.length, sha256: digest(bytes) })) }));
 const manifest = vendorManifest(manifestBytes, root);
@@ -69,7 +69,7 @@ test('mode detection reads bounded React state for git and snapshot modes', () =
     memoizedProps: { codeFileChanges }, memoizedState: null, child: null, sibling: null,
   } }] };
   try {
-    assert.deepEqual(makePersistenceState(), { state: clean, truncation: { arrayItems: 0, depth: 0 } });
+    assert.deepEqual(makePersistenceState(), { state: clean });
     codeFileChanges.isGitSourceOfTruth = false;
     codeFileChanges.baselineMakeVersionGitSha = null;
     codeFileChanges.changedFiles = [{ path: 'src/App.tsx' }];
@@ -78,7 +78,7 @@ test('mode detection reads bounded React state for git and snapshot modes', () =
   } finally { globalThis.document = previous; }
 });
 
-test('persistence discovery fails closed when a traversal budget hides a later live provider', () => {
+test('persistence discovery finds direct providers in large trees and rejects disagreements', () => {
   const previous = globalThis.document;
   const state = pending => ({ codeFileChanges: { isGitSourceOfTruth: true, hasBaseline: true,
     baselineMakeVersionGitSha: gitSha, changedFiles: pending ? [{ path: 'src/App.tsx' }] : [], isLoading: false, error: null } });
@@ -97,10 +97,12 @@ test('persistence discovery fails closed when a traversal budget hides a later l
     }
   } finally { globalThis.document = previous; }
   assert.deepEqual(results[0].state, { ambiguous: true, count: 2 });
-  for (const result of results.slice(1)) assert.equal(result.state, null);
+  assert.deepEqual(results[1].state, { ambiguous: true, count: 2 });
+  assert.equal(results[2].state, null); // The fiber traversal budget still fails closed.
+  assert.deepEqual(results[3].state, { ambiguous: true, count: 2 });
 });
 
-test('persistence discovery counts values skipped by the array and depth limits', () => {
+test('persistence discovery ignores unrelated deep objects without losing the provider', () => {
   const previous = globalThis.document;
   const codeFileChanges = { isGitSourceOfTruth: true, hasBaseline: true,
     baselineMakeVersionGitSha: gitSha, changedFiles: [], isLoading: false, error: null };
@@ -110,7 +112,7 @@ test('persistence discovery counts values skipped by the array and depth limits'
     memoizedState: null, child: null, sibling: null,
   } }] };
   try {
-    assert.deepEqual(makePersistenceState(), { state: clean, truncation: { arrayItems: 3, depth: 1 } });
+    assert.deepEqual(makePersistenceState(), { state: clean });
   } finally { globalThis.document = previous; }
 });
 
@@ -144,9 +146,9 @@ async function driftWith(scan) {
 }
 
 test('read-only client inventory includes nested dotfiles and never sends writes', async () => {
-  const { result, calls } = await driftWith({ state: clean, truncation: { arrayItems: 4, depth: 2 } });
+  const { result, calls } = await driftWith({ state: clean });
   assert.equal(result.ok, true);
-  assert.deepEqual(result.scanTruncation, { arrayItems: 4, depth: 2 });
+  assert.deepEqual(result.scanTruncation, { arrayItems: 0, depth: 0 });
   assert.equal(result.counts.matched, 2);
   assert.ok(result.files.some(file => file.path === 'tokens/generated/.generated' && file.status === 'matched'));
   assert.ok(calls.filter(call => call.type === 'fs/dir/list').every(call => call.data.includeHidden === true));

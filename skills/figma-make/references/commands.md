@@ -15,6 +15,10 @@ These examples are templates; choose paths/content for the actual requested work
 | Create a new module (session-only) | `figma-cli make create src/Component.tsx --file KEY --from - --session-only` |
 | Import new modules (session-only) | `figma-cli make import --file KEY --manifest - --timeout 120000 --session-only` |
 | Replace existing source (session-only) | `figma-cli make replace src/App.tsx --file KEY --from - --expected-sha256 HASH --session-only` |
+| Write existing source through Make VFS (git mode) | `figma-cli make write src/App.tsx --file KEY --from - --expected-sha256 HASH` |
+| Write new source through Make VFS (git mode) | `figma-cli make write src/New.ts --file KEY --from -` |
+| Delete source through Make VFS (git mode) | `figma-cli make delete src/Old.ts --file KEY --expected-sha256 HASH` |
+| Save exact pending files as a Make version (git mode) | `figma-cli make save-version --file KEY --title "Reviewed edit" --expected-path src/App.tsx --expected-path src/New.ts --receipt-out receipt.json` |
 | Verify expected session content | `figma-cli make verify --file KEY --manifest - --timeout 120000` |
 | Check vendor drift and saved state, including hidden files | `figma-cli make drift --file KEY --manifest VENDOR.json --json` |
 | Inspect the running preview | `figma-cli make preview --file KEY` |
@@ -25,10 +29,16 @@ a local source copy; omit it in a direct-to-Make/no-local-app-code workflow.
 `--from -` and `--manifest -` accept blocking stdin, including large source payloads.
 No special stdin preloader or temporary source file is needed.
 
-Every write command needs `--session-only`; without it the CLI refuses before
+The four original write commands need `--session-only`; without it the CLI refuses before
 connecting (`code: "MAKE_SESSION_ONLY_REQUIRED"`). Writes change only the open
 session's working copy and are lost when the file is reopened unless the user
 saves them in Make, which creates a new version through the file's saving mode.
+Git-mode `write` and `delete` use Make's client VFS. They check the prior hash,
+back up replaced or removed bytes, and verify the editor, tree, VFS and sandbox.
+They remain pending until `save-version` receives the complete changed-path set,
+creates a Make version and confirms a clean pending state. Snapshot mode is
+refused. After an uncertain result, inspect state before retrying. Reload the
+exact Make tab and compare hashes plus `make drift` to prove persistence.
 
 `read` returns the session's UTF-8 source through the observed filesystem connection,
 at any folder depth and including Markdown that Make shows as a preview, without
