@@ -1,0 +1,21 @@
+tests/make-drift.test.js
+  s_9b2e249125459c::t_33077b47546a43 81-102
+src/make-persistence.js
+  s_9b2e249125459c::t_33077b47546a43 16,18-19,44-45,52,56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "45e7119e99969699c4e2cccf78fc146ec6e25f6c",
+  "prompts": {},
+  "sessions": {
+    "s_9b2e249125459c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "38629ede-6ca7-46d1-93bf-c2f005c520ec",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
