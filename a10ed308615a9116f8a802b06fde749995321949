@@ -1,0 +1,21 @@
+tests/make-durable.test.js
+  s_9f67882a181281::t_689cfa71809a04 198-199
+src/make-client.js
+  s_9f67882a181281::t_916adba2a7b488 462,465
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a10ed308615a9116f8a802b06fde749995321949",
+  "prompts": {},
+  "sessions": {
+    "s_9f67882a181281": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07afc87c-edcc-449d-903a-c3f83a834c45",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}

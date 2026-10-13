@@ -1,0 +1,19 @@
+skills/figma-make/agents/openai.yaml
+  s_bb375bfef7e734::t_36b58ac63ac9d7 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d5156a57fb08dd9aa7c778aed1c82af0a8e072ba",
+  "prompts": {},
+  "sessions": {
+    "s_bb375bfef7e734": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "de68d0a8-3e4f-489c-935f-61a77dc43ac9",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
