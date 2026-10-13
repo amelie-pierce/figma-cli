@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `npm test` no longer writes to a connected Figma file. The extract → instantiate roundtrip test, which adds and removes a page in the live file, runs only with `FIGMA_CLI_LIVE_TESTS=1`
+
 ## 2.2.5 (2026-09-26)
 
 ### Fixed

@@ -16,9 +16,15 @@ function run(args, opts = {}) {
   return execFileSync('node', [CLI, ...args], { encoding: 'utf8', timeout: TIMEOUT, ...opts });
 }
 
-// Gate on a LIVE Figma connection, not just a running daemon: probe with a
-// trivial eval. When Figma is not connected the CLI exits 1 → execFileSync
-// throws → we skip. Only a real round-trip (exit 0, 'ok') unlocks the test.
+// This test WRITES to whatever Figma file is live (adds and removes a page), so
+// it is opt-in: it runs only when FIGMA_CLI_LIVE_TESTS=1. Without the opt-in the
+// default `npm test` never probes Figma, connects to it, or starts a daemon.
+const LIVE = process.env.FIGMA_CLI_LIVE_TESTS === '1';
+const SKIP_REASON = 'writes to the live Figma file; set FIGMA_CLI_LIVE_TESTS=1 to run';
+
+// With the opt-in, also gate on a LIVE Figma connection, not just a running
+// daemon: probe with a trivial eval. When Figma is not connected the CLI exits
+// 1 → execFileSync throws → we skip. Only a real round-trip (exit 0, 'ok') unlocks the test.
 function figmaReady() {
   try { return /ok/.test(run(['eval', `(async () => 'ok')()`], { timeout: 20_000 })); } catch { return false; }
 }
@@ -51,7 +57,7 @@ const teardown = (pageId) => `(async () => {
   return 'ok';
 })()`;
 
-test('extract → instantiate roundtrip (gated on a connected Figma)', { skip: !figmaReady() }, () => {
+test('extract → instantiate roundtrip (opt-in, gated on a connected Figma)', { skip: !LIVE ? SKIP_REASON : !figmaReady() }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'inst-'));
   const md = join(dir, 'DESIGN.md');
   let pageId;

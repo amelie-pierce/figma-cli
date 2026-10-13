@@ -696,7 +696,9 @@ Patterns". It then **measures** what Figma actually produced and fails if any
 number drifts, so it is documentation and a regression test at once.
 
 ```bash
-npm test          # unit tests, no Figma needed
+npm test          # unit tests, no Figma needed; never touches a live Figma file
+FIGMA_CLI_LIVE_TESTS=1 npm test  # also runs the extract → instantiate roundtrip,
+                                 # which adds and removes a page in the connected file
 npm run examples  # render + verify the pattern gallery (needs a connected Figma)
 npm run test:live # the above, plus render vs render-batch layout parity
 ```
