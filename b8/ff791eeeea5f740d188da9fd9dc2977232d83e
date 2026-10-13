@@ -1,0 +1,62 @@
+skills/figma-make/references/commands.md
+  s_740bc7839becf3::t_424f312f06ea52 19
+  s_740bc7839becf3::t_0e6eb66f8f178d 31
+_vaults/figma-cli/wiki/make/filesystem-bridge.md
+  s_740bc7839becf3::t_0e6eb66f8f178d 22
+_vaults/figma-cli/wiki/make/drift.md
+  s_740bc7839becf3::t_f40de63b450eb9 11,13
+  s_740bc7839becf3::t_46a2ba9876f3a0 1-8,10,12
+  s_740bc7839becf3::t_19e065c94eea92 9
+tests/make-drift.test.js
+  s_740bc7839becf3::t_69fd904d3dd1f6 5,62-78
+  s_740bc7839becf3::t_c2015cdcc46309 100-101
+  s_740bc7839becf3::t_81965248222630 91
+  s_740bc7839becf3::t_0ee507bdf834bb 1-4,6-61,79-90,92-99,102-113
+skills/figma-make/SKILL.md
+  s_740bc7839becf3::t_424f312f06ea52 16-19,121-124
+CHANGELOG.md
+  s_740bc7839becf3::t_424f312f06ea52 5-8
+_vaults/figma-cli/wiki/make/index.md
+  s_740bc7839becf3::t_846d7d43a5c54e 6-7
+src/make-persistence.js
+  s_740bc7839becf3::t_7c71522f7eba35 1-55
+src/make-drift.js
+  s_740bc7839becf3::t_e535b4e3145499 1-3,5-76,80-89
+  s_740bc7839becf3::t_7456aa56be66a7 4
+  s_740bc7839becf3::t_0e6eb66f8f178d 77-79
+README.md
+  s_740bc7839becf3::t_424f312f06ea52 16-17,19-21,285-288
+src/commands/make.js
+  s_740bc7839becf3::t_2ba3d423fffdb6 37,39,134
+  s_740bc7839becf3::t_fe7c97cc6ea2b7 133,135-152,154
+  s_740bc7839becf3::t_7456aa56be66a7 8,153
+_vaults/figma-cli/wiki/index.md
+  s_740bc7839becf3::t_846d7d43a5c54e 10,29
+src/make-client.js
+  s_740bc7839becf3::t_de2a4aeb9dc503 13-14,411-416,425-460,463-484
+  s_740bc7839becf3::t_c2015cdcc46309 461-462
+_vaults/figma-cli/wiki/make/persistence.md
+  s_740bc7839becf3::t_f40de63b450eb9 41
+  s_740bc7839becf3::t_3f8dc51ed2116b 2-3,9-10,21,23-24
+  s_740bc7839becf3::t_19e065c94eea92 13,33,37,43
+REFERENCE.md
+  s_740bc7839becf3::t_424f312f06ea52 86,95-96,110-123
+src/make-rpc.js
+  s_740bc7839becf3::t_1232a509cff84d 112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b8ff791eeeea5f740d188da9fd9dc2977232d83e",
+  "prompts": {},
+  "sessions": {
+    "s_740bc7839becf3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a13488-8bae-7821-8ebe-eb0771fbae8a",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
