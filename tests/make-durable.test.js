@@ -76,12 +76,28 @@ test('save records Make version ID, git SHA and expected changed files', async (
   const { client, calls } = fakeClient({ paths: ['src/ours.ts'],
     version: { id: 'version-id', versionNumber: 2, gitSha: next } });
   let reads = 0;
-  client._driftState = async () => ({ state: reads++ < 2 ? state(['src/ours.ts']) :
+  client._driftState = async () => ({ state: reads++ < 1 ? state(['src/ours.ts']) :
     { ...state(), savedVersion: next } });
   const result = await client.saveVersion('Saved', ['src/ours.ts']);
   assert.deepEqual({ id: result.versionId, gitSha: result.gitSha, files: result.changedFiles },
     { id: 'version-id', gitSha: next, files: ['src/ours.ts'] });
   assert.deepEqual(calls.filter(call => call[0] === 'save'), [['save', 'Saved']]);
+});
+
+test('save refuses an empty expected set before connecting to Make', () => {
+  const { client, calls } = fakeClient();
+  assert.throws(() => client.saveVersion('Empty', []), /exact expected changed-file set/);
+  assert.equal(calls.length, 0);
+});
+
+test('save reports the created version when the clean baseline is not observed', async () => {
+  const { client } = fakeClient({ paths: ['src/ours.ts'],
+    version: { id: 'version-id', versionNumber: 4, gitSha: next } });
+  client._operation = fn => fn(Date.now() + 300);
+  const error = await client.saveVersion('Saved', ['src/ours.ts']).catch(cause => cause);
+  assert.match(error.message, new RegExp(`version 4 \\(${next}\\) was created`));
+  assert.deepEqual({ id: error.version.versionId, gitSha: error.version.gitSha, previous: error.version.previousGitSha },
+    { id: 'version-id', gitSha: next, previous: base });
 });
 
 test('page action never invokes a save for a VFS read', async () => {
@@ -157,4 +173,29 @@ test('page-side save refuses unrelated pending paths before createVersion', asyn
     assert.deepEqual(accepted, { id: 'v', versionNumber: 2, gitSha: next });
     assert.equal(saved, 1);
   } finally { globalThis.document = prior; }
+});
+
+test('absence read-back lists the nearest existing ancestor of a new directory', async () => {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
+  client.fileKey = 'ScratchKey';
+  client._durable = async () => ({ exists: false, content: null });
+  const listed = [];
+  client._fileBridge = async () => ({ dispose: async () => {}, invoke: async (_fn, [, data]) => {
+    listed.push(data.path);
+    if (data.path !== 'code/src') return { success: false, error: 'not found' };
+    return { success: true, data: { path: 'code/src', files: [{ name: 'App.tsx' }] } };
+  } });
+  client._sourceTree = async () => [];
+  await client._durableAgreement('src/components/new/Foo.tsx', null, Date.now() + 1000);
+  assert.deepEqual(listed, ['code/src/components/new', 'code/src/components', 'code/src']);
+});
+
+test('absence read-back keeps waiting when an existing ancestor cannot be listed deeper', async () => {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
+  client.fileKey = 'ScratchKey';
+  client._durable = async () => ({ exists: false, content: null });
+  client._fileBridge = async () => ({ dispose: async () => {}, invoke: async (_fn, [, data]) => (data.path === 'code'
+    ? { success: true, data: { path: 'code', files: [{ name: 'src' }] } } : { success: false }) });
+  client._sourceTree = async () => [];
+  await assert.rejects(client._durableAgreement('src/a.ts', null, Date.now() + 300), /timed out/);
 });

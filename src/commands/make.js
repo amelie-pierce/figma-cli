@@ -19,6 +19,7 @@ function failure(error) {
   console.error(JSON.stringify({ error: error.message,
     ...(error.endpoint ? { code: error.code, port: error.port, endpoint: error.endpoint, reason: error.reason, recovery: error.recovery } : {}),
     ...(error.backupPath ? { backupPath: error.backupPath } : {}),
+    ...(error.version ? { version: error.version } : {}),
     ...(error.code === 'MAKE_SESSION_ONLY_REQUIRED' ? { code: error.code } : {}),
     ...(error.sessionWrites ? { sessionWrites: error.sessionWrites, requestedPaths: error.requestedPaths, observedWrites: error.observedWrites } : {}) }));
   process.exitCode = 1;
@@ -172,7 +173,7 @@ target(make.command('delete <path>').description('Delete one git-mode Make file 
 
 target(make.command('save-version').description('Save only the exact expected pending git-mode paths using Make createVersion'), 120000)
   .requiredOption('--title <title>', 'Make version title')
-  .option('--expected-path <path>', 'One pending path; repeat for every expected path', (path, paths) => [...paths, path], [])
+  .option('--expected-path <path>', 'One pending path; repeat for every expected path (at least one)', (path, paths) => [...paths, path], [])
   .option('--receipt-out <path>', 'Write version ID, git SHA and changed-file set to a new private JSON file')
   .action(options => withClient(options, async client => {
     const outputPath = options.receiptOut ? resolve(options.receiptOut) : null;

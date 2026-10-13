@@ -69,7 +69,7 @@ test('mode detection reads bounded React state for git and snapshot modes', () =
     memoizedProps: { codeFileChanges }, memoizedState: null, child: null, sibling: null,
   } }] };
   try {
-    assert.deepEqual(makePersistenceState(), { state: clean, truncation: { arrayItems: 0, depth: 0 } });
+    assert.deepEqual(makePersistenceState(), { state: clean });
     codeFileChanges.isGitSourceOfTruth = false;
     codeFileChanges.baselineMakeVersionGitSha = null;
     codeFileChanges.changedFiles = [{ path: 'src/App.tsx' }];
@@ -112,7 +112,7 @@ test('persistence discovery ignores unrelated deep objects without losing the pr
     memoizedState: null, child: null, sibling: null,
   } }] };
   try {
-    assert.deepEqual(makePersistenceState(), { state: clean, truncation: { arrayItems: 0, depth: 0 } });
+    assert.deepEqual(makePersistenceState(), { state: clean });
   } finally { globalThis.document = previous; }
 });
 
@@ -146,9 +146,9 @@ async function driftWith(scan) {
 }
 
 test('read-only client inventory includes nested dotfiles and never sends writes', async () => {
-  const { result, calls } = await driftWith({ state: clean, truncation: { arrayItems: 4, depth: 2 } });
+  const { result, calls } = await driftWith({ state: clean });
   assert.equal(result.ok, true);
-  assert.deepEqual(result.scanTruncation, { arrayItems: 4, depth: 2 });
+  assert.deepEqual(result.scanTruncation, { arrayItems: 0, depth: 0 });
   assert.equal(result.counts.matched, 2);
   assert.ok(result.files.some(file => file.path === 'tokens/generated/.generated' && file.status === 'matched'));
   assert.ok(calls.filter(call => call.type === 'fs/dir/list').every(call => call.data.includeHidden === true));

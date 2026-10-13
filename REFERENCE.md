@@ -125,7 +125,9 @@ in-page `createVersion` only when the complete pending path set matches the
 supplied paths. It records the version ID, number, full git SHA, previous SHA,
 and changed-file set; `--receipt-out` writes these to a new private JSON file.
 The CLI then checks that Make reports the new baseline and no pending changes.
-An empty expected path set is allowed when creating a deliberate clean version.
+At least one expected path is required, so a clean file never gets an empty version.
+If the version is created but the clean baseline is not observed, the error
+reports the version ID, number and git SHA; do not retry the save.
 After a timeout or uncertain result, inspect Make before retrying. A fresh
 sandbox reload plus `make drift` and source hashes gives persistence proof;
 the save response alone does not.
@@ -139,8 +141,8 @@ files, Make's saving mode, saved git SHA and pending-change count. Exit status i
 zero only when all files match and Make reports a clean saved git version. Snapshot
 mode and missing, conflicting or changing persistence state fail closed. Make's
 saving state is read from direct Make provider props in its React tree, so
-large unrelated graphs do not hide the saving mode. `scanTruncation` remains
-in JSON output for compatibility.
+large unrelated graphs do not hide the saving mode. `scanTruncation` is always
+zero and remains in JSON output only for compatibility.
 Optional external
 receipts must pin `fileKey`, the raw `manifestSha256` and full
 `savedVersionGitSha`; a stale receipt fails. `--manifest -` reads stdin. The

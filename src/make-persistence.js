@@ -14,7 +14,6 @@ export function makePersistenceState() {
   if (!root) return null;
   const fibers = [root];
   const snapshots = [];
-  const truncation = { arrayItems: 0, depth: 0 };
   let exhausted = false;
   function inspect(value) {
     if (!value || typeof value !== 'object') return;
@@ -47,7 +46,7 @@ export function makePersistenceState() {
     if (fiber.sibling) fibers.push(fiber.sibling);
     if (fiber.child) fibers.push(fiber.child);
   }
-  if (exhausted || !snapshots.length) return { state: null, truncation };
+  if (exhausted || !snapshots.length) return { state: null };
   const unique = [...new Set(snapshots.map(state => JSON.stringify(state)))];
-  return { state: unique.length === 1 ? snapshots[0] : { ambiguous: true, count: unique.length }, truncation };
+  return { state: unique.length === 1 ? snapshots[0] : { ambiguous: true, count: unique.length } };
 }

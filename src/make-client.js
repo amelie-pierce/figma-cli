@@ -429,10 +429,9 @@ export class MakeClient {
   async _driftState(deadline) {
     const scan = await this._evaluate(`(${makePersistenceState.toString()})()`, deadline);
     const state = scan?.state;
-    const truncation = { arrayItems: scan?.truncation?.arrayItems ?? 0, depth: scan?.truncation?.depth ?? 0 };
     if (!state || state.ambiguous || !['git', 'snapshot'].includes(state.mode) ||
-        state.pendingCount == null) return { state: null, truncation };
-    return { state, truncation };
+        state.pendingCount == null) return { state: null };
+    return { state };
   }
 
   _durable(action, deadline) {
@@ -453,14 +452,16 @@ export class MakeClient {
       let absentInSandbox = false;
       try {
         if (expectedContent === null) {
-          const parts = path.split('/');
-          const name = parts.pop();
-          const remotePath = `code${parts.length ? `/${parts.join('/')}` : ''}`;
-          const listing = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
-            'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
-          ]);
-          if (listing?.success === true && listing.data?.path === remotePath && Array.isArray(listing.data.files)) {
-            absentInSandbox = !listing.data.files.some(entry => entry?.name === name);
+          const segments = path.split('/');
+          for (let depth = segments.length - 1; depth >= 0; depth--) {
+            const remotePath = ['code', ...segments.slice(0, depth)].join('/');
+            const listing = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
+              'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
+            ]);
+            if (listing?.success === true && listing.data?.path === remotePath && Array.isArray(listing.data.files)) {
+              absentInSandbox = !listing.data.files.some(entry => entry?.name === segments[depth]);
+              break;
+            }
           }
         } else sandbox = await this._bridgeRead(bridge, path);
       }
@@ -546,30 +547,31 @@ export class MakeClient {
 
   saveVersion(title, expectedPaths) {
     if (typeof title !== 'string' || !title.trim() || title.length > 160) throw new Error('Make version title must be 1–160 characters.');
-    if (!Array.isArray(expectedPaths) || expectedPaths.length > 1000) throw new Error('Provide the exact expected changed-file set.');
+    if (!Array.isArray(expectedPaths) || !expectedPaths.length || expectedPaths.length > 1000) throw new Error('Provide the exact expected changed-file set.');
     expectedPaths.forEach(sourcePath);
     return this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
       if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
       const before = requireGitMode((await this._driftState(deadline)).state);
       const changedFiles = requireExactPending(before, expectedPaths);
-      const immediate = requireGitMode((await this._driftState(deadline)).state);
-      requireExactPending(immediate, expectedPaths);
-      if (immediate.savedVersion !== before.savedVersion) throw new Error('Make saved version changed before createVersion.');
       let version;
       try { version = await this._durable({ type: 'save', title, expectedPaths: changedFiles, expectedGitSha: before.savedVersion }, deadline); }
       catch (cause) { throw new Error(`Make version outcome is uncertain: ${cause.message}. Inspect versions before retrying.`); }
       if (version?.refused) throw new Error(version.refused);
       if (typeof version?.id !== 'string' || !version.id || !Number.isSafeInteger(version.versionNumber) ||
           !/^[a-f0-9]{40}$/.test(version.gitSha || '')) throw new Error('Make version response is incomplete; inspect versions before retrying.');
-      for (;;) {
-        const after = requireGitMode((await this._driftState(deadline)).state);
-        if (after.savedVersion === version.gitSha && after.pendingCount === 0) {
-          return { fileKey: this.fileKey, title, versionId: version.id, versionNumber: version.versionNumber,
-            gitSha: version.gitSha, previousGitSha: before.savedVersion, changedFiles,
-            verification: 'saved-version-clean-pending' };
+      const saved = { fileKey: this.fileKey, title, versionId: version.id, versionNumber: version.versionNumber,
+        gitSha: version.gitSha, previousGitSha: before.savedVersion, changedFiles };
+      try {
+        for (;;) {
+          const after = requireGitMode((await this._driftState(deadline)).state);
+          if (after.savedVersion === version.gitSha && after.pendingCount === 0) return { ...saved, verification: 'saved-version-clean-pending' };
+          await this._bounded(() => new Promise(resolve => setTimeout(resolve, 100)), deadline);
         }
-        await this._bounded(() => new Promise(resolve => setTimeout(resolve, 100)), deadline);
+      } catch (cause) {
+        const error = new Error(`Make version ${version.versionNumber} (${version.gitSha}) was created but the clean baseline was not observed: ${cause.message}. Do not retry the save.`);
+        error.version = saved;
+        throw error;
       }
     });
   }
@@ -622,11 +624,7 @@ export class MakeClient {
       const result = compareVendor(manifest, inventory, {
         manifestFile: inventory.get('VENDOR.json'), stateBefore: before.state, stateAfter: after.state, receipt,
       });
-      const scanTruncation = {
-        arrayItems: Math.max(before.truncation.arrayItems, after.truncation.arrayItems),
-        depth: Math.max(before.truncation.depth, after.truncation.depth),
-      };
-      return { fileKey: this.fileKey, ...result, scanTruncation };
+      return { fileKey: this.fileKey, ...result, scanTruncation: { arrayItems: 0, depth: 0 } };
     });
   }
 
