@@ -1,0 +1,28 @@
+tests/make-client.test.js
+  s_a4c7f3dba8191e::t_624dea67d9d97b 309
+  s_a4c7f3dba8191e::t_87e2a042a6ff16 29,41-45,258-263,600-606,608-614,642
+_vaults/figma-cli/wiki/make/filesystem-bridge.md
+  s_a4c7f3dba8191e::t_e784a28389c9ce 28-29,31
+src/make-client.js
+  s_a4c7f3dba8191e::t_87e2a042a6ff16 394,420,525,598,626,669
+  s_a4c7f3dba8191e::t_8afaceac019220 457-462,471-498
+  s_a4c7f3dba8191e::t_947fae2cfcaf4a 499-500
+REFERENCE.md
+  s_a4c7f3dba8191e::t_1dabbcd971f666 151-154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "152a2a9fbc4cf06d7920f79b4b55e41eb164db8e",
+  "prompts": {},
+  "sessions": {
+    "s_a4c7f3dba8191e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e16de9c1-b7c6-4b32-a5df-d5e51ee4a6c1",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
