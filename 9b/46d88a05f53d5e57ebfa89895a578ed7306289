@@ -1,0 +1,33 @@
+README.md
+  s_9b2e249125459c::t_60bf2f3b42b8df 288-290
+_vaults/figma-cli/wiki/make/persistence.md
+  s_9b2e249125459c::t_406d1833e1cdbb 23
+src/make-persistence.js
+  s_9b2e249125459c::t_83f1d9cbd2a212 3,17,20-21,37,60,62
+_vaults/figma-cli/wiki/make/drift.md
+  s_9b2e249125459c::t_406d1833e1cdbb 11,13
+REFERENCE.md
+  s_9b2e249125459c::t_60bf2f3b42b8df 120-124
+tests/make-drift.test.js
+  s_9b2e249125459c::t_5303c2073dca84 72,76-77,99-100,103-117,129,143-147,149,155-170
+src/commands/make.js
+  s_9b2e249125459c::t_83f1d9cbd2a212 146
+src/make-client.js
+  s_9b2e249125459c::t_83f1d9cbd2a212 429-431,433-434,441,481,483,485-489
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9b46d88a05f53d5e57ebfa89895a578ed7306289",
+  "prompts": {},
+  "sessions": {
+    "s_9b2e249125459c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "38629ede-6ca7-46d1-93bf-c2f005c520ec",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
