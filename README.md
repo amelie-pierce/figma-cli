@@ -273,7 +273,9 @@ The Make skill handles readable React/TSX, new modules, dependencies, hash-guard
 replacement, backups, remote-content verification, and preview inspection.
 Source can travel entirely through stdin, with no local application source copies.
 See [the Make skill](skills/figma-make/SKILL.md) and [command reference](REFERENCE.md).
-Make uses an experimental private filesystem protocol through your loaded editor;
+Reads and replacements use Make's experimental private filesystem protocol through
+your loaded Make page, so files at any folder depth work, including Markdown; only
+`diagnostics` still needs the file's folder chain to fit in the file tree.
 Figma changes may require adapter updates. Saving source is separate from publishing.
 
 ### No computer-use tools required

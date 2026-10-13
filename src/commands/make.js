@@ -65,8 +65,8 @@ target(make.command('files').description('Expand and list the complete source-fi
 target(make.command('diagnostics <path>').description('Read the selected source editor diagnostics when available'))
   .action((path, options) => withClient(options, async client => report(await client.diagnostics(path))));
 
-target(make.command('read <path>').description('Read a source file and its SHA-256'))
-  .option('--remote', 'Read saved source through the filesystem bridge, including Markdown guidance')
+target(make.command('read <path>').description('Read saved source and its SHA-256 through the filesystem bridge, at any depth'))
+  .option('--remote', 'Require the filesystem bridge; never fall back to the editor buffer')
   .option('--out <local-file>', 'Write source to a new local file instead of stdout')
   .action((path, options) => withClient(options, async client => {
     const result = await client.read(path, { remote: options.remote });
@@ -77,7 +77,7 @@ target(make.command('read <path>').description('Read a source file and its SHA-2
     report({ ...metadata, bytes: Buffer.byteLength(content), outputPath });
   }));
 
-target(make.command('replace <path>').description('Back up, replace one existing source file, and verify Make acknowledged saving'))
+target(make.command('replace <path>').description('Back up and replace one existing source file at any depth through the filesystem bridge, then verify the saved content'))
   .requiredOption('--from <local-file>', 'UTF-8 source to save into Make')
   .requiredOption('--expected-sha256 <hash>', 'SHA-256 returned by the prior read; stale content is rejected')
   .option('--backup-dir <directory>', 'Local backup location (defaults to ~/.figma-cli/make-backups)')

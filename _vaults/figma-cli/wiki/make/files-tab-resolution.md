@@ -27,4 +27,4 @@ Two "tab" meanings exist. A Figma Desktop tab is a CDP page target per project (
 
 Clicking a file in the tree (`src/make-tree.js:210`) makes Figma show it in a Files tab next to the active one; a later selection of another file relabelled that same tab rather than adding more (observed live on 2026-10-13: `Inputs.tsx | model.ts | ToggleControls.d.ts` became `Inputs.tsx | aui.ts | ToggleControls.d.ts`). The CLI does not close tabs.
 
-Tests: `tests/make-client.test.js:209`, `tests/make-client.test.js:222`, `tests/make-client.test.js:234`, `tests/make-client.test.js:246`.
+Tests: `tests/make-client.test.js:322`, `tests/make-client.test.js:335`, `tests/make-client.test.js:347`, `tests/make-client.test.js:359` (Updated 2026-10-13: line numbers).

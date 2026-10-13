@@ -16,7 +16,7 @@ entire batch is incorrect, even when only one failure was reported.
 
 ## Replacement rejected a stale hash
 
-Read the file again. Preserve and understand the intervening edits before applying
+A stale hash, or `outcome: "refused"`, means no write was sent. Read the file again. Preserve and understand the intervening edits before applying
 the requested change to that version. Merely substituting the new hash while keeping
 stale replacement content defeats the guard.
 
@@ -36,9 +36,15 @@ Do not reload the desktop CDP page, restart a healthy app, or switch to Design's
 daemon as a workaround. `connect` can patch/restart Figma; follow the installed
 setup instructions and authorization rather than treating it as a harmless read.
 
-If the source tree cannot verify an ancestor/path, do not guess by basename. The
-CLI normally collapses unrelated folders during selection. If it still refuses,
-report the limitation with the exact path rather than issuing an unguarded write.
+`read` and `replace` do not depend on the file-tree viewport. `diagnostics` and
+the editor read fallback do: if the source tree cannot verify an ancestor/path, do
+not guess by basename. The CLI normally collapses unrelated folders during
+selection. If it still refuses, report the limitation with the exact path.
+
+If a command reports that no Make filesystem connection was observed, nothing was
+written. The project tab was probably in the foreground with its connection
+already open; switch to another Figma tab, wait a minute, and run it again once.
+If it fails again, report the blocker instead of retrying.
 
 ## Restore or clean up
 
