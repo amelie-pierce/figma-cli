@@ -195,7 +195,8 @@ test('absence read-back lists the nearest existing ancestor of a new directory',
   const listed = [];
   client._fileBridge = async () => ({ dispose: async () => {}, invoke: async (_fn, [, data]) => {
     listed.push(data.path);
-    if (data.path !== 'code/src') return { success: false, error: 'not found' };
+    // Live Make never answers fs/dir/list for a missing path; the bridge request times out.
+    if (data.path !== 'code/src') throw new Error('Make filesystem request timed out; outcome is unknown.');
     return { success: true, data: { path: 'code/src', files: [{ name: 'App.tsx' }] } };
   } });
   client._sourceTree = async () => [];

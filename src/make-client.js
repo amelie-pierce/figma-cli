@@ -459,9 +459,10 @@ export class MakeClient {
           const segments = path.split('/');
           for (let depth = segments.length - 1; depth >= 0; depth--) {
             const remotePath = ['code', ...segments.slice(0, depth)].join('/');
+            // Make never answers a listing of a missing directory; try the parent.
             const listing = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
               'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
-            ]);
+            ]).catch(() => null);
             if (listing?.success === true && listing.data?.path === remotePath && Array.isArray(listing.data.files)) {
               absentInSandbox = !listing.data.files.some(entry => entry?.name === segments[depth]);
               break;
