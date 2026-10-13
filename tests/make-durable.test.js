@@ -154,6 +154,17 @@ test('read-back waits until VFS, sandbox, tree and editor agree', async () => {
   assert.equal(editorReads, 2);
 });
 
+test('hidden-file read-back uses VFS and sandbox when Make omits dotfiles from its tree', async () => {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
+  client.fileKey = 'ScratchKey';
+  client._durable = async () => ({ exists: true, content: 'sentinel' });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._bridgeRead = async () => ({ content: 'sentinel' });
+  client._sourceTree = async () => [];
+  client._read = async () => { throw new Error('Hidden file has no editor'); };
+  await client._durableAgreement('src/vendor/atomic-aui/tokens/generated/.generated', 'sentinel', Date.now() + 1000);
+});
+
 test('delete read-back requires a successful sandbox directory listing', async () => {
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
   client.fileKey = 'ScratchKey';

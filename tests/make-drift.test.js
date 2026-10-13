@@ -170,3 +170,24 @@ test('disagreeing codeFileChanges snapshots leave persistence unverified and exi
   assert.ok(result.reasons.includes('Make saving mode or pending state is unavailable'));
   assert.equal(driftExitCode(result), 1);
 });
+
+test('a 265-file inventory is split into bounded renderer batches', async () => {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 120000 });
+  client.fileKey = 'Scratch';
+  const files = Array.from({ length: 265 }, (_, index) => `file-${String(index).padStart(3, '0')}.ts`);
+  let batches = 0;
+  let calls = 0;
+  client._operation = async fn => { batches++; return fn(Date.now() + 120000); };
+  client._driftState = async () => ({ state: clean });
+  client._fileBridge = async () => ({ dispose: async () => {}, invoke: async (_fn, [type, data]) => {
+    calls++;
+    assert.equal(type, 'fs/dir/list');
+    assert.equal(data.includeHidden, true);
+    return { success: true, data: { path: data.path, files: files.map(name => ({ name, path: name, isFile: true, isDirectory: false, size: 1 })) } };
+  } });
+  client._bridgeReadBytes = async () => { calls++; return Buffer.from('x'); };
+  const result = await client.inventoryVendor(root, { batchSize: 24 });
+  assert.equal(result.inventory.size, 265);
+  assert.equal(batches, 12);
+  assert.equal(calls, 266);
+});

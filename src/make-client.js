@@ -11,7 +11,7 @@ import { sessionOnly } from './make-session.js';
 import { makeWorkspace, openMakeFilesTab } from './make-workspace.js';
 import { makeUiSnapshot } from './make-ui.js';
 import { makePersistenceState } from './make-persistence.js';
-import { compareVendor, digest, externalReceipt, sourcePath, vendorManifest } from './make-drift.js';
+import { compareVendor, digest, externalReceipt, sourcePath, vendorManifest, verifyGeneratedManifest } from './make-drift.js';
 import { makeDurablePageAction, requireGitMode, requireExactPending } from './make-durable.js';
 
 const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
@@ -306,6 +306,11 @@ export class MakeClient {
     return this._operation(async (deadline) => ({ fileKey: this.fileKey, ...await this._ensureCode(deadline) }));
   }
 
+  persistence() {
+    return this._operation(async deadline => ({ fileKey: this.fileKey,
+      persistence: (await this._driftState(deadline)).state }));
+  }
+
   ui() {
     return this._operation(async deadline => ({ fileKey: this.fileKey,
       ...await this._evaluate(`(${makeUiSnapshot.toString()})()`, deadline) }));
@@ -449,6 +454,7 @@ export class MakeClient {
   }
 
   async _durableAgreement(path, expectedContent, deadline) {
+    const hidden = path.split('/').some(part => part.startsWith('.'));
     for (;;) {
       const vfs = await this._durable({ type: 'read', path }, deadline);
       const bridge = await this._fileBridge(deadline);
@@ -475,7 +481,10 @@ export class MakeClient {
       const inTree = tree.some(entry => entry.kind === 'file' && entry.path === path);
       if (expectedContent === null) {
         if (!vfs.exists && absentInSandbox && !inTree) return;
-      } else if (vfs.exists && vfs.content === expectedContent && sandbox?.content === expectedContent && inTree) {
+      } else if (vfs.exists && vfs.content === expectedContent && sandbox?.content === expectedContent && (inTree || hidden)) {
+        // Make's rendered tree deliberately omits dotfiles. VFS and sandbox
+        // agreement is the available independent proof for those paths.
+        if (hidden) return;
         try {
           const editor = await this._read(path, deadline);
           if (editor.content === expectedContent) return;
@@ -582,56 +591,84 @@ export class MakeClient {
     });
   }
 
-  drift(manifestBytes, { root = 'src/vendor/atomic-aui', receiptBytes } = {}) {
-    const manifest = vendorManifest(manifestBytes, root);
-    return this._operation(async deadline => {
-      const receipt = externalReceipt(receiptBytes, { fileKey: this.fileKey, manifestSha256: manifest.sha256 });
-      const before = await this._driftState(deadline);
-      const bridge = await this._fileBridge(deadline);
-      const inventory = new Map();
-      try {
-        const directories = [root];
-        const seen = new Set();
-        while (directories.length) {
-          const directory = directories.shift();
-          if (seen.has(directory)) throw new Error(`Make directory was listed twice: ${directory}`);
-          seen.add(directory);
-          if (seen.size + inventory.size > this.maxEntries) throw new Error('Make drift inventory exceeds the entry limit.');
-          const remotePath = `code/${directory}`;
-          const reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
-            'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
-          ]);
-          if (reply?.success !== true || reply.data?.path !== remotePath || !Array.isArray(reply.data.files)) {
-            throw new Error(`Make directory listing is unavailable: ${directory}`);
-          }
-          const names = new Set();
-          for (const entry of reply.data.files) {
-            const name = entry?.name;
-            sourcePath(name);
-            if (name.includes('/') || entry.path !== name || names.has(name) ||
-                (entry.isFile === true) === (entry.isDirectory === true)) {
-              throw new Error(`Make directory listing is ambiguous: ${directory}`);
-            }
-            names.add(name);
-            const path = `${directory}/${name}`;
-            if (entry.isDirectory) directories.push(path);
-            else {
-              if (inventory.has(path.slice(root.length + 1))) throw new Error(`Duplicate Make file: ${path}`);
-              const bytes = await this._bridgeReadBytes(bridge, path);
-              if (Number.isSafeInteger(entry.size) && bytes.length !== entry.size) {
-                throw new Error(`Make file changed during inventory: ${path}`);
+  // Bound each renderer/socket batch independently. Large kits can take more
+  // than one command timeout in total, but no Runtime.callFunctionOn owns the
+  // whole tree. Version/pending state is checked at every batch boundary.
+  async inventoryVendor(root = 'src/vendor/atomic-aui', { includeBytes = false, batchSize = 24 } = {}) {
+    sourcePath(root);
+    if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 64) throw new Error('Inventory batch size must be 1–64.');
+    const directories = [root];
+    const files = [];
+    const seenDirectories = new Set();
+    const inventory = new Map();
+    const contents = new Map();
+    let baseline;
+    while (directories.length || files.length) {
+      await this._operation(async deadline => {
+        const state = (await this._driftState(deadline)).state;
+        if (baseline !== undefined && JSON.stringify(state) !== JSON.stringify(baseline)) throw new Error('Make state changed during inventory.');
+        if (baseline === undefined) baseline = state;
+        const bridge = await this._fileBridge(deadline);
+        try {
+          let count = 0;
+          while (count < batchSize && (directories.length || files.length)) {
+            if (directories.length) {
+              const directory = directories.shift();
+              if (seenDirectories.has(directory)) throw new Error(`Make directory was listed twice: ${directory}`);
+              seenDirectories.add(directory);
+              const remotePath = `code/${directory}`;
+              const reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
+                'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
+              ]);
+              if (reply?.success !== true || reply.data?.path !== remotePath || !Array.isArray(reply.data.files)) {
+                throw new Error(`Make directory listing is unavailable: ${directory}`);
               }
-              inventory.set(path.slice(root.length + 1), { path: path.slice(root.length + 1), bytes: bytes.length, sha256: digest(bytes) });
+              const names = new Set();
+              for (const entry of reply.data.files) {
+                const name = sourcePath(entry?.name);
+                if (name.includes('/') || entry.path !== name || names.has(name) ||
+                    (entry.isFile === true) === (entry.isDirectory === true)) {
+                  throw new Error(`Make directory listing is ambiguous: ${directory}`);
+                }
+                names.add(name);
+                const path = `${directory}/${name}`;
+                if (entry.isDirectory) directories.push(path);
+                else files.push({ path, size: entry.size });
+              }
+            } else {
+              const { path, size } = files.shift();
+              const relative = path.slice(root.length + 1);
+              if (inventory.has(relative)) throw new Error(`Duplicate Make file: ${path}`);
+              const bytes = await this._bridgeReadBytes(bridge, path);
+              if (Number.isSafeInteger(size) && bytes.length !== size) throw new Error(`Make file changed during inventory: ${path}`);
+              inventory.set(relative, { path: relative, bytes: bytes.length, sha256: digest(bytes) });
+              if (includeBytes) contents.set(relative, bytes);
             }
+            if (seenDirectories.size + inventory.size + directories.length + files.length > this.maxEntries) {
+              throw new Error('Make drift inventory exceeds the entry limit.');
+            }
+            count++;
           }
-        }
-      } finally { await bridge.dispose(); }
-      const after = await this._driftState(deadline);
-      const result = compareVendor(manifest, inventory, {
-        manifestFile: inventory.get('VENDOR.json'), stateBefore: before.state, stateAfter: after.state, receipt,
+        } finally { await bridge.dispose(); }
+        const after = (await this._driftState(deadline)).state;
+        if (JSON.stringify(after) !== JSON.stringify(baseline)) throw new Error('Make state changed during inventory.');
       });
-      return { fileKey: this.fileKey, ...result, scanTruncation: { arrayItems: 0, depth: 0 } };
+    }
+    return { inventory, contents, state: baseline, batches: Math.ceil((seenDirectories.size + inventory.size) / batchSize) };
+  }
+
+  async drift(manifestBytes, { root = 'src/vendor/atomic-aui', receiptBytes } = {}) {
+    const manifest = vendorManifest(manifestBytes, root);
+    const receipt = externalReceipt(receiptBytes, { fileKey: this.fileKey, manifestSha256: manifest.sha256 });
+    const { inventory, contents, state, batches } = await this.inventoryVendor(root, { includeBytes: true });
+    const result = compareVendor(manifest, inventory, {
+      manifestFile: inventory.get('VENDOR.json'), stateBefore: state, stateAfter: state, receipt,
     });
+    if (contents.has('tokens/generated.manifest.json')) {
+      try { verifyGeneratedManifest(contents.get('tokens/generated.manifest.json'), inventory); }
+      catch (error) { result.reasons.push(error.message); result.ok = false; }
+    }
+    return { fileKey: this.fileKey, ...result, batches, scanTruncation: { arrayItems: 0, depth: 0 } };
   }
 
   async _fileBridge(deadline) {
