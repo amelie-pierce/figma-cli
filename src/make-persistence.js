@@ -1,5 +1,6 @@
 // Serialized into the exact Make page. It only reads React's current
 // codeFileChanges snapshots and returns bounded metadata, never source.
+// Values skipped by the array or depth limit are counted in `truncation`.
 export function makePersistenceState() {
   let root;
   for (const element of document.querySelectorAll('*')) {
@@ -13,9 +14,11 @@ export function makePersistenceState() {
   const fibers = [root];
   const seen = new Set();
   const snapshots = [];
+  const truncation = { arrayItems: 0, depth: 0 };
   let exhausted = false;
   function inspect(value, depth) {
-    if (!value || typeof value !== 'object' || depth > 3 || seen.has(value)) return;
+    if (!value || typeof value !== 'object' || seen.has(value)) return;
+    if (depth > 3) { truncation.depth++; return; }
     if (seen.size >= 50000) { exhausted = true; return; }
     seen.add(value);
     try {
@@ -31,6 +34,7 @@ export function makePersistenceState() {
         });
       }
       if (Array.isArray(value)) {
+        truncation.arrayItems += Math.max(0, value.length - 30);
         for (const item of value.slice(0, 30)) inspect(item, depth + 1);
       } else {
         for (const [key, item] of Object.entries(value)) {
@@ -53,7 +57,7 @@ export function makePersistenceState() {
     if (fiber.sibling) fibers.push(fiber.sibling);
     if (fiber.child) fibers.push(fiber.child);
   }
-  if (exhausted || !snapshots.length) return null;
+  if (exhausted || !snapshots.length) return { state: null, truncation };
   const unique = [...new Set(snapshots.map(state => JSON.stringify(state)))];
-  return unique.length === 1 ? snapshots[0] : { ambiguous: true, count: unique.length };
+  return { state: unique.length === 1 ? snapshots[0] : { ambiguous: true, count: unique.length }, truncation };
 }

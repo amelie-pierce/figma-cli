@@ -285,7 +285,9 @@ Writes are session-only; save them in Make to keep them.
 For a vendor kit, `make drift --file KEY --manifest VENDOR.json` reads every file
 under `src/vendor/atomic-aui`, compares raw bytes and SHA-256, and fails when
 the inventory or saved state cannot be verified. `--receipt` can pin an external
-manifest hash and saved git SHA; `--json` returns the full result.
+manifest hash and saved git SHA; `--json` returns the full result. Make's saved
+state is read from its React state, skipping array items past 30 and values nested
+more than 3 levels deep; `scanTruncation` reports both counts.
 Source can travel entirely through stdin, with no local application source copies.
 See [the Make skill](skills/figma-make/SKILL.md) and [command reference](REFERENCE.md).
 Reads and replacements use Make's experimental private filesystem protocol through

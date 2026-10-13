@@ -20,7 +20,7 @@ Every Make write command (`replace`, `create`, `import`, `remove`) goes through 
 
 Make has two source modes, reported by its read-only `codeFileChanges.isGitSourceOfTruth` state (`src/make-persistence.js:24`). In older snapshot mode, an in-progress manual-edit card offers **Save** and **Discard** and Save uploads the client VFS snapshot. In git mode, Make versions are git commits in its sandbox; the 2026-10-13 AtomicAUI 7.0 investigation observed a saved version and clean pending state after fresh sandbox reprovision. Make's private save flows can change and are not invoked by this CLI.
 
-- figma-cli's existing write commands never trigger a Make save. `make drift` reads git-mode baseline and pending state before and after inventory (`src/make-client.js:435`, `src/make-client.js:478`).
+- figma-cli's existing write commands never trigger a Make save. `make drift` reads git-mode baseline and pending state before and after inventory (`src/make-client.js:441`, `src/make-client.js:481`).
 - Whether a snapshot-mode Save captures bridge-only writes is UNVERIFIED. Its snapshot comes from the client code model, which bridge writes do not update.
 - Whether Make autosaves on close is UNVERIFIED.
 - The endpoint paths, message types and function names behind this flow come from Figma's minified bundles and can change with any Figma update. They are recorded in the 2026-10-13 investigation report of task fig-atomicaui-vendor, kept outside this repository. Treat them as volatile and re-derive them before relying on one; never call them by hand.

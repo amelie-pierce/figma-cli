@@ -426,17 +426,19 @@ export class MakeClient {
   }
 
   async _driftState(deadline) {
-    const state = await this._evaluate(`(${makePersistenceState.toString()})()`, deadline);
+    const scan = await this._evaluate(`(${makePersistenceState.toString()})()`, deadline);
+    const state = scan?.state;
+    const truncation = { arrayItems: scan?.truncation?.arrayItems ?? 0, depth: scan?.truncation?.depth ?? 0 };
     if (!state || state.ambiguous || !['git', 'snapshot'].includes(state.mode) ||
-        state.pendingCount == null) return null;
-    return state;
+        state.pendingCount == null) return { state: null, truncation };
+    return { state, truncation };
   }
 
   drift(manifestBytes, { root = 'src/vendor/atomic-aui', receiptBytes } = {}) {
     const manifest = vendorManifest(manifestBytes, root);
     return this._operation(async deadline => {
       const receipt = externalReceipt(receiptBytes, { fileKey: this.fileKey, manifestSha256: manifest.sha256 });
-      const stateBefore = await this._driftState(deadline);
+      const before = await this._driftState(deadline);
       const bridge = await this._fileBridge(deadline);
       const inventory = new Map();
       try {
@@ -476,11 +478,15 @@ export class MakeClient {
           }
         }
       } finally { await bridge.dispose(); }
-      const stateAfter = await this._driftState(deadline);
+      const after = await this._driftState(deadline);
       const result = compareVendor(manifest, inventory, {
-        manifestFile: inventory.get('VENDOR.json'), stateBefore, stateAfter, receipt,
+        manifestFile: inventory.get('VENDOR.json'), stateBefore: before.state, stateAfter: after.state, receipt,
       });
-      return { fileKey: this.fileKey, ...result };
+      const scanTruncation = {
+        arrayItems: Math.max(before.truncation.arrayItems, after.truncation.arrayItems),
+        depth: Math.max(before.truncation.depth, after.truncation.depth),
+      };
+      return { fileKey: this.fileKey, ...result, scanTruncation };
     });
   }
 

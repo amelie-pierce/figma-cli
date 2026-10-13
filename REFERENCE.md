@@ -117,7 +117,11 @@ counts and SHA-256. Manifest paths are relative to the root; `VENDOR.json` itsel
 must match the supplied manifest. It reports matched, mismatched, missing and extra
 files, Make's saving mode, saved git SHA and pending-change count. Exit status is
 zero only when all files match and Make reports a clean saved git version. Snapshot
-mode and missing or changing persistence state fail closed. Optional external
+mode and missing, conflicting or changing persistence state fail closed. Make's
+saving state is read from its React tree, which skips array items past index 30
+and values nested more than 3 levels deep; `scanTruncation` (`arrayItems`,
+`depth`) counts those skipped values, and human output prints them on one line.
+Optional external
 receipts must pin `fileKey`, the raw `manifestSha256` and full
 `savedVersionGitSha`; a stale receipt fails. `--manifest -` reads stdin. The
 default root is `src/vendor/atomic-aui`; the default timeout is 120 seconds.

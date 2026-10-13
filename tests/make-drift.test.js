@@ -69,12 +69,12 @@ test('mode detection reads bounded React state for git and snapshot modes', () =
     memoizedProps: { codeFileChanges }, memoizedState: null, child: null, sibling: null,
   } }] };
   try {
-    assert.deepEqual(makePersistenceState(), clean);
+    assert.deepEqual(makePersistenceState(), { state: clean, truncation: { arrayItems: 0, depth: 0 } });
     codeFileChanges.isGitSourceOfTruth = false;
     codeFileChanges.baselineMakeVersionGitSha = null;
     codeFileChanges.changedFiles = [{ path: 'src/App.tsx' }];
-    assert.equal(makePersistenceState().mode, 'snapshot');
-    assert.equal(makePersistenceState().pendingCount, 1);
+    assert.equal(makePersistenceState().state.mode, 'snapshot');
+    assert.equal(makePersistenceState().state.pendingCount, 1);
   } finally { globalThis.document = previous; }
 });
 
@@ -96,11 +96,25 @@ test('persistence discovery fails closed when a traversal budget hides a later l
       results.push(makePersistenceState());
     }
   } finally { globalThis.document = previous; }
-  assert.deepEqual(results[0], { ambiguous: true, count: 2 });
-  for (const result of results.slice(1)) assert.equal(result, null);
+  assert.deepEqual(results[0].state, { ambiguous: true, count: 2 });
+  for (const result of results.slice(1)) assert.equal(result.state, null);
 });
 
-test('read-only client inventory includes nested dotfiles and never sends writes', async () => {
+test('persistence discovery counts values skipped by the array and depth limits', () => {
+  const previous = globalThis.document;
+  const codeFileChanges = { isGitSourceOfTruth: true, hasBaseline: true,
+    baselineMakeVersionGitSha: gitSha, changedFiles: [], isLoading: false, error: null };
+  const list = Array.from({ length: 33 }, () => ({}));
+  globalThis.document = { querySelectorAll: () => [{ '__reactFiber$test': {
+    memoizedProps: { codeFileChanges, list, nested: { a: { b: { c: { d: {} } } } } },
+    memoizedState: null, child: null, sibling: null,
+  } }] };
+  try {
+    assert.deepEqual(makePersistenceState(), { state: clean, truncation: { arrayItems: 3, depth: 1 } });
+  } finally { globalThis.document = previous; }
+});
+
+async function driftWith(scan) {
   const fs = new Map([...Object.entries(expected).map(([path, bytes]) => [`${root}/${path}`, bytes]), [`${root}/VENDOR.json`, manifestBytes]]);
   const calls = [];
   const directory = {
@@ -112,7 +126,7 @@ test('read-only client inventory includes nested dotfiles and never sends writes
   };
   const client = new MakeClient({ transport: { close() {}, send: async () => ({}) }, timeoutMs: 5000 });
   client.fileKey = 'ExactKey';
-  client._driftState = async () => clean;
+  client._evaluate = async () => scan;
   client._fileBridge = async () => ({
     dispose: async () => {},
     invoke: async (_fn, [type, data]) => {
@@ -126,10 +140,31 @@ test('read-only client inventory includes nested dotfiles and never sends writes
       return { success: !!bytes, data: { path: data.path, encoding: 'base64', content: bytes?.toString('base64') } };
     },
   });
-  const result = await client.drift(manifestBytes, { root });
+  return { result: await client.drift(manifestBytes, { root }), calls };
+}
+
+test('read-only client inventory includes nested dotfiles and never sends writes', async () => {
+  const { result, calls } = await driftWith({ state: clean, truncation: { arrayItems: 4, depth: 2 } });
   assert.equal(result.ok, true);
+  assert.deepEqual(result.scanTruncation, { arrayItems: 4, depth: 2 });
   assert.equal(result.counts.matched, 2);
   assert.ok(result.files.some(file => file.path === 'tokens/generated/.generated' && file.status === 'matched'));
   assert.ok(calls.filter(call => call.type === 'fs/dir/list').every(call => call.data.includeHidden === true));
   assert.ok(calls.every(call => ['fs/dir/list', 'fs/file/read'].includes(call.type)));
+});
+
+test('disagreeing codeFileChanges snapshots leave persistence unverified and exit nonzero', async () => {
+  const previous = globalThis.document;
+  const provider = pending => ({ codeFileChanges: { isGitSourceOfTruth: true, hasBaseline: true,
+    baselineMakeVersionGitSha: gitSha, changedFiles: pending ? [{ path: 'src/App.tsx' }] : [], isLoading: false, error: null } });
+  globalThis.document = { querySelectorAll: () => [{ '__reactFiber$test': {
+    memoizedProps: provider(false), memoizedState: null, sibling: null,
+    child: { memoizedProps: provider(true), memoizedState: null, child: null, sibling: null },
+  } }] };
+  let scan;
+  try { scan = makePersistenceState(); } finally { globalThis.document = previous; }
+  const { result } = await driftWith(scan);
+  assert.equal(result.persistence, null);
+  assert.ok(result.reasons.includes('Make saving mode or pending state is unavailable'));
+  assert.equal(driftExitCode(result), 1);
 });

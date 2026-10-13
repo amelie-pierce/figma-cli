@@ -143,6 +143,7 @@ target(make.command('drift').description('Read-only vendor inventory, manifest c
     if (options.json) report(result);
     else {
       console.log(`Make ${result.fileKey}: ${result.persistence?.mode || 'unknown'} mode, saved ${result.persistence?.savedVersion || 'unverified'}, pending ${result.persistence?.pendingCount ?? 'unknown'}`);
+      console.log(`Persistence scan skipped ${result.scanTruncation.arrayItems} array items past 30 and ${result.scanTruncation.depth} values deeper than 3 levels`);
       console.log(`Vendor ${result.root}: ${Object.entries(result.counts).map(([status, count]) => `${status}=${count}`).join(' ')}`);
       console.log(`VENDOR.json: ${result.manifest.inMake?.sha256 || 'missing'} (${result.manifest.inMake?.bytes ?? 0} bytes)`);
       for (const file of result.files) {
