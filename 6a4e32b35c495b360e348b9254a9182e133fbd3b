@@ -1,0 +1,28 @@
+_vaults/figma-cli/wiki/make/persistence.md
+  s_92f5a7da06b7db::t_2aba5f32285ba8 13,21,33,37
+_vaults/figma-cli/wiki/make/files-tab-resolution.md
+  s_92f5a7da06b7db::t_483592679e76b7 21,24
+_vaults/figma-cli/wiki/make/filesystem-bridge.md
+  s_92f5a7da06b7db::t_483592679e76b7 18,30-31,33,35,39
+  s_92f5a7da06b7db::t_2aba5f32285ba8 22
+_vaults/figma-cli/wiki/make/cdp-page-discovery.md
+  s_92f5a7da06b7db::t_483592679e76b7 14
+_vaults/figma-cli/wiki/make/drift.md
+  s_92f5a7da06b7db::t_2aba5f32285ba8 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6a4e32b35c495b360e348b9254a9182e133fbd3b",
+  "prompts": {},
+  "sessions": {
+    "s_92f5a7da06b7db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a5a398a6-6c84-4992-a6b7-fe1aa5e7115d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
