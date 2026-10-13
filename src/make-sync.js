@@ -4,6 +4,7 @@ import { digest, sourcePath, vendorManifest, verifyGeneratedManifest } from './m
 import { requireGitMode } from './make-durable.js';
 
 const HASH = /^[a-f0-9]{64}$/;
+const exactText = bytes => new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
 const COMMIT = /^[a-f0-9]{40}$/;
 export const VENDOR_ROOT = 'src/vendor/atomic-aui';
 export const GENERATED = 'tokens/generated/';
@@ -156,7 +157,9 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
     for (const path of new Set([...packaged.keys(), GENERATION_MANIFEST])) {
       if (!scope.has(path)) throw new Error(`Token sync scope must include ${fullPath(path)}.`);
     }
-    for (const path of currentTokens.keys()) if (!packaged.has(path)) throw new Error(`Generated tree has an extra path: ${path}`);
+    for (const path of currentTokens.keys()) if (!packaged.has(path) && !scope.has(path)) {
+      throw new Error(`Generated tree has an extra path outside sync scope: ${path}`);
+    }
     if (!generationManifestBytes || digest(generationManifestBytes) !== packageData.manifest.generationManifest.sha256) {
       throw new Error('Core generation manifest is missing or differs from package provenance.');
     }
@@ -192,11 +195,10 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
     if ((W?.sha256 ?? null) !== file.workspaceSha256) throw new Error(`Workspace candidate hash differs for ${file.path}.`);
     const equivalent = same(M, W);
     const sourceOnly = same(M, B) && !same(W, B);
-    const unchanged = same(M, B) && same(W, B);
-    const conflict = !equivalent && !sourceOnly && !unchanged;
-    let kind = equivalent ? 'identical' : sourceOnly ? 'source-only' : unchanged ? 'unchanged' :
+    const conflict = !equivalent && !sourceOnly;
+    const kind = equivalent ? 'identical' : sourceOnly ? 'source-only' : same(W, B) ? 'destination-only' :
       !B && M && W ? 'same-path-addition' : B && !M && W ? 'delete-edit' :
-      B && M && !W ? 'edit-delete' : 'destination-or-two-sided';
+      B && M && !W ? 'edit-delete' : 'two-sided';
     const choice = request.choices[file.path] || null;
     let chosen = W;
     let resultBytes = workspaceBytes;
@@ -254,6 +256,9 @@ function readCandidate(candidateDir, path) {
 
 export function exportDelta({ inventory, contents, baselineBytes, candidateDir, state, fileKey, who, paths, dependencyPaths = [] }) {
   requireGitMode(state);
+  if (!lstatSync(resolve(candidateDir), { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error('Export --candidate-dir must be an existing directory.');
+  }
   if (state.pendingCount !== 0 || state.pendingPaths.length) throw new Error('Unsaved Make changes refuse export.');
   if (!who?.trim()) throw new Error('Export requires --who.');
   const baseline = vendorManifest(baselineBytes, VENDOR_ROOT);
@@ -306,12 +311,12 @@ export async function applySync(client, { plan, vendorBytes, packageData, candid
       if (bytes && !same(fileInfo(bytes), action.after)) throw new Error(`Planned bytes changed before write: ${action.path}`);
       const result = action.operation === 'delete'
         ? await client.deleteDurable(action.path, { expectedSha256: action.before.sha256, backupDir })
-        : await client.writeDurable(action.path, new TextDecoder('utf-8', { fatal: true }).decode(bytes),
+        : await client.writeDurable(action.path, exactText(bytes),
           { expectedSha256: action.before?.sha256, backupDir });
       writes.push({ path: action.path, before: action.before, after: action.after, backupPath: result.backupPath });
     }
     if (plan.vendorBefore.sha256 !== plan.vendorAfter.sha256) {
-      const result = await client.writeDurable(`${VENDOR_ROOT}/VENDOR.json`, new TextDecoder().decode(vendorBytes),
+      const result = await client.writeDurable(`${VENDOR_ROOT}/VENDOR.json`, exactText(vendorBytes),
         { expectedSha256: plan.vendorBefore.sha256, backupDir });
       writes.push({ path: `${VENDOR_ROOT}/VENDOR.json`, before: plan.vendorBefore,
         after: plan.vendorAfter, backupPath: result.backupPath });
@@ -335,9 +340,10 @@ export function afterManifestPath(receiptPath) {
 }
 
 export function writeApplyOutputs(receiptPath, receipt, vendorBytes) {
-  const manifestPath = afterManifestPath(receiptPath);
-  writeFileSync(manifestPath, vendorBytes, { mode: 0o600, flag: 'wx' });
-  writeFileSync(receiptPath, `${JSON.stringify({ ...receipt, afterManifestPath: manifestPath,
-    afterManifestSha256: digest(vendorBytes) }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  const manifestPath = vendorBytes ? afterManifestPath(receiptPath) : null;
+  if (manifestPath) writeFileSync(manifestPath, vendorBytes, { mode: 0o600, flag: 'wx' });
+  writeFileSync(receiptPath, `${JSON.stringify({ ...receipt,
+    ...(manifestPath ? { afterManifestPath: manifestPath, afterManifestSha256: digest(vendorBytes) } : {}) }, null, 2)}\n`,
+  { mode: 0o600, flag: 'wx' });
   return manifestPath;
 }

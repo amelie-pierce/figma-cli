@@ -209,11 +209,13 @@ at the same full Make paths; the request hash binds them. Example:
 
 Dry-run `--plan-out` writes a new private JSON plan with before/after hashes,
 compact text diffs, conflict classes and a digest. If Make has destination-only
-or two-sided edits, delete/edit, or same-path additions, the plan lists unresolved
+or two-sided edits, delete/edit, edit/delete, or same-path additions, the plan lists unresolved
 paths. Resolve each via `choices[path]` as `{ "action": "override-make" }`,
 `{ "action": "override-workspace" }`, `{ "action": "merged", "file":
 "relative/path", "expectedSha256": "..." }`, or `{ "action": "stop" }`, then
-make a new plan. There is no automatic winner. Generated tokens only accept
+make a new plan. There is no automatic winner. A token update deletes a Make
+generated file that the package no longer has only when the request lists it
+with `workspaceSha256: null`. Generated tokens only accept
 Core package bytes. `override-workspace` records a workspace review handoff;
 Make apply waits for a new committed workspace candidate. Out-of-scope Make
 drift is shown in the plan and blocks apply so it cannot advance unrelated
@@ -223,7 +225,9 @@ or candidate hash refuses before writes. Apply uses Make client VFS, exact
 pending-path save and final drift. A partial write or uncertain save needs
 inspection and reconciliation; do not replay it blindly. A recovery receipt
 records completed writes and any known saved version when apply fails after
-mutations begin; run `make drift` with the trusted `--manifest` to read the saved
+mutations begin. When the VENDOR.json write completed, it also writes
+`<receipt>.VENDOR.json` and records its path and SHA-256; run `make drift` with
+that file (otherwise the trusted baseline) as `--manifest` to read the saved
 version and pending paths before reconciling. `--backup-dir` can keep replacement backups in a chosen private
 directory. The success receipt records
 identity, direction, scope, choices, before/after hashes, workspace commit and

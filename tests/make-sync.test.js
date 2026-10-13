@@ -262,3 +262,78 @@ test('override-workspace is recorded for review but cannot advance the Make base
     await assert.rejects(applySync(client, { plan, vendorBytes }), /requires workspace review/);
   } finally { f.dispose(); }
 });
+
+test('conflict kinds distinguish destination-only, delete/edit and two-sided edits', () => {
+  for (const [scenario, kind] of [
+    [{ make: null, workspace: 'base' }, 'destination-only'],
+    [{ make: 'changed', workspace: 'base' }, 'destination-only'],
+    [{ make: null, workspace: 'other' }, 'delete-edit'],
+    [{ make: 'changed', workspace: null }, 'edit-delete'],
+    [{ make: 'changed', workspace: 'other' }, 'two-sided'],
+    [{ base: null, make: 'make-added', workspace: 'workspace-added' }, 'same-path-addition'],
+  ]) {
+    const f = fixture(scenario);
+    try { assert.equal(planSync(f.args).plan.actions[0].kind, kind); } finally { f.dispose(); }
+  }
+});
+
+test('token update deletes in-scope generated files that Core removed and refuses out-of-scope extras', () => {
+  const f = fixture();
+  try {
+    const stale = 'tokens/generated/theme-old.css';
+    const bytes = text('old');
+    const manifest = JSON.parse(f.args.baselineBytes.toString());
+    manifest.files.push({ path: stale, ...info(bytes) });
+    f.args.baselineBytes = text(JSON.stringify(manifest));
+    f.args.contents.set(stale, bytes);
+    f.args.inventory.set(stale, { path: stale, ...info(bytes) });
+    f.args.contents.set('VENDOR.json', f.args.baselineBytes);
+    f.args.inventory.set('VENDOR.json', { path: 'VENDOR.json', ...info(f.args.baselineBytes) });
+    f.args.generationManifestBytes = f.args.contents.get('tokens/generated.manifest.json');
+    const token = name => ({ path: `${root}/${name}`, baselineSha256: f.args.inventory.get(name).sha256,
+      workspaceSha256: f.args.inventory.get(name).sha256, dependencies: [] });
+    f.args.request.files = [token('tokens/generated/.generated'), token('tokens/generated/splash-bootstrap.js'),
+      token('tokens/generated.manifest.json')];
+    assert.throws(() => planSync(f.args), /extra path outside sync scope/);
+    f.args.request.files.push({ path: `${root}/${stale}`, baselineSha256: digest(bytes), workspaceSha256: null, dependencies: [] });
+    const { plan, vendorBytes } = planSync(f.args);
+    const action = plan.actions.find(entry => entry.path === `${root}/${stale}`);
+    assert.equal(action.operation, 'delete');
+    assert.equal(action.kind, 'source-only');
+    assert.equal(JSON.parse(vendorBytes).files.some(file => file.path === stale), false);
+  } finally { f.dispose(); }
+});
+
+test('apply writes BOM-prefixed candidate bytes exactly', async () => {
+  const f = fixture();
+  try {
+    const bom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), text('next')]);
+    writeFileSync(join(f.directory, path), bom);
+    f.args.request.files[0].workspaceSha256 = digest(bom);
+    const { plan, vendorBytes } = planSync(f.args);
+    const written = new Map();
+    const client = { writeDurable: async (name, value) => { written.set(name, value); return {}; },
+      saveVersion: async () => ({ versionNumber: 2 }), drift: async () => ({ ok: true }) };
+    await applySync(client, { plan, vendorBytes, packageData: f.args.packageData, candidateDir: f.directory, title: 'Sync' });
+    assert.deepEqual(Buffer.from(written.get(path)), bom);
+  } finally { f.dispose(); }
+});
+
+test('export refuses a missing candidate directory', () => {
+  const f = fixture({ make: 'changed' });
+  try {
+    assert.throws(() => exportDelta({ ...f.args, candidateDir: join(f.directory, 'missing'), who: 'Engineer' }),
+      /candidate-dir must be an existing directory/);
+  } finally { f.dispose(); }
+});
+
+test('uncertain receipt without a completed VENDOR.json write records no after-manifest', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'make-receipt-'));
+  try {
+    const receiptPath = join(directory, 'receipt.json');
+    assert.equal(writeApplyOutputs(receiptPath, { outcome: 'uncertain' }, null), null);
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+    assert.equal(receipt.afterManifestPath, undefined);
+    assert.throws(() => readFileSync(join(directory, 'receipt.VENDOR.json')), /ENOENT/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});

@@ -263,11 +263,12 @@ target(make.command('sync').description('Plan or apply an explicit package-bound
         backupDir: options.backupDir ? resolve(options.backupDir) : undefined });
     } catch (error) {
       if (error.completedWrites?.length || error.version) {
-        writeFileSync(output, `${JSON.stringify({ schema: 'figma-cli/make-sync-receipt@1', outcome: 'uncertain',
+        const vendorWritten = error.completedWrites?.some(write => write.path === `${VENDOR_ROOT}/VENDOR.json`);
+        const manifestPath = writeApplyOutputs(output, { schema: 'figma-cli/make-sync-receipt@1', outcome: 'uncertain',
           planDigest: plan.digest, fileKey: client.fileKey, requestId: request.requestId,
           completedWrites: error.completedWrites, version: error.version || null,
-          error: error.message }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-        error.message += ` Recovery receipt: ${output}. Run make drift with the trusted --manifest to read the saved version and pending paths before reconciling.`;
+          error: error.message }, vendorWritten ? vendorBytes : null);
+        error.message += ` Recovery receipt: ${output}. Run make drift with --manifest ${manifestPath || 'the trusted baseline'} to read the saved version and pending paths before reconciling.`;
       }
       throw error;
     }
