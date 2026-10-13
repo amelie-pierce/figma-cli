@@ -1,0 +1,24 @@
+CHANGELOG.md
+  s_0e57687ff8dddc::t_deadc9b1e104cf 3-8
+tests/instantiate-roundtrip.test.js
+  s_0e57687ff8dddc::t_b95970017e5e34 26-27
+  s_0e57687ff8dddc::t_a4ffd6d5943001 19-25,60
+README.md
+  s_0e57687ff8dddc::t_deadc9b1e104cf 699-701
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "749e0f762492b86b0b5f47bf579a6a04abbb2172",
+  "prompts": {},
+  "sessions": {
+    "s_0e57687ff8dddc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d9c1da02-ba6c-4770-a6bb-265e3ce8399c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
