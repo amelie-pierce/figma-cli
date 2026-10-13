@@ -1,7 +1,9 @@
 /**
- * Observe a save performed by Make's existing UI. This module never sends CDP
- * commands or filesystem requests; callers enable Network before registering
- * the watcher and dispatch their editor change only after registration.
+ * Observe one filesystem write on Make's session socket. The write lands in
+ * the open session's working copy only; Make persists source through its own
+ * Save, which this module never sees. It never sends CDP commands or
+ * filesystem requests; callers enable Network before registering the watcher
+ * and send their write only after registration.
  */
 
 function saveError(message, code, outcome = 'unknown') {
@@ -28,8 +30,8 @@ function frameMessage(params) {
 }
 
 /**
- * Match an exact outbound UTF-8 write and its acknowledgement on the same
- * WebSocket. Timeout/disconnect means unknown persistence, never an invitation
+ * Match an exact outbound UTF-8 write and its reply on the same WebSocket.
+ * Timeout/disconnect means an unknown outcome, never an invitation
  * to retry. Cancellation is safe even if the caller never awaits the promise.
  */
 export function watchMakeSave(transport, { path, content, timeoutMs = 10000 } = {}) {
@@ -80,7 +82,7 @@ export function watchMakeSave(transport, { path, content, timeoutMs = 10000 } = 
     const { method, params } = event || {};
     if (method === 'Network.webSocketClosed') {
       if (matched && params?.requestId === matched.socketId) {
-        finish(saveError('Make save connection closed before acknowledgement; persistence is unknown. No retry was attempted.',
+        finish(saveError('Make session-write connection closed before its reply; the outcome is unknown. No retry was attempted.',
           'MAKE_SAVE_CONNECTION_CLOSED'));
       }
       return;
@@ -97,18 +99,18 @@ export function watchMakeSave(transport, { path, content, timeoutMs = 10000 } = 
     }
     if (!matched || params.requestId !== matched.socketId || message.requestId !== matched.requestId) return;
     if (message.success !== true) {
-      finish(saveError('Make did not acknowledge the source write as successful. No retry was attempted.',
+      finish(saveError('Make did not accept the session write. No retry was attempted.',
         'MAKE_SAVE_REJECTED', message.success === false ? 'rejected' : 'unknown'));
       return;
     }
     if (message.data?.path !== remotePath || message.data?.size !== bytes) {
-      finish(saveError('Make save acknowledgement did not match the source path and byte count; persistence is unknown. No retry was attempted.',
+      finish(saveError('Make session-write reply did not match the source path and byte count; the outcome is unknown. No retry was attempted.',
         'MAKE_SAVE_ACK_MISMATCH'));
       return;
     }
     const { writtenAtMs, modifiedAtMs } = message.data;
     if (![writtenAtMs, modifiedAtMs].every((value) => Number.isSafeInteger(value) && value >= 0)) {
-      finish(saveError('Make save acknowledgement has invalid timestamps; persistence is unknown. No retry was attempted.',
+      finish(saveError('Make session-write reply has invalid timestamps; the outcome is unknown. No retry was attempted.',
         'MAKE_SAVE_ACK_MISMATCH'));
       return;
     }
@@ -123,7 +125,7 @@ export function watchMakeSave(transport, { path, content, timeoutMs = 10000 } = 
     // during registration (normal CDP delivery is asynchronous).
     if (settled) cleanup();
     else timer = setTimeout(() => finish(saveError(
-      'Timed out waiting for Make save acknowledgement; persistence is unknown. No retry was attempted.',
+      'Timed out waiting for the Make session-write reply; the outcome is unknown. No retry was attempted.',
       'MAKE_SAVE_TIMEOUT')), timeoutMs);
   } catch (error) {
     finish(saveError('Unable to register Make save observation.', 'MAKE_SAVE_OBSERVER_UNAVAILABLE'));
@@ -133,7 +135,7 @@ export function watchMakeSave(transport, { path, content, timeoutMs = 10000 } = 
   return {
     promise,
     cancel() {
-      finish(saveError('Make save observation was cancelled; persistence is unknown.', 'MAKE_SAVE_CANCELLED'));
+      finish(saveError('Make session-write observation was cancelled; the outcome is unknown.', 'MAKE_SAVE_CANCELLED'));
     },
   };
 }

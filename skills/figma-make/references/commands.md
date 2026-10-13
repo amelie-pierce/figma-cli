@@ -10,12 +10,12 @@ These examples are templates; choose paths/content for the actual requested work
 | Check readiness | `figma-cli make inspect --file KEY` |
 | Diagnose workspace controls without selecting tabs or reading source | `figma-cli make ui --file KEY` |
 | Inventory source | `figma-cli make files --file KEY` |
-| Read saved source and hash (any depth, Markdown too) | `figma-cli make read src/App.tsx --file KEY` |
+| Read session source and hash (any depth, Markdown too) | `figma-cli make read src/App.tsx --file KEY` |
 | Read installed kit source, never the editor buffer | `figma-cli make read node_modules/kit/AGENTS.md --remote --file KEY` |
-| Create a new module | `figma-cli make create src/Component.tsx --file KEY --from -` |
-| Import new modules | `figma-cli make import --file KEY --manifest - --timeout 120000` |
-| Replace existing source | `figma-cli make replace src/App.tsx --file KEY --from - --expected-sha256 HASH` |
-| Verify expected content | `figma-cli make verify --file KEY --manifest - --timeout 120000` |
+| Create a new module (session-only) | `figma-cli make create src/Component.tsx --file KEY --from - --session-only` |
+| Import new modules (session-only) | `figma-cli make import --file KEY --manifest - --timeout 120000 --session-only` |
+| Replace existing source (session-only) | `figma-cli make replace src/App.tsx --file KEY --from - --expected-sha256 HASH --session-only` |
+| Verify expected session content | `figma-cli make verify --file KEY --manifest - --timeout 120000` |
 | Inspect the running preview | `figma-cli make preview --file KEY` |
 | Read source editor diagnostics | `figma-cli make diagnostics src/App.tsx --file KEY` |
 
@@ -24,7 +24,12 @@ a local source copy; omit it in a direct-to-Make/no-local-app-code workflow.
 `--from -` and `--manifest -` accept blocking stdin, including large source payloads.
 No special stdin preloader or temporary source file is needed.
 
-`read` returns saved UTF-8 source through the observed filesystem connection,
+Every write command needs `--session-only`; without it the CLI refuses before
+connecting (`code: "MAKE_SESSION_ONLY_REQUIRED"`). Writes change only the open
+session's working copy and are lost when the file is reopened unless the user
+saves them in Make, which creates a new version.
+
+`read` returns the session's UTF-8 source through the observed filesystem connection,
 at any folder depth and including Markdown that Make shows as a preview, without
 changing the file (`source: "filesystem"`). Only when that connection cannot be
 observed does it fall back to the open editor (`source: "editor"`), which refuses
@@ -32,7 +37,7 @@ paths whose folder chain cannot fit in the file-tree viewport. Pass `--remote` t
 require the filesystem connection, and to inspect an attached kit under
 `node_modules/`. Project paths must appear in the source inventory; installed
 package paths under `node_modules/` may be hidden from that inventory.
-`replace` hashes the same saved content, so use the hash from a filesystem read.
+`replace` hashes the same session content, so use the hash from a filesystem read.
 
 ## Transfer source safely
 
@@ -62,7 +67,7 @@ function runMake(args, input) {
     timeout: 135000,
     maxBuffer: 64 * 1024 * 1024,
   });
-  // Preserve partial acknowledgements and backup information, including on error.
+  // Preserve partial session writes and backup information, including on error.
   if (result.stderr) process.stderr.write(result.stderr);
   if (result.error || result.status !== 0) {
     if (result.stdout) process.stderr.write(result.stdout);
@@ -74,11 +79,12 @@ function runMake(args, input) {
 const original = runMake(['read', 'src/App.tsx']);
 // Prepare newSource in memory from original.content and the requested change.
 // Only add required imports after their modules have been created.
-const saved = runMake([
+// Session-only: the user must save the change in Make to keep it.
+const written = runMake([
   'replace', 'src/App.tsx', '--from', '-',
-  '--expected-sha256', original.sha256,
+  '--expected-sha256', original.sha256, '--session-only',
 ], newSource);
-console.log(saved); // Retain the returned backup path.
+console.log(written); // Retain the returned backup path.
 
 const verification = runMake([
   'verify', '--manifest', '-', '--timeout', '120000',
@@ -111,18 +117,21 @@ verify each before continuing. Do not treat import as an upsert.
 
 ## Interpret results accurately
 
-- `server-acknowledged` means Make acknowledged saving; creation and replacement
-  also read the content back (`readback: "matched"` on replacement). It does not
-  mean the app built or was published.
+- `persistence: "session-only"` means the change exists only in the open
+  session's working copy; it is lost on reopen unless saved in Make.
+  `session-readback-matched` means the session accepted the write and the content
+  read back equal; `session-delete-accepted` means the session accepted a removal.
+  Neither means the project was saved, the app built, or it was published.
 - `outcome: "refused"` on a replacement error means the file changed after the
   backup and no write was sent; `outcome: "uncertain"` means the write may have run.
-- `remote-content-matched` means the server's source bytes equal the manifest.
-- `changed: false` means replacement found identical content; it is not a new save.
+- `remote-content-matched` means the session's source bytes equal the manifest;
+  it does not prove the files were saved.
+- `changed: false` means replacement found identical content and wrote nothing.
 - `preview` reports the current rendered app. Check the intended headings/content
   as well as `errorOverlay`; an empty overlay alone does not prove the right app ran.
 - `diagnostics` reports the selected editor's current lint ranges. Only
   `available: true` confirms that lint state was readable; an empty array with
-  `available: false` does not mean error-free. Language-server updates can lag a save.
+  `available: false` does not mean error-free. Language-server updates can lag a write.
   Preview `regions` reports panel and tab bounds for layout checks; a rendered app
   is not evidence that its TypeScript editor is free of errors.
 

@@ -79,14 +79,37 @@ figma-cli make files --file <make-file-key>
 figma-cli make read src/App.tsx --file <make-file-key>
 figma-cli make read guidelines/Guidelines.md --remote --file <make-file-key>
 figma-cli make diagnostics src/App.tsx --file <make-file-key>
-figma-cli make replace src/App.tsx --file <make-file-key> --from - --expected-sha256 <hash-from-read>
-figma-cli make create src/Component.tsx --file <make-file-key> --from -
-figma-cli make import --file <make-file-key> --manifest - --timeout 120000
+figma-cli make replace src/App.tsx --file <make-file-key> --from - --expected-sha256 <hash-from-read> --session-only
+figma-cli make create src/Component.tsx --file <make-file-key> --from - --session-only
+figma-cli make import --file <make-file-key> --manifest - --timeout 120000 --session-only
 figma-cli make verify --file <make-file-key> --manifest - --timeout 120000
 figma-cli make preview --file <make-file-key>
 ```
 
-`read` returns the saved file and its SHA-256 as JSON, read through Make's
+### Make writes are session-only
+
+Every Make write (`replace`, `create`, `import`, `remove`) goes through the
+filesystem connection into the open session's working copy, a per-session
+sandbox. **It is not saved to the project.** Make saves source only through its
+own Save on the in-progress manual-edit card, which creates a new Make version,
+and figma-cli never triggers it. When the file is reopened, the working copy is
+rebuilt from the last saved version and session writes are gone: on 2026-10-13,
+39 files written with `make import` read back with matching SHA-256 in the same
+session and were missing after a reopen.
+
+- The four write commands refuse before connecting unless `--session-only` is
+  passed, with `code: "MAKE_SESSION_ONLY_REQUIRED"`. The flag only accepts the
+  limitation; every other check (expected SHA-256, backup, read-back) still runs.
+- Completed writes report `persistence: "session-only"` and a `note`.
+  `verification` names what was checked in the session: `session-readback-matched`
+  (`replace`, `create`, `import`) or `session-delete-accepted` (`remove`).
+- Reads (`read`, `files`, `verify`) read the same working copy. They equal the
+  saved project only when no session write or manual edit is pending, so they
+  confirm session state, not persistence.
+- Whether a Make Save captures bridge writes is UNVERIFIED. A path that writes
+  through Make's editor and then runs its Save is not implemented.
+
+`read` returns the file in the open session's working copy and its SHA-256 as JSON, read through Make's
 filesystem connection, so any listed text file works at any folder depth,
 including Markdown that Make shows as a rendered preview. The result's `source`
 is `filesystem`. Only when no filesystem connection can be observed does `read`
@@ -106,19 +129,18 @@ Paths whose ancestors and file still cannot fit together in the viewport are
 refused by those editor commands.
 
 `replace` works on any existing text file at any depth through the filesystem
-connection. It reads the saved file and refuses unless its SHA-256 matches
+connection. It reads the session's file and refuses unless its SHA-256 matches
 `--expected-sha256`, saves a private local backup, then, in one page call,
 re-reads the file, compares it with the backed-up bytes, and only then sends one
 write. It checks Make's write reply (path and byte count) and reads the file back,
 comparing it byte for byte. Successful results report
-`verification: "server-acknowledged"`, `readback: "matched"` and
-`persistence: "acknowledged"`. The write reply is Make's own server
-acknowledgement, so the editor save observer used by the previous editor-based
-replacement is no longer needed. This confirms the source file was saved; it
-does not certify a passing app build, deployment, or publication. An unchanged
-file reports `changed: false` and does not claim a new save. Replacement never
-creates a file: a path missing from the project listing or from saved storage is
-refused before any backup.
+`verification: "session-readback-matched"`, `readback: "matched"` and
+`persistence: "session-only"`. This confirms only that the session's working
+copy holds the new bytes; it does not save the project (see above), and it does
+not certify a passing app build, deployment, or publication. An unchanged
+file reports `changed: false` and `persistence: "unverified"`. Replacement never
+creates a file: a path missing from the project listing or from the session's
+working copy is refused before any backup.
 
 Backups default to `~/.figma-cli/make-backups`; override with `--backup-dir`.
 Their source files and metadata use private filesystem permissions. Keep the
@@ -127,7 +149,7 @@ returned backup path until the intended change is reviewed.
 Writes reject a stale hash, a running Make generation, a visible connection
 warning, or a visible read-only editor. A change detected between the backup
 and the write is refused with `outcome: "refused"` and no write sent. Writes
-are never retried automatically. A timeout after a write may mean it saved:
+are never retried automatically. A timeout after a write may mean it reached the session:
 read the file again before deciding what to do. To restore, read the current
 hash and replace from the original backup with that hash. Do not blindly
 replay a failed write or roll back over another person's changes.
@@ -136,7 +158,7 @@ Replacement files must be valid UTF-8 text, at most 2 MiB. Byte-order marks and
 line endings are preserved when loading local source.
 
 `--from -` and `--manifest -` read blocking stdin, so application source can stay
-in memory and be saved directly into Make without creating local app files.
+in memory and be written directly into the Make session without creating local app files.
 Import manifests use `{ "files": [{ "path": "src/Component.tsx", "content": "..." }] }`.
 `create` and `import` reject existing paths, case-ambiguous duplicates, traversal,
 and file/folder conflicts. Limits: 300 files, 2 MiB each, 20 MiB total source.
@@ -154,18 +176,18 @@ reconnects and provisions under the hook; when nothing is captured, the command
 fails with no write and suggests moving the tab to the background for a minute. The hook is restored after
 capture. The adapter reuses the connection in the same Make page; it never
 extracts credentials or opens a separate authenticated connection. The cached
-socket reference expires with the page/socket. Each write is acknowledged and
-read back. This is an experimental private protocol, not a public Figma API.
+socket reference expires with the page/socket. Each write's reply is checked and
+the file read back, in the session only. This is an experimental private protocol, not a public Figma API.
 
-Imports are sequential, not atomic. Errors report acknowledged files and requested
+Imports are sequential, not atomic. Errors report `sessionWrites` (files written in the session) and requested
 paths; other writes may have an uncertain outcome. Inspect and verify before
-resuming, and submit only missing files. `verify` compares remote source bytes to
-the manifest without changing files. `preview` inspects the current rendered app
+resuming, and submit only missing files. `verify` compares the session's source bytes to
+the manifest without changing files; a match does not prove the files were saved. `preview` inspects the current rendered app
 and Vite overlay through the desktop connection; it does not reload or publish.
 
 `remove <path> --expected-sha256 <hash>` is for explicitly authorized source cleanup.
 It reads the exact remote file, checks its hash, writes a private recovery backup,
-and requests removal of that file only. It does not recursively remove folders.
+and requests removal of that file from the session's working copy only. It does not recursively remove folders.
 Keep its backup until cleanup is reviewed. Like replacement, this check is not a
 server-side compare-and-swap; do not run concurrent writers on the same project.
 

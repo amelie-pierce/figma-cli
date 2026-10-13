@@ -2,10 +2,10 @@
 
 ## A write or import timed out
 
-1. Preserve the error's backup path, `acknowledged`, and `requestedPaths` data.
-2. Run `make files --file KEY` again. Do not assume an unacknowledged path is absent.
+1. Preserve the error's backup path, `sessionWrites`, and `requestedPaths` data.
+2. Run `make files --file KEY` again. Do not assume a path missing from `sessionWrites` is absent.
 3. Read affected existing files and compare their current contents to the intended
-   source. Use `verify` on the subset known to exist for an exact remote comparison.
+   source. Use `verify` on the subset known to exist for an exact session comparison.
 4. If a file matches, leave it. Import only absent paths. For differing content,
    inspect the difference and either merge the authorized change using its current
    hash or stop if ownership/intent is unclear. Do not overwrite a collaborator's
@@ -46,6 +46,14 @@ written. The project tab was probably in the foreground with its connection
 already open; switch to another Figma tab, wait a minute, and run it again once.
 If it fails again, report the blocker instead of retrying.
 
+## Session writes disappeared after a reopen
+
+Expected: Make writes are session-only. Reopening the file rebuilds the working
+copy from the last saved Make version, so unsaved CLI writes are gone. Nothing
+is broken. Tell the user, then rewrite the change only if it is still wanted,
+and ask them to save it in Make (Save on the in-progress manual-edit card)
+before reopening. Whether that Save captures CLI writes is UNVERIFIED.
+
 ## Restore or clean up
 
 Restore only within the authorized scope. Read the current file, then replace from
@@ -54,7 +62,7 @@ changes. Backups normally live under `~/.figma-cli/make-backups`; retain the exa
 path from the operation, rather than guessing which backup is newest.
 
 For explicitly authorized cleanup, `make remove PATH --file KEY --expected-sha256
-HASH` backs up and removes one exact text file. It is not recursive folder deletion.
+HASH --session-only` backs up and removes one exact text file. It is not recursive folder deletion.
 Verify the target and its current hash first. Do not remove unrelated files to make
 an import succeed. A failed removal is also an uncertain outcome: inspect before
 retrying or restoring.
@@ -66,5 +74,5 @@ missing modules/packages, incorrect exported names, or provider/prop types in th
 source. Do not flatten everything into a compiled bundle to bypass module errors.
 
 After a fix, verify source again and inspect the preview. Report type checks,
-source persistence, rendered preview, interaction tests, and publication as separate
-facts. Keep unsupported checks explicitly unverified.
+session source state (unsaved until the user saves in Make), rendered preview,
+interaction tests, and publication as separate facts. Keep unsupported checks explicitly unverified.

@@ -115,16 +115,18 @@ which may select Figma's dedicated port and Node runtime.
 Start with `make list`, then `make inspect`, `make files`, and `make read` with
 an exact `--file` key or Make URL. Source edits use `make replace --from` with
 the SHA-256 returned by the prior read. Preserve the returned backup path.
+Make writes are session-only: they change the open session's working copy, are
+lost on reopen unless the user saves in Make, and need `--session-only`.
 
 Do not route Make source through Design `eval`, `render`, or the Design daemon.
-The Make adapter opens the Code tab and observes Make's own save acknowledgement.
+The Make adapter writes through Make's filesystem connection; it never runs Make's Save.
 For new modules, use `make create --from -` or `make import --manifest -` with
 `{files:[{path,content}]}` streamed through stdin. Imports reject existing paths.
-Use `make verify --manifest -` for exact remote-content checks and `make preview`
+Use `make verify --manifest -` for exact session-content checks and `make preview`
 for read-only inspection of the running app. Keep React/TSX as readable source,
 with library modules separate; do not paste compiled bundles into App.tsx.
 These commands need no local application-code files and no computer-use tools.
-Do not claim a passing build or publication from a successful source save.
+Do not claim a saved project, a passing build, or publication from a successful write.
 After an uncertain write outcome, read first; do not retry or restore blindly.
 Never reload the desktop CDP page to verify a save: Figma Desktop's tab lifecycle
 can leave that view hidden or stalled. The adapter verifies the server response

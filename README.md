@@ -11,6 +11,14 @@ When no Files tab is open, Make source commands automatically open one through
 **Add workspace tab → Files**. An existing Files tab is reused instead: the active
 pane when one is shown, otherwise the first Files tab of that exact project page.
 
+> **Make writes are session-only.** `make replace`, `create`, `import` and
+> `remove` change only the open session's working copy. They are lost when the
+> Make file is reopened unless saved in Make, which saves only through its own
+> Save and creates a new version; figma-cli never triggers it. These commands
+> refuse unless `--session-only` is passed. Reads (`read`, `files`, `verify`) see
+> the same working copy, so a match does not prove persistence. See
+> [Make writes are session-only](REFERENCE.md#make-writes-are-session-only).
+
 This fork of [silships/figma-cli](https://github.com/silships/figma-cli) adds direct
 Figma Make source editing and bundles **figma-cli** (Design) and **figma-make**
 (React source) skills. The original MIT license and author attribution are retained.
@@ -33,7 +41,7 @@ Run `connection` through the Node entry point first. Report the exact endpoint a
 
 If shell launchers are unavailable, invoke the installed JavaScript entry point with Node.js and an argument array (shell: false), preserving the configured port. Do not embed personal absolute paths in shared instructions.
 
-For Make work, write readable React/TSX directly through the CLI using stdin. Keep modules separate, avoid local application source files and computer-use tools, and verify saved source and the preview after editing. Keep publishing separate from editing. If CLI access fails, report the blocker; do not fall back to computer-use, mouse/keyboard automation, or screenshot clicking.
+For Make work, write readable React/TSX directly through the CLI using stdin. Keep modules separate, avoid local application source files and computer-use tools, and verify the session's source and the preview after editing; tell me that Make writes are session-only and must be saved in Make. Keep publishing separate from editing. If CLI access fails, report the blocker; do not fall back to computer-use, mouse/keyboard automation, or screenshot clicking.
 ```
 
 ### Install for Claude Code, Codex, and GitHub Copilot
@@ -270,7 +278,8 @@ configured port and launcher. Never restart a healthy Make connection just to
 verify source. Plugin/Safe mode is for Design and does not supply the Make adapter.
 
 The Make skill handles readable React/TSX, new modules, dependencies, hash-guarded
-replacement, backups, remote-content verification, and preview inspection.
+replacement, backups, session-content verification, and preview inspection.
+Writes are session-only; save them in Make to keep them.
 Source can travel entirely through stdin, with no local application source copies.
 See [the Make skill](skills/figma-make/SKILL.md) and [command reference](REFERENCE.md).
 Reads and replacements use Make's experimental private filesystem protocol through

@@ -1,14 +1,26 @@
 ---
 name: figma-make
-description: Build and edit React applications directly in an existing Figma Make project using the Make-enabled figma-cli. Use for Make source changes, component-library imports, saved-file verification, and preview inspection. Figma Design canvas and FigJam edits use their own workflows.
+description: Build and edit React applications directly in an existing Figma Make project using the Make-enabled figma-cli. Use for Make source changes, component-library imports, session-source verification, and preview inspection; Make writes are session-only until saved in Make. Figma Design canvas and FigJam edits use their own workflows.
 ---
 
 # Figma Make
 
 Work on the user's existing Make project through the CLI. Keep source readable,
-preserve existing work, and verify both the saved files and the running app.
+preserve existing work, and verify both the session's files and the running app.
 This skill requires the Make-enabled extension of figma-cli. Check the installed
 commands rather than assuming an upstream installation includes it.
+
+## Make writes are session-only
+
+Every write (`replace`, `create`, `import`, `remove`) reaches only the open
+session's working copy. It is lost when the Make file is reopened unless it is
+saved in Make: Make saves source only through its own Save on the in-progress
+manual-edit card, which creates a new version, and the CLI never triggers it.
+The write commands refuse unless `--session-only` is passed. Before writing,
+tell the user that the change is session-only and that they must save it in
+Make to keep it; do not pass the flag without that understanding. Reads
+(`read`, `files`, `verify`) see the same working copy, so a match proves the
+session state, never that the project was saved. Report results that way.
 
 ## Establish the connection
 
@@ -98,27 +110,29 @@ For exact commands and safe in-memory examples, read
 ## Apply and verify
 
 1. Separate new paths from existing paths. Use `create` or `import` only for new
-   files. Use `replace` with the prior SHA-256 for existing files. Keep all backup
-   paths returned by the CLI.
+   files. Use `replace` with the prior SHA-256 for existing files. Every write
+   needs `--session-only` (see above). Keep all backup paths returned by the CLI.
 2. Add supporting modules and dependencies before replacing the entry point, so
    the app spends less time with unresolved imports. Imports are sequential,
    not atomic; do not run concurrent writers or assume rollback is automatic.
 3. Verify the expected final source with `make verify --manifest -`. Compare only
    files in scope; retain genuine vendor files byte-for-byte when unmodified.
+   This verifies the session's working copy, not a saved version.
 4. Run applicable syntax/type checks without violating the user's file constraints.
    Use `make preview --file KEY` to inspect the rendered headings, controls, error
    overlay, and overflow measurements. Preview inspection is not an interaction
    test, a production build, or proof of publication. State any untested boundary.
 5. Finish with the Make link, the source changes, and the checks actually completed.
+   State that the changes are session-only until the user saves them in Make.
    Keep publishing, sharing changes, installing elsewhere, and creating a fork
    separate from ordinary source editing unless the user requested them.
 
 ## When something fails
 
-Do not replay a timed-out write or entire failed import. Acknowledged files may
-already be saved, and unacknowledged files may also exist. Read the affected files
+Do not replay a timed-out write or entire failed import. Files listed in
+`sessionWrites` reached the session, and unlisted files may also exist. Read the affected files
 and compare their current contents before choosing the next action.
 
 For stale hashes, partial imports, missing editor readiness, or restore steps,
 read [references/recovery.md](references/recovery.md). Preserve the user's current
-work; stop dependent writes when project identity or persistence cannot be verified.
+work; stop dependent writes when project identity or the session state cannot be verified.
