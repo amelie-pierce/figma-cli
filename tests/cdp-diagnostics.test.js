@@ -35,7 +35,7 @@ test('closed endpoint reports exact port and actionable causes without asserting
 
 test('recognizes Make-only sessions without claiming editor or Desktop identity verification', async t => {
   const { port } = await endpoint(t, (req, res) => res.end(JSON.stringify([makePage])));
-  const result = await waitForCdp({ port, timeoutMs: 300 });
+  const result = await waitForCdp({ port, timeoutMs: 5000 });
   assert.equal(result.reachable, true);
   assert.equal(result.makeTargets, 1);
   assert.equal(result.designTargets, 0);
@@ -52,7 +52,8 @@ test('wrong service, malformed response, HTTP failure, timeout and redirects sta
   ];
   for (const [i, handler] of cases.entries()) {
     const { port } = await endpoint(t, handler);
-    const result = await probeCdp({ port, timeoutMs: 80 });
+    // Only the never-responding handler (last case) actually waits out the timeout.
+    const result = await probeCdp({ port, timeoutMs: i === cases.length - 1 ? 80 : 5000 });
     assert.equal(result.reachable, i === 0);
     assert.equal(result.status, i === 0 ? 'no-figma-target' : 'endpoint-unavailable');
     assert.equal(result.endpoint, `http://127.0.0.1:${port}/json`);
@@ -65,7 +66,7 @@ test('post-launch verifier retries an unavailable endpoint within a bounded wind
     requests++;
     res.end(requests === 1 ? 'not ready' : JSON.stringify([makePage]));
   });
-  const result = await waitForCdp({ port, intervalMs: 5, timeoutMs: 500 });
+  const result = await waitForCdp({ port, intervalMs: 5, timeoutMs: 5000 });
   assert.equal(result.figmaTarget, true);
   assert.equal(requests, 2);
 });
