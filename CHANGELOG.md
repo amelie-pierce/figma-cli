@@ -4,10 +4,12 @@
 
 ### Added
 
+- Git-mode `make write`, `make delete`, and `make save-version` use Make's client VFS and its own version operation, with hash checks, backups, editor/tree/sandbox agreement, an exact pending-file gate, and version receipts. Snapshot-mode files are refused. Live scratch proof survived a fresh sandbox reload.
 - Read-only `make drift` checks a complete vendor inventory, including hidden files, against VENDOR.json, reports byte counts and SHA-256, and fails on drift, missing evidence or pending/unverified persistence. An optional external receipt pins the manifest and saved git SHA.
 
 ### Changed
 
+- Make mode detection reads direct provider props so large unrelated React state no longer hides snapshot or git mode.
 - Make writes (`make replace`, `create`, `import`, `remove`) are session-only: they reach the open session's working copy and are lost when the file is reopened unless saved in Make, which figma-cli never does. They now refuse unless `--session-only` is passed, and report `persistence: "session-only"` with `verification: "session-readback-matched"` or `"session-delete-accepted"` instead of `server-acknowledged` / `acknowledged`, which wrongly implied a save. Import errors list `sessionWrites` instead of `acknowledged`. Docs, the figma-make skill and help text say that reads (`read`, `files`, `verify`) see the same working copy
 
 - `npm test` no longer writes to a connected Figma file. The extract → instantiate roundtrip test, which adds and removes a page in the live file, runs only with `FIGMA_CLI_LIVE_TESTS=1`

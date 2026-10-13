@@ -14,6 +14,11 @@
 Imports are not atomic and errors do not trigger rollback. Automatic retry of the
 entire batch is incorrect, even when only one failure was reported.
 
+For `write`, `delete`, or `save-version`, an uncertain outcome may already have
+reached Make. Read affected paths and saved/pending version state before any
+retry. Keep returned backup and receipt paths. Never repeat `save-version`
+solely because its response was lost.
+
 ## Replacement rejected a stale hash
 
 A stale hash, or `outcome: "refused"`, means no write was sent. Read the file again. Preserve and understand the intervening edits before applying
@@ -48,7 +53,7 @@ If it fails again, report the blocker instead of retrying.
 
 ## Session writes disappeared after a reopen
 
-Expected: Make writes are session-only. Reopening the file rebuilds the working
+Expected for the original four commands: Make writes are session-only. Reopening the file rebuilds the working
 copy from the last saved Make version, so unsaved CLI writes are gone. Nothing
 is broken. Tell the user, then rewrite the change only if it is still wanted,
 and ask them to save it in Make (Save on the in-progress manual-edit card)

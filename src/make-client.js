@@ -12,6 +12,7 @@ import { makeWorkspace, openMakeFilesTab } from './make-workspace.js';
 import { makeUiSnapshot } from './make-ui.js';
 import { makePersistenceState } from './make-persistence.js';
 import { compareVendor, digest, externalReceipt, sourcePath, vendorManifest } from './make-drift.js';
+import { makeDurablePageAction, requireGitMode, requireExactPending } from './make-durable.js';
 
 const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
 
@@ -432,6 +433,145 @@ export class MakeClient {
     if (!state || state.ambiguous || !['git', 'snapshot'].includes(state.mode) ||
         state.pendingCount == null) return { state: null, truncation };
     return { state, truncation };
+  }
+
+  _durable(action, deadline) {
+    return this._evaluate(`(${makeDurablePageAction.toString()})(${JSON.stringify(action)})`, deadline);
+  }
+
+  _sourceTree(deadline) {
+    return listMakeFiles(this._treeTransport(deadline), {
+      timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
+    });
+  }
+
+  async _durableAgreement(path, expectedContent, deadline) {
+    for (;;) {
+      const vfs = await this._durable({ type: 'read', path }, deadline);
+      const bridge = await this._fileBridge(deadline);
+      let sandbox;
+      let absentInSandbox = false;
+      try {
+        if (expectedContent === null) {
+          const parts = path.split('/');
+          const name = parts.pop();
+          const remotePath = `code${parts.length ? `/${parts.join('/')}` : ''}`;
+          const listing = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
+            'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
+          ]);
+          if (listing?.success === true && listing.data?.path === remotePath && Array.isArray(listing.data.files)) {
+            absentInSandbox = !listing.data.files.some(entry => entry?.name === name);
+          }
+        } else sandbox = await this._bridgeRead(bridge, path);
+      }
+      finally { await bridge.dispose(); }
+      const tree = await this._sourceTree(deadline);
+      const inTree = tree.some(entry => entry.kind === 'file' && entry.path === path);
+      if (expectedContent === null) {
+        if (!vfs.exists && absentInSandbox && !inTree) return;
+      } else if (vfs.exists && vfs.content === expectedContent && sandbox?.content === expectedContent && inTree) {
+        try {
+          const editor = await this._read(path, deadline);
+          if (editor.content === expectedContent) return;
+        } catch { /* Wait for Make's tree/editor to observe its VFS update. */ }
+      }
+      await this._bounded(() => new Promise(resolve => setTimeout(resolve, 100)), deadline);
+    }
+  }
+
+  writeDurable(path, content, { expectedSha256, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
+    sourcePath(path);
+    if (typeof content !== 'string') throw new Error('Make durable write requires UTF-8 text.');
+    if (expectedSha256 != null && !/^[a-fA-F0-9]{64}$/.test(expectedSha256)) throw new Error('Invalid expected SHA-256.');
+    return this._operation(async deadline => {
+      const ui = await this._ensureCode(deadline);
+      if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
+      const before = requireGitMode((await this._driftState(deadline)).state);
+      const existing = await this._durable({ type: 'read', path }, deadline);
+      if (existing.exists !== (expectedSha256 != null)) throw new Error('Expected SHA-256 is required for an existing file and forbidden for a new file.');
+      const originalSha256 = existing.exists ? sha256(existing.content) : null;
+      if (existing.exists && originalSha256 !== expectedSha256.toLowerCase()) throw new Error('Make source changed; SHA-256 does not match.');
+      await this._durableAgreement(path, existing.exists ? existing.content : null, deadline);
+      if (existing.exists && existing.content === content) return { fileKey: this.fileKey, path, changed: false, sha256: originalSha256, verification: 'unchanged' };
+      const backupPath = existing.exists ? await this._bounded(() => this._backup(path, existing.content, {
+        backupDir, operation: 'durable-write', replacementSha256: sha256(content),
+      }), deadline) : null;
+      const immediate = requireGitMode((await this._driftState(deadline)).state);
+      if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {
+        throw new Error('Make version or pending files changed before the durable write.');
+      }
+      try {
+        const accepted = await this._durable({ type: 'write', path, content, expectedContent: existing.exists ? existing.content : null }, deadline);
+        if (accepted?.refused) throw new Error(accepted.refused);
+        await this._durableAgreement(path, content, deadline);
+      } catch (cause) {
+        const error = new Error(`Make durable write outcome is uncertain: ${cause.message}. Inspect before retrying.`);
+        error.backupPath = backupPath;
+        throw error;
+      }
+      return { fileKey: this.fileKey, path, changed: true, beforeSha256: originalSha256,
+        sha256: sha256(content), bytes: Buffer.byteLength(content), backupPath,
+        verification: 'editor-tree-vfs-sandbox-matched', persistence: 'pending-version' };
+    });
+  }
+
+  deleteDurable(path, { expectedSha256, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
+    sourcePath(path);
+    if (!/^[a-fA-F0-9]{64}$/.test(expectedSha256 || '')) throw new Error('Make durable delete requires expected SHA-256.');
+    return this._operation(async deadline => {
+      const ui = await this._ensureCode(deadline);
+      if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
+      const before = requireGitMode((await this._driftState(deadline)).state);
+      const original = await this._durable({ type: 'read', path }, deadline);
+      if (!original.exists || sha256(original.content) !== expectedSha256.toLowerCase()) throw new Error('Make source is missing or changed; delete refused.');
+      await this._durableAgreement(path, original.content, deadline);
+      const backupPath = await this._bounded(() => this._backup(path, original.content, { backupDir, operation: 'durable-delete' }), deadline);
+      const immediate = requireGitMode((await this._driftState(deadline)).state);
+      if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {
+        throw new Error('Make version or pending files changed before the durable delete.');
+      }
+      try {
+        const accepted = await this._durable({ type: 'delete', path, expectedContent: original.content }, deadline);
+        if (accepted?.refused) throw new Error(accepted.refused);
+        await this._durableAgreement(path, null, deadline);
+      } catch (cause) {
+        const error = new Error(`Make durable delete outcome is uncertain: ${cause.message}. Inspect before retrying.`);
+        error.backupPath = backupPath;
+        throw error;
+      }
+      return { fileKey: this.fileKey, path, beforeSha256: sha256(original.content), backupPath,
+        verification: 'tree-vfs-sandbox-delete-matched', persistence: 'pending-version' };
+    });
+  }
+
+  saveVersion(title, expectedPaths) {
+    if (typeof title !== 'string' || !title.trim() || title.length > 160) throw new Error('Make version title must be 1–160 characters.');
+    if (!Array.isArray(expectedPaths) || expectedPaths.length > 1000) throw new Error('Provide the exact expected changed-file set.');
+    expectedPaths.forEach(sourcePath);
+    return this._operation(async deadline => {
+      const ui = await this._ensureCode(deadline);
+      if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
+      const before = requireGitMode((await this._driftState(deadline)).state);
+      const changedFiles = requireExactPending(before, expectedPaths);
+      const immediate = requireGitMode((await this._driftState(deadline)).state);
+      requireExactPending(immediate, expectedPaths);
+      if (immediate.savedVersion !== before.savedVersion) throw new Error('Make saved version changed before createVersion.');
+      let version;
+      try { version = await this._durable({ type: 'save', title, expectedPaths: changedFiles, expectedGitSha: before.savedVersion }, deadline); }
+      catch (cause) { throw new Error(`Make version outcome is uncertain: ${cause.message}. Inspect versions before retrying.`); }
+      if (version?.refused) throw new Error(version.refused);
+      if (typeof version?.id !== 'string' || !version.id || !Number.isSafeInteger(version.versionNumber) ||
+          !/^[a-f0-9]{40}$/.test(version.gitSha || '')) throw new Error('Make version response is incomplete; inspect versions before retrying.');
+      for (;;) {
+        const after = requireGitMode((await this._driftState(deadline)).state);
+        if (after.savedVersion === version.gitSha && after.pendingCount === 0) {
+          return { fileKey: this.fileKey, title, versionId: version.id, versionNumber: version.versionNumber,
+            gitSha: version.gitSha, previousGitSha: before.savedVersion, changedFiles,
+            verification: 'saved-version-clean-pending' };
+        }
+        await this._bounded(() => new Promise(resolve => setTimeout(resolve, 100)), deadline);
+      }
+    });
   }
 
   drift(manifestBytes, { root = 'src/vendor/atomic-aui', receiptBytes } = {}) {

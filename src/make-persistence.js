@@ -1,6 +1,7 @@
 // Serialized into the exact Make page. It only reads React's current
 // codeFileChanges snapshots and returns bounded metadata, never source.
-// Values skipped by the array or depth limit are counted in `truncation`.
+// Scan the provider's direct props. Traversing arbitrary app
+// objects exhausts the budget on large Make files before reaching the provider.
 export function makePersistenceState() {
   let root;
   for (const element of document.querySelectorAll('*')) {
@@ -12,36 +13,29 @@ export function makePersistenceState() {
   }
   if (!root) return null;
   const fibers = [root];
-  const seen = new Set();
   const snapshots = [];
   const truncation = { arrayItems: 0, depth: 0 };
   let exhausted = false;
-  function inspect(value, depth) {
-    if (!value || typeof value !== 'object' || seen.has(value)) return;
-    if (depth > 3) { truncation.depth++; return; }
-    if (seen.size >= 50000) { exhausted = true; return; }
-    seen.add(value);
+  function inspect(value) {
+    if (!value || typeof value !== 'object') return;
     try {
       if (Object.hasOwn(value, 'codeFileChanges')) {
         const state = value.codeFileChanges;
+        const changed = Array.isArray(state?.changedFiles) ? state.changedFiles : null;
         snapshots.push({
           mode: state?.isGitSourceOfTruth === true ? 'git' : state?.isGitSourceOfTruth === false ? 'snapshot' : null,
           hasBaseline: state?.hasBaseline === true,
           savedVersion: typeof state?.baselineMakeVersionGitSha === 'string' ? state.baselineMakeVersionGitSha : null,
-          pendingCount: Array.isArray(state?.changedFiles) ? state.changedFiles.length : null,
+          pendingCount: changed?.length ?? null,
+          pendingPaths: changed?.every(item => typeof item?.path === 'string') ? changed.map(item => item.path).sort() : null,
           isLoading: state?.isLoading === true,
           error: !!state?.error,
         });
       }
-      if (Array.isArray(value)) {
-        truncation.arrayItems += Math.max(0, value.length - 30);
-        for (const item of value.slice(0, 30)) inspect(item, depth + 1);
-      } else {
-        for (const [key, item] of Object.entries(value)) {
-          if (key === 'children' || key === 'ref' || key === 'current' || key === 'owner' || key.startsWith('_')) continue;
-          if (item && typeof item === 'object') inspect(item, depth + 1);
-        }
-      }
+      // Some provider hooks wrap the state once. Do not recurse into generic
+      // props: Make's VFS and preview graph can contain hundreds of thousands
+      // of unrelated objects.
+      if (value.codeFileChanges == null && value.value?.codeFileChanges) inspect(value.value);
     } catch { /* Cross-origin DOM references are irrelevant to this state. */ }
   }
   let count = 0;
@@ -49,11 +43,7 @@ export function makePersistenceState() {
     if (count++ >= 100000) { exhausted = true; break; }
     const fiber = fibers.pop();
     if (!fiber) continue;
-    inspect(fiber.memoizedProps, 0);
-    let hook = fiber.memoizedState;
-    let hooks = 0;
-    while (hook && hooks++ < 100) { inspect(hook.memoizedState, 0); hook = hook.next; }
-    if (hook) exhausted = true;
+    inspect(fiber.memoizedProps);
     if (fiber.sibling) fibers.push(fiber.sibling);
     if (fiber.child) fibers.push(fiber.child);
   }

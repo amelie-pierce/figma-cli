@@ -4,7 +4,7 @@ description: Why editor-based Make commands refuse deep files, and how read/repl
 date: 2026-10-13
 ---
 
-Updated 2026-10-13: the bridge reaches the session's sandbox working copy, not saved project storage; see [persistence.md](persistence.md).
+Updated 2026-10-13: the bridge reaches the session's sandbox working copy, while the new git-mode durable path uses Make's client VFS; see [persistence.md](persistence.md).
 
 # Make file selection limits and the filesystem bridge
 
@@ -21,7 +21,7 @@ Make source commands reach a file in one of two ways.
 
 `read`, `replace`, `create`/`import`, `verify` and `remove` send Make's own `fs/file/read|write|delete` messages on the page's existing authenticated WebSocket (`src/make-rpc.js:112`, `src/make-client.js:416`, `src/make-client.js:629`, `src/make-client.js:708`). No tree selection is involved, so depth and file type do not matter. `make drift` also sends read-only `fs/dir/list` with `includeHidden: true` to inventory dotfiles that the tree cannot show (`src/make-client.js:451`).
 
-That socket is Make's `/api/agentcontrol/subscribe`, which drives a per-session sandbox: the same protocol carries process, terminal, language-server and git workload messages. **The bridge reads and writes the sandbox's working copy, not the saved project.** Writes are lost when the file is reopened unless saved in Make, and Make's client file tree and open editor are not notified of them. Every write command therefore needs `--session-only` and reports `persistence: "session-only"` (`src/make-session.js:12`, `src/commands/make.js:42`). Details and evidence: [persistence.md](persistence.md). All 112 AtomicAUI files, 51 of them Markdown and up to 5 path segments deep, read and verified this way (2026-10-13).
+That socket is Make's `/api/agentcontrol/subscribe`, which drives a per-session sandbox: the same protocol carries process, terminal, language-server and git workload messages. **The bridge reads and writes the sandbox's working copy, not the saved project.** The original four write commands need `--session-only` and report `persistence: "session-only"` (`src/make-session.js:12`, `src/commands/make.js:42`). In older snapshot-mode Make, bridge writes did not update the client tree/editor; git-mode files may receive `fswatch` updates but still need a saved version. Details: [persistence.md](persistence.md). All 112 AtomicAUI files, 51 of them Markdown and up to 5 path segments deep, read and verified this way (2026-10-13).
 
 ### Capturing the socket
 
@@ -38,7 +38,7 @@ The page code hooks `WebSocket.prototype.send` passively and records the first s
 
 `replace` (`src/make-client.js:723`) refuses a path missing from the tree listing, reads the session's bytes through the bridge and checks `--expected-sha256`, writes a private backup, then calls the page-side `replace` (`src/make-rpc.js:140`). That call re-reads the file, compares it with the backed-up bytes and only then sends the write, all within one page invocation; a mismatch returns `refused` with no write sent. After the write it checks the reply's path and size and reads the file back (`src/make-client.js:785`); the result is `verification: "session-readback-matched"`, `persistence: "session-only"`. The check is one server round trip before the write, not a server-side compare-and-swap.
 
-An editor already showing the file does not refresh after a bridge write, and bridge-created files do not appear in Make's file tree (observed live on AtomicAUI-6.0, 2026-10-13): Make's client code model is never told about the write.
+An editor already showing the file did not refresh after a bridge write, and bridge-created files did not appear in Make's file tree on the older AtomicAUI-6.0 snapshot file (observed live 2026-10-13). Git-mode behavior differs; use [persistence.md](persistence.md) for the client-VFS path.
 
 Tests: `tests/make-client.test.js` (fixture `FakeSocket` serves session files and models provisioning and workspace creation), `tests/make-rpc.test.js`, `tests/make-session.test.js` (the `--session-only` gate).
 
