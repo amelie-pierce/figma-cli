@@ -20,8 +20,10 @@ export async function makeDurablePageAction(action) {
     if (count++ >= 100000) throw new Error('Make state scan exceeded its bound.');
     const fiber = fibers.pop();
     const props = fiber?.memoizedProps;
-    if (props && Object.hasOwn(props, 'codeFileChanges')) {
-      const changes = props.codeFileChanges;
+    const holder = props && Object.hasOwn(props, 'codeFileChanges') ? props
+      : props?.codeFileChanges == null && props?.value?.codeFileChanges ? props.value : null;
+    if (holder) {
+      const changes = holder.codeFileChanges;
       const paths = Array.isArray(changes?.changedFiles) && changes.changedFiles.every(item => typeof item?.path === 'string')
         ? changes.changedFiles.map(item => item.path).sort() : null;
       pendingStates.push({ git: changes?.isGitSourceOfTruth === true, baseline: changes?.baselineMakeVersionGitSha,

@@ -236,3 +236,20 @@ test('a created version survives a focus-emulation cleanup failure', async () =>
   assert.match(error.message, /focus emulation could not be disabled.*version 5/);
   assert.equal(error.version, saved);
 });
+
+test('page-side save sees a provider that wraps codeFileChanges in value', async () => {
+  const prior = globalThis.document;
+  let saved = 0;
+  const props = {
+    value: { codeFileChanges: { isGitSourceOfTruth: true, hasBaseline: true,
+      baselineMakeVersionGitSha: base, changedFiles: [{ path: 'src/ours.ts' }], isLoading: false, error: null } },
+    state: { sandbox: { createVersion: async () => { saved++; return { id: 'v', versionNumber: 2, gitSha: next }; } } },
+    chatController: { chatSdkState: { threadId: 'thread' } },
+  };
+  globalThis.document = { querySelectorAll: () => [{ '__reactFiber$test': { memoizedProps: props } }] };
+  try {
+    const result = await makeDurablePageAction({ type: 'save', title: 'Saved', expectedPaths: ['src/ours.ts'], expectedGitSha: base });
+    assert.deepEqual(result, { id: 'v', versionNumber: 2, gitSha: next });
+    assert.equal(saved, 1);
+  } finally { globalThis.document = prior; }
+});
