@@ -337,3 +337,21 @@ test('uncertain receipt without a completed VENDOR.json write records no after-m
     assert.throws(() => readFileSync(join(directory, 'receipt.VENDOR.json')), /ENOENT/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('apply verifies every planned byte before the first Make write', async () => {
+  const f = fixture();
+  try {
+    const second = `${root}/lib/Card.tsx`;
+    writeFileSync(join(f.directory, second), 'card');
+    f.args.request.files.push({ path: second, baselineSha256: null, workspaceSha256: digest('card'), dependencies: [] });
+    const { plan, vendorBytes } = planSync(f.args);
+    const client = { writeDurable: async () => { throw new Error('must not write'); } };
+    const args = { plan, vendorBytes, packageData: f.args.packageData, candidateDir: f.directory, title: 'Sync' };
+    writeFileSync(join(f.directory, second), 'edited after review');
+    await assert.rejects(applySync(client, args), /Planned bytes changed before write: .*Card/);
+    const invalid = Buffer.from([0xff, 0xfe]);
+    writeFileSync(join(f.directory, second), invalid);
+    plan.actions.find(action => action.path === second).after = info(invalid);
+    await assert.rejects(applySync(client, args), /not valid UTF-8/);
+  } finally { f.dispose(); }
+});

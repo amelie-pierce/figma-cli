@@ -299,24 +299,29 @@ export async function applySync(client, { plan, vendorBytes, packageData, candid
   }
   const changed = plan.actions.filter(action => action.operation !== 'keep');
   if (!changed.length && plan.vendorBefore.sha256 === plan.vendorAfter.sha256) throw new Error('Sync has no Make changes to save.');
+  const prepared = changed.map(action => {
+    if (action.operation === 'delete') return { action, content: null };
+    const relative = action.path.slice(`${VENDOR_ROOT}/`.length);
+    let bytes;
+    if (relative.startsWith(GENERATED)) bytes = packageData.files.get(relative.slice(GENERATED.length));
+    else if (relative === GENERATION_MANIFEST) bytes = generationManifestBytes;
+    else if (action.choice?.action === 'merged') bytes = readArtifact(candidateDir, action.choice.file);
+    else bytes = readArtifact(candidateDir, action.path);
+    if (!bytes || !same(fileInfo(bytes), action.after)) throw new Error(`Planned bytes changed before write: ${action.path}`);
+    try { return { action, content: exactText(bytes) }; }
+    catch { throw new Error(`Planned bytes are not valid UTF-8: ${action.path}`); }
+  });
+  const vendorContent = plan.vendorBefore.sha256 !== plan.vendorAfter.sha256 ? exactText(vendorBytes) : null;
   const writes = [];
   try {
-    for (const action of changed) {
-      const relative = action.path.slice(`${VENDOR_ROOT}/`.length);
-      let bytes;
-      if (relative.startsWith(GENERATED)) bytes = packageData.files.get(relative.slice(GENERATED.length));
-      else if (relative === GENERATION_MANIFEST) bytes = generationManifestBytes;
-      else if (action.choice?.action === 'merged') bytes = readArtifact(candidateDir, action.choice.file);
-      else if (action.after) bytes = readArtifact(candidateDir, action.path);
-      if (bytes && !same(fileInfo(bytes), action.after)) throw new Error(`Planned bytes changed before write: ${action.path}`);
+    for (const { action, content } of prepared) {
       const result = action.operation === 'delete'
         ? await client.deleteDurable(action.path, { expectedSha256: action.before.sha256, backupDir })
-        : await client.writeDurable(action.path, exactText(bytes),
-          { expectedSha256: action.before?.sha256, backupDir });
+        : await client.writeDurable(action.path, content, { expectedSha256: action.before?.sha256, backupDir });
       writes.push({ path: action.path, before: action.before, after: action.after, backupPath: result.backupPath });
     }
-    if (plan.vendorBefore.sha256 !== plan.vendorAfter.sha256) {
-      const result = await client.writeDurable(`${VENDOR_ROOT}/VENDOR.json`, exactText(vendorBytes),
+    if (vendorContent !== null) {
+      const result = await client.writeDurable(`${VENDOR_ROOT}/VENDOR.json`, vendorContent,
         { expectedSha256: plan.vendorBefore.sha256, backupDir });
       writes.push({ path: `${VENDOR_ROOT}/VENDOR.json`, before: plan.vendorBefore,
         after: plan.vendorAfter, backupPath: result.backupPath });
