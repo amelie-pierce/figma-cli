@@ -39,7 +39,8 @@ function makeEditorAction(action, workspace) {
     selectedName: selected.length === 1 ? selected[0].closest('[role="treeitem"]')?.getAttribute('aria-label') : null,
   };
   if (action.type === 'ensure-code' || action.type === 'inspect') return summary;
-  if (!['read', 'replace', 'diagnostics'].includes(action.type)) throw new Error('Unknown Make editor action.');
+  // Source writes go through the filesystem bridge, never the editor.
+  if (!['read', 'diagnostics'].includes(action.type)) throw new Error('Unknown Make editor action.');
   if (!ready) throw new Error('Make Code editor is not ready.');
   if (busy) throw new Error('Make is generating changes; wait until generation finishes.');
   if (offline) throw new Error('Make reports that some changes will not be synced.');
@@ -134,13 +135,7 @@ function makeEditorAction(action, workspace) {
     });
     return { available: fields.length > 0, diagnostics };
   }
-  if (action.type === 'read') return { content: original };
-  // The comparison and dispatch share one synchronous page invocation, so a
-  // user edit cannot slip between the final content check and replacement.
-  if (original !== action.original) throw new Error('Make source changed after the backup; replacement was refused.');
-  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: action.content }, userEvent: 'input' });
-  if (view.state.doc.toString() !== action.content) throw new Error('Make editor content did not match after replacement.');
-  return { content: view.state.doc.toString() };
+  return { content: original };
 }
 
 function guardExpression(fileKey, expression) {
@@ -228,6 +223,13 @@ export class MakeClient {
     let result;
     let operationError;
     try {
+      // A hidden Make page reconnects its agent socket when focus emulation
+      // starts. Arm the passive capture first so that reconnect identifies the
+      // filesystem socket. Best effort: commands that need the bridge report
+      // its absence themselves.
+      try {
+        await this._evaluate(`(() => { (${captureMakeFileSocket.toString()})(${JSON.stringify(this.fileKey)}, null, 1000, ${Math.min(10000, this.timeoutMs)}); return true; })()`, workDeadline);
+      } catch {}
       await this._bounded(() => this.transport.send('Emulation.setFocusEmulationEnabled', { enabled: true }, {
         timeoutMs: this._remaining(workDeadline),
       }), workDeadline);
@@ -375,75 +377,140 @@ export class MakeClient {
     });
   }
 
+  // Saved source through the filesystem bridge; the editor is only a fallback
+  // when no filesystem connection can be observed, and never for --remote.
   read(path, { remote = false } = {}) {
     return this._operation(async (deadline) => {
-      if (remote) {
-        validateImportFiles([{ path, content: '' }]);
-        await this._ensureCode(deadline);
-        const existing = await listMakeFiles(this._treeTransport(deadline), {
-          timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
-        });
-        if (!path.startsWith('node_modules/') && !existing.some(entry => entry.kind === 'file' && entry.path === path)) {
-          throw new Error(`Make source file is missing: ${path}`);
-        }
-        const candidates = [...existing].sort((a, b) => Number(b.path.startsWith('src/')) - Number(a.path.startsWith('src/')));
-        const bridge = await this._fileBridge(candidates, deadline);
-        try {
-          const reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
-            'fs/file/read', { path: `code/${path}`, encoding: 'base64' }, randomUUID(),
-          ]);
-          if (!reply.success || reply.data?.path !== `code/${path}` || reply.data?.encoding !== 'base64' || typeof reply.data?.content !== 'string') {
-            throw new Error(`Make remote source read failed: ${path}`);
-          }
-          const bytes = Buffer.from(reply.data.content, 'base64');
-          if (bytes.toString('base64') !== reply.data.content) throw new Error('Invalid remote source encoding');
-          const content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-          return { fileKey: this.fileKey, path, content, sha256: sha256(content) };
-        } finally { await bridge.dispose(); }
+      validateImportFiles([{ path, content: '' }]);
+      await this._ensureCode(deadline);
+      const existing = await listMakeFiles(this._treeTransport(deadline), {
+        timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
+      });
+      if (!path.startsWith('node_modules/') && !existing.some(entry => entry.kind === 'file' && entry.path === path)) {
+        throw new Error(`Make source file is missing: ${path}`);
       }
-      const result = await this._read(path, deadline);
-      return { fileKey: this.fileKey, path, content: result.content, sha256: result.sha256 };
+      let bridge;
+      try {
+        bridge = await this._fileBridge(deadline);
+      } catch (error) {
+        if (remote || error.code !== 'MAKE_FILESYSTEM_UNAVAILABLE' || path.startsWith('node_modules/')) throw error;
+        const result = await this._read(path, deadline);
+        return { fileKey: this.fileKey, path, content: result.content, sha256: result.sha256, source: 'editor' };
+      }
+      try {
+        const { content } = await this._bridgeRead(bridge, path);
+        return { fileKey: this.fileKey, path, content, sha256: sha256(content), source: 'filesystem' };
+      } finally { await bridge.dispose(); }
     });
   }
 
-  async _fileBridge(existing, deadline) {
-    const candidates = existing.filter(entry => entry.kind === 'file').sort((a,b) =>
-      Number(b.path.startsWith('src/vendor/')) - Number(a.path.startsWith('src/vendor/')));
-    for (const candidate of candidates.slice(0, 8)) {
-      const response = await this.transport.send('Runtime.evaluate', {
-        expression: `(${captureMakeFileSocket.toString()})(${JSON.stringify(this.fileKey)}, ${JSON.stringify(candidate.path)}, ${Math.min(5000, this._remaining(deadline))})`,
-        returnByValue: false,
-      }, { timeoutMs: this._remaining(deadline) });
-      if (response.exceptionDetails || !response.result?.objectId) throw new Error('Could not observe Make filesystem connection.');
-      const objectId = response.result.objectId;
-      const invoke = async (fn, args = []) => {
-        const result = await this.transport.send('Runtime.callFunctionOn', {
-          objectId, functionDeclaration: fn, arguments: args.map(value => ({ value })),
-          returnByValue: true, awaitPromise: true,
-        }, { timeoutMs: this._remaining(deadline) });
-        if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || 'Make filesystem operation failed.');
-        return result.result?.value;
-      };
-      const dispose = async () => {
-        try { await this.transport.send('Runtime.callFunctionOn', {
-          objectId, functionDeclaration: 'function() { this.dispose(); }', returnByValue: true,
-        }, { timeoutMs: 400 }); }
-        finally { await this.transport.send('Runtime.releaseObject', { objectId }, { timeoutMs: 400 }); }
-      };
-      try {
-        const cached = await invoke('function() { return this.status(); }');
-        if (cached.captured && cached.workspace) return { invoke, dispose };
-        await this._select(candidate.path, deadline);
-        const captureDeadline = Math.min(deadline, Date.now() + 700);
-        while (Date.now() < captureDeadline) {
-          const status = await invoke('function() { return this.status(); }');
-          if (status.captured && status.workspace) return { invoke, dispose };
-          await this._bounded(() => new Promise(resolve => setTimeout(resolve, 50)), deadline);
-        }
-      } catch (error) { await dispose(); throw error; }
-      await dispose();
+  async _bridgeRead(bridge, path) {
+    const reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
+      'fs/file/read', { path: `code/${path}`, encoding: 'base64' }, randomUUID(),
+    ]);
+    if (!reply?.success || reply.data?.path !== `code/${path}` || reply.data?.encoding !== 'base64' || typeof reply.data?.content !== 'string') {
+      throw new Error(`Make remote source read failed: ${path}`);
     }
-    throw new Error('No filesystem request was observed while opening Make source files; no files were written.');
+    const bytes = Buffer.from(reply.data.content, 'base64');
+    if (bytes.toString('base64') !== reply.data.content) throw new Error('Invalid remote source encoding');
+    const content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    return { content, base64: reply.data.content };
+  }
+
+  async _fileBridge(deadline) {
+    const response = await this.transport.send('Runtime.evaluate', {
+      expression: `(${captureMakeFileSocket.toString()})(${JSON.stringify(this.fileKey)}, null, ${Math.min(5000, this._remaining(deadline))}, ${this._remaining(deadline)})`,
+      returnByValue: false,
+    }, { timeoutMs: this._remaining(deadline) });
+    if (response.exceptionDetails || !response.result?.objectId) throw new Error('Could not observe Make filesystem connection.');
+    const objectId = response.result.objectId;
+    const invoke = async (fn, args = []) => {
+      const result = await this.transport.send('Runtime.callFunctionOn', {
+        objectId, functionDeclaration: fn, arguments: args.map(value => ({ value })),
+        returnByValue: true, awaitPromise: true,
+      }, { timeoutMs: this._remaining(deadline) });
+      if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || 'Make filesystem operation failed.');
+      return result.result?.value;
+    };
+    const dispose = async () => {
+      try { await this.transport.send('Runtime.callFunctionOn', {
+        objectId, functionDeclaration: 'function() { this.dispose(); }', returnByValue: true,
+      }, { timeoutMs: 400 }); }
+      finally { await this.transport.send('Runtime.releaseObject', { objectId }, { timeoutMs: 400 }); }
+    };
+    // A provisioned socket stays pending until Make acknowledges creating its
+    // workspace (about a second after provisioning, observed live); wait
+    // longer for that than for a capture that has not started.
+    const captured = async (ms, pendingMs = ms) => {
+      const started = Date.now();
+      for (;;) {
+        const status = await invoke('function() { return this.status(); }');
+        if (status?.captured && status.workspace) return true;
+        if (Date.now() - started >= (status?.pending ? pendingMs : ms) || Date.now() >= deadline) return false;
+        await this._bounded(() => new Promise(resolve => setTimeout(resolve, 50)), deadline);
+      }
+    };
+    try {
+      // Usually captured already: from a socket cached earlier in this page, or
+      // from the reconnect that focus emulation triggered at operation start.
+      if (await captured(1500, 8000)) return { invoke, dispose };
+      // A page whose agent socket stayed open since it provisioned unobserved
+      // sends nothing that identifies it. Close that socket so Make reconnects
+      // and provisions under the armed hook (about 1.5 s, observed live), but
+      // never while Make is generating.
+      const state = await this._editor({ type: 'inspect' }, deadline);
+      if (!state.busy && await this._reconnectAgentSocket(deadline) && await captured(4000, 8000)) return { invoke, dispose };
+    } catch (error) { await dispose(); throw error; }
+    await dispose();
+    const error = new Error('No Make filesystem connection was observed; no files were written. Make opens one when its page reconnects; ' +
+      'if the project tab is in the foreground, switch to another Figma tab, wait a minute, and run the command again.');
+    error.code = 'MAKE_FILESYSTEM_UNAVAILABLE';
+    throw error;
+  }
+
+  async _reconnectAgentSocket(deadline) {
+    const prototype = await this.transport.send('Runtime.evaluate', { expression: 'WebSocket.prototype' }, { timeoutMs: this._remaining(deadline) });
+    if (!prototype.result?.objectId) return 0;
+    try {
+      const sockets = await this.transport.send('Runtime.queryObjects', { prototypeObjectId: prototype.result.objectId }, { timeoutMs: this._remaining(deadline) });
+      if (!sockets.objects?.objectId) return 0;
+      try {
+        const result = await this.transport.send('Runtime.callFunctionOn', {
+          objectId: sockets.objects.objectId, arguments: [{ value: this.fileKey }], returnByValue: true,
+          functionDeclaration: `function(fileKey) {
+            const record = globalThis[Symbol.for('figma-cli.make.filesystem.' + fileKey)];
+            const host = new URL(location.href).hostname;
+            let closed = 0;
+            for (const socket of this) {
+              try {
+                const url = new URL(socket.url);
+                if (socket.readyState !== WebSocket.OPEN || socket === record?.socket || url.protocol !== 'wss:' ||
+                    url.hostname !== host || url.pathname !== '/api/agentcontrol/subscribe') continue;
+                socket.close();
+                closed++;
+              } catch {}
+            }
+            return closed;
+          }`,
+        }, { timeoutMs: this._remaining(deadline) });
+        return result.result?.value || 0;
+      } finally { await this.transport.send('Runtime.releaseObject', { objectId: sockets.objects.objectId }, { timeoutMs: 400 }); }
+    } finally { await this.transport.send('Runtime.releaseObject', { objectId: prototype.result.objectId }, { timeoutMs: 400 }); }
+  }
+
+  async _backup(path, content, metadata) {
+    const root = resolve(metadata.backupDir);
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    const directory = await mkdtemp(join(root, 'make-'));
+    await chmod(directory, 0o700);
+    const backupPath = join(directory, 'original.txt');
+    await writePrivateFile(backupPath, content);
+    await writePrivateFile(join(directory, 'metadata.json'), JSON.stringify({
+      fileKey: this.fileKey, path, sha256: sha256(content), operation: metadata.operation,
+      ...(metadata.replacementSha256 ? { replacementSha256: metadata.replacementSha256 } : {}),
+      createdAt: new Date().toISOString(),
+    }, null, 2) + '\n');
+    return backupPath;
   }
 
   importFiles(files) {
@@ -455,7 +522,7 @@ export class MakeClient {
         timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
       });
       validateImportFiles(validated, existing);
-      const bridge = await this._fileBridge(existing, deadline);
+      const bridge = await this._fileBridge(deadline);
       await this._bounded(() => this.transport.send('Network.enable', {}, {
         timeoutMs: this._remaining(deadline),
       }), deadline);
@@ -528,7 +595,7 @@ export class MakeClient {
           throw new Error(`Make source file is missing: ${file.path}`);
         }
       }
-      const bridge = await this._fileBridge(existing, deadline);
+      const bridge = await this._fileBridge(deadline);
       try {
         const verified = [];
         for (const file of validated) {
@@ -556,25 +623,14 @@ export class MakeClient {
         timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
       });
       if (!existing.some(entry => entry.path === path && entry.kind === 'file')) throw new Error('Exact source file not found.');
-      const bridge = await this._fileBridge(existing, deadline);
+      const bridge = await this._fileBridge(deadline);
       let backupPath;
       try {
-        const source = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
-          'fs/file/read', { path: `code/${path}`, encoding: 'base64' }, randomUUID(),
-        ]);
-        if (!source.success || source.data?.path !== `code/${path}` || source.data?.encoding !== 'base64' ||
-            typeof source.data?.content !== 'string') throw new Error('Could not verify exact source before removal.');
-        const content = Buffer.from(source.data.content, 'base64').toString('utf8');
+        let content;
+        try { ({ content } = await this._bridgeRead(bridge, path)); }
+        catch { throw new Error('Could not verify exact source before removal.'); }
         if (sha256(content) !== expectedSha256.toLowerCase()) throw new Error('Make source changed; removal refused.');
-        const root = resolve(backupDir);
-        await mkdir(root, { recursive: true, mode: 0o700 });
-        const directory = await mkdtemp(join(root, 'make-'));
-        await chmod(directory, 0o700);
-        backupPath = join(directory, 'original.txt');
-        await writePrivateFile(backupPath, content);
-        await writePrivateFile(join(directory, 'metadata.json'), JSON.stringify({
-          fileKey: this.fileKey, path, sha256: sha256(content), operation: 'remove', createdAt: new Date().toISOString(),
-        }, null, 2));
+        backupPath = await this._bounded(() => this._backup(path, content, { backupDir, operation: 'remove' }), deadline);
         const reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
           'fs/file/delete', { path: `code/${path}` }, randomUUID(),
         ]);
@@ -587,55 +643,85 @@ export class MakeClient {
     });
   }
 
+  // The whole replacement runs through the filesystem bridge, so a file at
+  // any depth works without fitting its folder chain into the file-tree
+  // viewport. The bridge's own write reply is Make's server acknowledgement,
+  // so the editor-save observer the old editor path needed is not used.
   replace(path, content, { expectedSha256, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     return this._operation(async (deadline) => {
       if (typeof content !== 'string') throw new Error('Replacement content must be a UTF-8 string.');
       if (typeof expectedSha256 !== 'string' || !/^[0-9a-fA-F]{64}$/.test(expectedSha256)) {
         throw new Error('Replacement requires the SHA-256 returned by read as expectedSha256.');
       }
-      const original = await this._read(path, deadline);
-      if (original.sha256 !== expectedSha256.toLowerCase()) {
-        throw new Error('Make source changed since it was read; SHA-256 does not match.');
+      validateImportFiles([{ path, content }]);
+      const state = await this._ensureCode(deadline);
+      if (state.busy) throw new Error('Make is generating changes; replacement refused until generation finishes.');
+      if (state.offline) throw new Error('Make reports that some changes will not be synced; replacement refused.');
+      // A visible read-only editor means this project cannot be edited here.
+      if (state.readOnly === true) throw new Error('Make source editor is read-only; replacement refused.');
+      const existing = await listMakeFiles(this._treeTransport(deadline), {
+        timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
+      });
+      // Replacement never creates: the path must already be a project file.
+      if (!existing.some(entry => entry.kind === 'file' && entry.path === path)) {
+        throw new Error(`Make source file is missing: ${path}`);
       }
-      if (original.content === content) {
-        return { path, backupPath: null, sha256: original.sha256, changed: false,
-          verification: 'unchanged', persistence: 'unverified' };
-      }
-      await this._bounded(() => this.transport.send('Network.enable', {}, { timeoutMs: this._remaining(deadline) }), deadline);
-      const backup = await this._bounded(async () => {
-        const root = resolve(backupDir);
-        await mkdir(root, { recursive: true, mode: 0o700 });
-        const directory = await mkdtemp(join(root, 'make-'));
-        await chmod(directory, 0o700);
-        const backupPath = join(directory, 'original.txt');
-        await writePrivateFile(backupPath, original.content);
-        await writePrivateFile(join(directory, 'metadata.json'), JSON.stringify({
-          fileKey: this.fileKey, path, sha256: original.sha256,
-          replacementSha256: sha256(content), createdAt: new Date().toISOString(),
-        }, null, 2) + '\n');
-        return { backupPath };
-      }, deadline);
-      // From here, a lost response may mean dispatch ran. Never retry or undo.
-      let watcher;
-      let receipt;
+      const bridge = await this._fileBridge(deadline);
       try {
-        watcher = watchMakeSave(this.transport, { path, content, timeoutMs: this._remaining(deadline) });
-        // A save error can arrive while the dispatch reply is still in flight.
-        watcher.promise.catch(() => {});
-        await this._editor({ type: 'replace', entry: original.entry, original: original.content, content }, deadline);
-        receipt = await this._bounded(() => watcher.promise, deadline);
-        const readback = await this._editor({ type: 'read', entry: original.entry }, deadline);
-        if (readback.content !== content) throw new Error('Make content changed during verification.');
-      } catch (error) {
-        const failure = new Error(`Make replacement outcome is uncertain: ${error.message} Original backup: ${backup.backupPath}. No retry or rollback was attempted.`);
-        failure.backupPath = backup.backupPath;
-        failure.outcome = 'uncertain';
-        throw failure;
-      } finally {
-        watcher?.cancel();
-      }
-      return { path, backupPath: backup.backupPath, sha256: sha256(content), changed: true,
-        verification: 'server-acknowledged', persistence: 'acknowledged', receipt };
+        const original = await this._bridgeRead(bridge, path);
+        const originalSha256 = sha256(original.content);
+        if (originalSha256 !== expectedSha256.toLowerCase()) {
+          throw new Error('Make source changed since it was read; SHA-256 does not match.');
+        }
+        if (original.content === content) {
+          return { path, backupPath: null, sha256: originalSha256, changed: false,
+            verification: 'unchanged', persistence: 'unverified' };
+        }
+        const backupPath = await this._bounded(() => this._backup(path, original.content, {
+          backupDir, operation: 'replace', replacementSha256: sha256(content),
+        }), deadline);
+        const remotePath = `code/${path}`;
+        const replacement = Buffer.from(content, 'utf8');
+        const encoded = replacement.toString('base64');
+        const uncertain = (error) => {
+          const failure = new Error(`Make replacement outcome is uncertain: ${error.message} Original backup: ${backupPath}. No retry or rollback was attempted.`);
+          failure.backupPath = backupPath;
+          failure.outcome = 'uncertain';
+          return failure;
+        };
+        // From here, a lost response may mean the write ran. Never retry or undo.
+        let outcome;
+        try {
+          outcome = await bridge.invoke('function(path, original, content, readId, writeId) { return this.replace(path, original, content, readId, writeId); }', [
+            remotePath, original.base64, encoded, randomUUID(), randomUUID(),
+          ]);
+        } catch (error) { throw uncertain(error); }
+        if (typeof outcome?.refused === 'string') {
+          const refusal = new Error(`${outcome.refused} No write was sent. Original backup: ${backupPath}.`);
+          refusal.backupPath = backupPath;
+          refusal.outcome = 'refused';
+          throw refusal;
+        }
+        let receipt;
+        try {
+          const reply = outcome?.reply;
+          if (reply?.success !== true) {
+            throw new Error(reply?.success === false ? 'Make rejected the source write.' : 'Make did not acknowledge the source write.');
+          }
+          if (reply.data?.path !== remotePath || reply.data?.size !== replacement.length) {
+            throw new Error('Make write acknowledgement did not match the source path and byte count.');
+          }
+          const readback = await this._bridgeRead(bridge, path);
+          if (readback.base64 !== encoded || sha256(readback.content) !== sha256(content)) {
+            throw new Error('Make source readback did not match the replacement.');
+          }
+          const { writtenAtMs, modifiedAtMs } = reply.data;
+          receipt = { path, bytes: replacement.length,
+            ...([writtenAtMs, modifiedAtMs].every(value => Number.isSafeInteger(value) && value >= 0) ? { writtenAtMs, modifiedAtMs } : {}) };
+        } catch (error) { throw uncertain(error); }
+        return { path, backupPath, sha256: sha256(content), changed: true,
+          verification: 'server-acknowledged', readback: 'matched', persistence: 'acknowledged', receipt };
+      } finally { await bridge.dispose(); }
     });
   }
 

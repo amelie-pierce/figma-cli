@@ -10,8 +10,8 @@ These examples are templates; choose paths/content for the actual requested work
 | Check readiness | `figma-cli make inspect --file KEY` |
 | Diagnose workspace controls without selecting tabs or reading source | `figma-cli make ui --file KEY` |
 | Inventory source | `figma-cli make files --file KEY` |
-| Read source and hash | `figma-cli make read src/App.tsx --file KEY` |
-| Read saved Markdown or installed kit source | `figma-cli make read AGENTS.md --remote --file KEY` |
+| Read saved source and hash (any depth, Markdown too) | `figma-cli make read src/App.tsx --file KEY` |
+| Read installed kit source, never the editor buffer | `figma-cli make read node_modules/kit/AGENTS.md --remote --file KEY` |
 | Create a new module | `figma-cli make create src/Component.tsx --file KEY --from -` |
 | Import new modules | `figma-cli make import --file KEY --manifest - --timeout 120000` |
 | Replace existing source | `figma-cli make replace src/App.tsx --file KEY --from - --expected-sha256 HASH` |
@@ -19,17 +19,20 @@ These examples are templates; choose paths/content for the actual requested work
 | Inspect the running preview | `figma-cli make preview --file KEY` |
 | Read source editor diagnostics | `figma-cli make diagnostics src/App.tsx --file KEY` |
 
-Read commands return `{fileKey,path,content,sha256}`. `--out` is optional and writes
+Read commands return `{fileKey,path,content,sha256,source}`. `--out` is optional and writes
 a local source copy; omit it in a direct-to-Make/no-local-app-code workflow.
 `--from -` and `--manifest -` accept blocking stdin, including large source payloads.
 No special stdin preloader or temporary source file is needed.
 
-Use `read --remote` when Make displays Markdown as a preview instead of editable
-text, or to inspect an attached kit under `node_modules/`. It reads saved UTF-8
-source through the observed filesystem connection without changing the file.
-Project paths must appear in the source inventory; installed
-package paths under `node_modules/` may be hidden from that inventory. This reads
-saved content, so use the ordinary read for unsaved editor changes.
+`read` returns saved UTF-8 source through the observed filesystem connection,
+at any folder depth and including Markdown that Make shows as a preview, without
+changing the file (`source: "filesystem"`). Only when that connection cannot be
+observed does it fall back to the open editor (`source: "editor"`), which refuses
+paths whose folder chain cannot fit in the file-tree viewport. Pass `--remote` to
+require the filesystem connection, and to inspect an attached kit under
+`node_modules/`. Project paths must appear in the source inventory; installed
+package paths under `node_modules/` may be hidden from that inventory.
+`replace` hashes the same saved content, so use the hash from a filesystem read.
 
 ## Transfer source safely
 
@@ -108,8 +111,11 @@ verify each before continuing. Do not treat import as an upsert.
 
 ## Interpret results accurately
 
-- `server-acknowledged` means Make acknowledged saving; creation also reads back
-  its content. It does not mean the app built or was published.
+- `server-acknowledged` means Make acknowledged saving; creation and replacement
+  also read the content back (`readback: "matched"` on replacement). It does not
+  mean the app built or was published.
+- `outcome: "refused"` on a replacement error means the file changed after the
+  backup and no write was sent; `outcome: "uncertain"` means the write may have run.
 - `remote-content-matched` means the server's source bytes equal the manifest.
 - `changed: false` means replacement found identical content; it is not a new save.
 - `preview` reports the current rendered app. Check the intended headings/content
@@ -120,7 +126,7 @@ verify each before continuing. Do not treat import as an upsert.
   Preview `regions` reports panel and tab bounds for layout checks; a rendered app
   is not evidence that its TypeScript editor is free of errors.
 
-The adapter uses Figma Desktop's loaded Make editor and an observed authenticated
-filesystem socket. It is an experimental private protocol, not a public Figma API.
+The adapter uses an observed authenticated filesystem socket in Figma Desktop's
+loaded Make page, and the Make editor for diagnostics. It is an experimental private protocol, not a public Figma API.
 It requires neither an additional API key nor copying cookies/tokens. Let the CLI
 manage it; do not reconstruct protocol calls or change debugging ports ad hoc.

@@ -26,7 +26,7 @@ Volatile detail such as selectors, error strings and option names stays by point
 
 | Folder | Holds |
 |---|---|
-| [make/](make/index.md) | Figma Make: CDP page discovery, workspace and Files-tab resolution |
+| [make/](make/index.md) | Figma Make: CDP page discovery, workspace and Files-tab resolution, file selection limits and the filesystem bridge |
 | [testing/](testing/index.md) | Test layout, suites and fixtures |
 
 ## Note conventions

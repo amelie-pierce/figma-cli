@@ -77,7 +77,7 @@ figma-cli make inspect --file <make-file-key>
 figma-cli make ui --file <make-file-key>
 figma-cli make files --file <make-file-key>
 figma-cli make read src/App.tsx --file <make-file-key>
-figma-cli make read AGENTS.md --remote --file <make-file-key>
+figma-cli make read guidelines/Guidelines.md --remote --file <make-file-key>
 figma-cli make diagnostics src/App.tsx --file <make-file-key>
 figma-cli make replace src/App.tsx --file <make-file-key> --from - --expected-sha256 <hash-from-read>
 figma-cli make create src/Component.tsx --file <make-file-key> --from -
@@ -86,32 +86,47 @@ figma-cli make verify --file <make-file-key> --manifest - --timeout 120000
 figma-cli make preview --file <make-file-key>
 ```
 
-`read` returns the complete editor document and its SHA-256 as JSON. With
-`--out`, source goes to a new local file (an existing file is not overwritten),
-and stdout contains metadata. `files` expands and scrolls the virtualized file
-tree so nested paths and repeated basenames are resolved unambiguously.
+`read` returns the saved file and its SHA-256 as JSON, read through Make's
+filesystem connection, so any listed text file works at any folder depth,
+including Markdown that Make shows as a rendered preview. The result's `source`
+is `filesystem`. Only when no filesystem connection can be observed does `read`
+fall back to the open editor document (`source: "editor"`), which still needs the
+file's whole folder chain to fit in the file-tree viewport. `--remote` requires
+the filesystem connection and never falls back. With `--out`, source goes to a
+new local file (an existing file is not overwritten), and stdout contains
+metadata. `files` expands and scrolls the virtualized file tree so nested paths
+and repeated basenames are resolved unambiguously; `read` and `replace` use that
+listing to refuse paths that are not project files.
 Each operation temporarily keeps the Make renderer active through CDP, allowing
 its file tree to update while Figma is in the background, then clears that
-override. It does not move operating-system focus. File selection verifies the
-entire parent-folder chain before reading or writing. Selection collapses unrelated
-folders so large vendor trees do not obscure an app file. Paths whose ancestors
-and file still cannot fit together in the viewport are refused.
+override. It does not move operating-system focus. Editor selection (used by
+`diagnostics` and the read fallback) verifies the entire parent-folder chain and
+collapses unrelated folders so large vendor trees do not obscure an app file.
+Paths whose ancestors and file still cannot fit together in the viewport are
+refused by those editor commands.
 
-`replace` requires the previous content hash, saves a private local backup,
-then applies one editor transaction. It observes Make's own file-write
-request and matching successful server response, and rechecks the editor
-content. It does not call a private write endpoint. Successful results report
-`verification: "server-acknowledged"` and `persistence: "acknowledged"`.
-This confirms the source file was saved; it does not certify a passing app
-build, deployment, or publication. An unchanged file reports `changed: false`
-and does not claim a new save.
+`replace` works on any existing text file at any depth through the filesystem
+connection. It reads the saved file and refuses unless its SHA-256 matches
+`--expected-sha256`, saves a private local backup, then, in one page call,
+re-reads the file, compares it with the backed-up bytes, and only then sends one
+write. It checks Make's write reply (path and byte count) and reads the file back,
+comparing it byte for byte. Successful results report
+`verification: "server-acknowledged"`, `readback: "matched"` and
+`persistence: "acknowledged"`. The write reply is Make's own server
+acknowledgement, so the editor save observer used by the previous editor-based
+replacement is no longer needed. This confirms the source file was saved; it
+does not certify a passing app build, deployment, or publication. An unchanged
+file reports `changed: false` and does not claim a new save. Replacement never
+creates a file: a path missing from the project listing or from saved storage is
+refused before any backup.
 
 Backups default to `~/.figma-cli/make-backups`; override with `--backup-dir`.
 Their source files and metadata use private filesystem permissions. Keep the
 returned backup path until the intended change is reviewed.
 
-Writes reject stale editor content, a running Make generation, a visible
-connection warning, unsupported editor structure, or read-only files. They
+Writes reject a stale hash, a running Make generation, a visible connection
+warning, or a visible read-only editor. A change detected between the backup
+and the write is refused with `outcome: "refused"` and no write sent. Writes
 are never retried automatically. A timeout after a write may mean it saved:
 read the file again before deciding what to do. To restore, read the current
 hash and replace from the original backup with that hash. Do not blindly
@@ -126,12 +141,21 @@ Import manifests use `{ "files": [{ "path": "src/Component.tsx", "content": "...
 `create` and `import` reject existing paths, case-ambiguous duplicates, traversal,
 and file/folder conflicts. Limits: 300 files, 2 MiB each, 20 MiB total source.
 
-Creation uses Make's observed filesystem protocol on its existing authenticated
-WebSocket. The adapter briefly observes a source-file read to identify that exact
-connection, then restores the send hook. It reuses the connection in the same Make
-page; it never extracts credentials or opens a separate authenticated connection.
-The cached socket reference expires with the page/socket. Each write is acknowledged
-and read back. This is an experimental private protocol, not a public Figma API.
+Reading, replacement, creation, verification and removal use Make's observed
+filesystem protocol on its existing authenticated WebSocket. Before each
+operation starts focus emulation, the adapter arms a passive send hook. A
+background Make page closes that socket while hidden and reconnects it when
+focus emulation starts; the reconnect's `control/provision` message identifies
+the socket and its workspace, which is usable once Make's
+`control/workspace_create_ack` arrives. A Make request to read an uncached
+source file also identifies it. If the socket stayed open since it provisioned
+unobserved, the adapter closes it (never while Make is generating) so Make
+reconnects and provisions under the hook; when nothing is captured, the command
+fails with no write and suggests moving the tab to the background for a minute. The hook is restored after
+capture. The adapter reuses the connection in the same Make page; it never
+extracts credentials or opens a separate authenticated connection. The cached
+socket reference expires with the page/socket. Each write is acknowledged and
+read back. This is an experimental private protocol, not a public Figma API.
 
 Imports are sequential, not atomic. Errors report acknowledged files and requested
 paths; other writes may have an uncertain outcome. Inspect and verify before
@@ -145,10 +169,14 @@ and requests removal of that file only. It does not recursively remove folders.
 Keep its backup until cleanup is reviewed. Like replacement, this check is not a
 server-side compare-and-swap; do not run concurrent writers on the same project.
 
-Limitations: no rename, binary edits, or multi-file atomic changes. The content check is local to the active editor,
-not a server-side compare-and-swap against other collaborators. The adapter
-depends on the current CodeMirror editor and Make's observed save-response
-format, so a Figma update may require adapting it. It does not reload the
+Limitations: no rename, binary edits, or multi-file atomic changes. Replacement's
+final content check is one server round trip before the write, not a server-side
+compare-and-swap against other collaborators. Whether an editor that already
+shows the file refreshes after a filesystem write has not been verified live
+(UNVERIFIED); read the file back rather than trusting the open editor. The
+adapter depends on Make's observed filesystem messages and the current
+CodeMirror editor (for `diagnostics` and the read fallback), so a Figma update
+may require adapting it. It does not reload the
 desktop page, restart Figma, trigger Make prompts, or publish the app.
 
 ## Design Tokens & Variables

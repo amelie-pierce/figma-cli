@@ -12,17 +12,81 @@ import { makeWorkspace } from '../src/make-workspace.js';
 const hash = (content) => createHash('sha256').update(content).digest('hex');
 
 // Execute the production page expressions against a small observed-DOM fixture.
-// Tree enumeration/selection and CodeMirror guards remain real code in these tests.
+// Tree enumeration/selection, CodeMirror guards and the filesystem bridge remain
+// real code in these tests. `extraFolders` nests the file deeper under src/.
 function fixture(options = {}) {
+  const extra = options.extraFolders || [];
+  const original = 'export const original = true;\n';
+  const path = ['src', ...extra, options.rowName || 'App.tsx'].join('/');
   const state = {
-    content: 'export const original = true;\n', code: false, selected: false,
+    content: original, code: false, selected: false,
     key: 'ExactKey', readonly: false, editable: true, busy: false, offline: false,
-    rowName: 'App.tsx', heading: 'App.tsx', level: 2, top: 32,
+    rowName: 'App.tsx', heading: 'App.tsx', level: 2 + extra.length, top: 32 * (1 + extra.length),
     folderName: 'src', folderTop: 0, folderLevel: 1, folderHeight: 32,
     folderExpanded: true, folderPresent: true, folderVisible: true,
     editorCount: 1, workspace: false, filesTabs: 1, headers: 1, treeVisible: true,
     breadcrumbFolder: 'src', breadcrumbLeaf: 'App.tsx', tabClicks: 0, closeClicks: 0,
+    clientHeight: 200, workspaceId: 'workspace', provisionOnFocus: true, reconnectOnClose: true, fetchOnSelect: false,
+    fs: { [path]: original }, fsWrites: [], frames: [], sockets: [],
     dispatches: [], expressions: [], ...options,
+  };
+  state.path = path;
+  // Make's saved files, served over its filesystem WebSocket protocol.
+  class FakeSocket extends EventTarget {
+    static OPEN = 1;
+    constructor(url = 'wss://www.figma.com/api/agentcontrol/subscribe') {
+      super(); this.url = url; this.readyState = 1; state.sockets.push(this);
+    }
+    send(payload) { serve(this, payload); }
+    close() {
+      this.readyState = 3; this.dispatchEvent(new Event('close'));
+      // A visible Make page reconnects its agent socket after it closes.
+      if (state.focusEnabled && state.reconnectOnClose && this.url === 'wss://www.figma.com/api/agentcontrol/subscribe') provision();
+    }
+  }
+  const deliver = (socket, data) => Promise.resolve().then(() =>
+    socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(data) })));
+  function serve(socket, payload) {
+    const message = JSON.parse(payload);
+    state.frames.push(message);
+    if (message.type === 'control/workspace_create') {
+      socket.workspaceCreated = true;
+      return deliver(socket, { type: 'control/workspace_create_ack', success: true, data: { created: true } });
+    }
+    if (!message.type?.startsWith('fs/')) return;
+    // Observed live: an uncorrelated error, so the request itself never resolves.
+    if (!socket.workspaceCreated) {
+      return deliver(socket, { type: 'error', success: false, error: { message: `control/workspace_create must be sent before ${message.type}` } });
+    }
+    const file = message.data?.path?.replace(/^code\//, '');
+    let reply;
+    if (message.data?.workspaceId !== state.workspaceId) reply = { success: false };
+    else if (message.type === 'fs/file/read') {
+      state.beforeFsRead?.({ path: file, state });
+      if (state.hangReads) return;
+      reply = Object.hasOwn(state.fs, file)
+        ? { success: true, data: { path: message.data.path, encoding: 'base64', content: Buffer.from(state.fs[file]).toString('base64') } }
+        : { success: false };
+    } else if (message.type === 'fs/file/write') {
+      state.beforeFsWrite?.({ path: file, state });
+      state.fsWrites.push(file);
+      const written = Buffer.from(message.data.content, 'base64').toString('utf8');
+      if (state.writeMode !== 'rejected') state.fs[file] = state.writeMode === 'corrupt' ? `${written}// changed` : written;
+      if (state.writeMode === 'lost') { state.hangReads = true; return; }
+      reply = state.writeMode === 'rejected' ? { success: false }
+        : { success: true, data: { path: message.data.path, size: Buffer.byteLength(written), writtenAtMs: 1, modifiedAtMs: 2 } };
+    } else reply = { success: false };
+    deliver(socket, { type: message.type, requestId: message.requestId, ...reply });
+  }
+  // Make's long-lived socket; it reads a file it has not cached when opened.
+  state.makeSocket = new FakeSocket();
+  state.makeSocket.workspaceCreated = true;
+  // A reconnect provisions first and creates its workspace after the server's
+  // provisioning acknowledgement (about a second later, observed live).
+  const provision = () => {
+    const socket = new FakeSocket(state.provisionUrl);
+    socket.send(JSON.stringify({ type: 'control/provision', data: { namespace: 'namespace', workspaceId: state.workspaceId } }));
+    setTimeout(() => socket.send(JSON.stringify({ type: 'control/workspace_create', data: { seeded: true } })), state.workspaceDelay ?? 20);
   };
   const listeners = new Set();
   const emit = (method, payload) => {
@@ -53,8 +117,8 @@ function fixture(options = {}) {
     },
   };
   const editor = { ...box, cmView: { view }, getAttribute: (name) => name === 'contenteditable' ? String(state.editable) : null };
-  const content = { style: { height: '64px' } };
-  const viewport = { clientHeight: 200, scrollTop: 0, style: { overflowY: 'auto' } };
+  const content = { style: { height: `${32 * (2 + extra.length)}px` } };
+  const viewport = { get clientHeight() { return state.clientHeight; }, scrollTop: 0, style: { overflowY: 'auto' } };
   content.parentElement = viewport;
   const fileRow = {
     ...box, parentElement: content,
@@ -66,7 +130,11 @@ function fixture(options = {}) {
     ...box,
     getAttribute: (name) => ({ 'aria-label': `File "${state.rowName}"`, 'aria-current': state.selected ? 'page' : null })[name] ?? null,
     closest: () => fileRow,
-    click: () => { state.selected = true; },
+    click: () => {
+      state.selected = true;
+      if (state.fetchOnSelect) state.makeSocket.send(JSON.stringify({ type: 'fs/file/read', requestId: 'make-read',
+        data: { path: `code/${state.path}`, encoding: 'base64', workspaceId: state.workspaceId } }));
+    },
   };
   const folderControl = { getAttribute: (name) => ({ 'aria-label': `Folder "${state.folderName}"`,
     'aria-expanded': String(state.folderExpanded) })[name] ?? null };
@@ -78,7 +146,13 @@ function fixture(options = {}) {
       'aria-expanded': String(state.folderExpanded) })[name] ?? null,
     querySelector: (selector) => selector === '[data-testid="code-file-item"]' ? null : folderControl,
   };
-  const tree = { ...box, parentElement: {}, querySelectorAll: () => [...(state.folderPresent ? [folderRow] : []), fileRow] };
+  const extraRows = extra.map((name, index) => {
+    const control = { getAttribute: (attribute) => ({ 'aria-label': `Folder "${name}"`, 'aria-expanded': 'true' })[attribute] ?? null };
+    return { ...box, parentElement: content, style: { top: `${32 * (index + 1)}px` },
+      getAttribute: (attribute) => ({ 'aria-label': name, 'aria-level': String(index + 2), 'aria-expanded': 'true' })[attribute] ?? null,
+      querySelector: (selector) => selector === '[data-testid="code-file-item"]' ? null : control };
+  });
+  const tree = { ...box, parentElement: {}, querySelectorAll: () => [...(state.folderPresent ? [folderRow] : []), ...extraRows, fileRow] };
   viewport.parentElement = tree;
   const stop = { ...box, innerText: 'Stop', getAttribute: () => 'Stop' };
   // Each Files tab is distinct; its title is a filename (state.tabTitles), never the project name.
@@ -130,20 +204,64 @@ function fixture(options = {}) {
   const context = {
     document, URL, location: { get href() { return `https://www.figma.com/make/${state.key}/Test`; } },
     getComputedStyle: (element) => ({ display: 'block', visibility: 'visible', ...element.style }),
-    setTimeout: (callback) => { callback(); return 1; },
+    // Short page waits run immediately; bridge timeouts and capture windows are
+    // real but never keep the test process alive.
+    setTimeout: (callback, ms) => {
+      if (!(ms > 100)) { callback(); return 0; }
+      const timer = setTimeout(callback, ms);
+      timer.unref();
+      return timer;
+    },
+    clearTimeout: (timer) => { if (timer) clearTimeout(timer); },
+    WebSocket: FakeSocket, Event, MessageEvent, Buffer,
   };
+  const objects = new Map();
+  const remoteError = (error) => ({ exceptionDetails: { exception: { description: error.message } } });
   const transport = {
     target: null,
     async connect() { this.target = { fileKey: 'ExactKey' }; return this; },
-    async send(method, params) {
+    // Like the real transport, every CDP command has its own timeout.
+    async send(method, params, { timeoutMs } = {}) {
+      if (!timeoutMs) return this._send(method, params);
+      let timer;
+      try {
+        return await Promise.race([this._send(method, params), new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Make CDP ${method} timed out; the command was not retried`)), timeoutMs);
+        })]);
+      } finally { clearTimeout(timer); }
+    },
+    async _send(method, params) {
       state.methods = [...(state.methods || []), method];
       state.protocolCalls = [...(state.protocolCalls || []), { method, params }];
       if (method === 'Emulation.setFocusEmulationEnabled') {
         if (!params.enabled && state.hangFocusDisable) return new Promise(() => {});
         if (!params.enabled && state.focusDisableError) throw new Error('focus disable failed');
         state.focusEnabled = params.enabled;
+        // A hidden Make page reconnects its agent socket when it gains focus.
+        if (params.enabled && state.provisionOnFocus) provision();
         if (params.enabled && state.focusEnableError) throw new Error('focus enable reply lost');
       }
+      if (method === 'Runtime.evaluate') {
+        try {
+          const objectId = `object-${objects.size + 1}-${Math.random()}`;
+          objects.set(objectId, vm.runInNewContext(params.expression, context));
+          return { result: { objectId } };
+        } catch (error) { return remoteError(error); }
+      }
+      if (method === 'Runtime.callFunctionOn') {
+        try {
+          const fn = vm.runInNewContext(`(${params.functionDeclaration})`, context);
+          const value = await fn.apply(objects.get(params.objectId), (params.arguments || []).map((arg) => arg.value));
+          return { result: { value: value === undefined ? undefined : JSON.parse(JSON.stringify(value)) } };
+        } catch (error) { return remoteError(error); }
+      }
+      if (method === 'Runtime.queryObjects') {
+        const prototype = objects.get(params.prototypeObjectId);
+        const objectId = `object-${objects.size + 1}-${Math.random()}`;
+        objects.set(objectId, state.sockets.filter(socket => prototype.isPrototypeOf(socket)));
+        return { objects: { objectId } };
+      }
+      if (method === 'Runtime.releaseObject') objects.delete(params.objectId);
       return {};
     },
     onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
@@ -171,7 +289,7 @@ async function setup(t, options = {}, timeoutMs = 15000) {
   return { ...f, client, backupDir };
 }
 
-test('inspect/list/read use Code and return exact file identity and content hash', async (t) => {
+test('inspect/list/read use Code and return exact saved content and hash through the filesystem bridge', async (t) => {
   const { client, state } = await setup(t);
   const info = await client.inspect();
   assert.equal(info.codeReady, true);
@@ -179,17 +297,22 @@ test('inspect/list/read use Code and return exact file identity and content hash
   assert.equal(Object.hasOwn(info, 'content'), false);
   assert.deepEqual((await client.files()).map((entry) => entry.path), ['src', 'src/App.tsx']);
   assert.deepEqual(await client.read('src/App.tsx'), {
-    fileKey: 'ExactKey', path: 'src/App.tsx', content: state.content, sha256: hash(state.content),
+    fileKey: 'ExactKey', path: 'src/App.tsx', content: state.content, sha256: hash(state.content), source: 'filesystem',
   });
+  assert.equal(state.selected, false, 'a bridge read selects no tree row');
   assert.equal(state.dispatches.length, 0);
+  assert.equal(state.fsWrites.length, 0);
 });
 
 test('Files workspace opens without Code radios and reads after the tab becomes a filename', async t => {
-  const { client, state } = await setup(t, { workspace: true });
+  // Without an observable filesystem socket, read falls back to the editor.
+  const { client, state } = await setup(t, { workspace: true, provisionOnFocus: false, reconnectOnClose: false });
   const info = await client.inspect();
   assert.equal(info.workspaceMode, 'files-workspace');
   assert.equal(info.codeReady, true);
-  assert.equal((await client.read('src/App.tsx')).sha256, hash(state.content));
+  const result = await client.read('src/App.tsx');
+  assert.equal(result.sha256, hash(state.content));
+  assert.equal(result.source, 'editor');
   assert.equal((await client.inspect()).selectedName, 'App.tsx');
   assert.equal(state.tabClicks, 1);
   assert.equal(state.closeClicks, 0);
@@ -279,27 +402,28 @@ test('restored zero-size workspace reports manual readiness recovery without sel
   assert.equal(state.dispatches.length, 0);
 });
 
-test('Files workspace replacement keeps backup, acknowledgement and readback guards', async t => {
+test('Files workspace replacement writes through the bridge without touching the editor or tabs', async t => {
   const { client, state, backupDir } = await setup(t, { workspace: true });
   const original = state.content;
   const result = await client.replace('src/App.tsx', 'export const changed = true;\n', {
     expectedSha256: hash(original), backupDir,
   });
   assert.equal(readFileSync(result.backupPath, 'utf8'), original);
-  assert.equal(state.dispatches.length, 1);
-  assert.equal(result.sha256, hash(state.content));
+  assert.equal(state.fs['src/App.tsx'], 'export const changed = true;\n');
+  assert.equal(result.sha256, hash(state.fs['src/App.tsx']));
+  assert.equal(state.dispatches.length, 0);
+  assert.equal(state.selected, false);
   assert.equal(state.closeClicks, 0);
 });
 
-test('Files breadcrumb must match the full selected path, including at final dispatch', async t => {
+test('Files breadcrumb must match the full selected path for editor reads', async t => {
   for (const final of [false, true]) {
     for (const field of ['breadcrumbFolder', 'breadcrumbLeaf']) {
-      const { client, state, backupDir } = await setup(t, { workspace: true });
-      if (final) state.beforeEvaluate = ({ isWrite }) => { if (isWrite) state[field] = 'other'; };
+      const { client, state } = await setup(t, { workspace: true });
+      if (final) state.beforeEvaluate = ({ expression }) => { if (expression.includes(')({"type":"read"')) state[field] = 'other'; };
       else state[field] = 'other';
-      await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }), /breadcrumb/);
+      await assert.rejects(client.diagnostics('src/App.tsx'), /breadcrumb/);
       assert.equal(state.dispatches.length, 0);
-      assert.equal((await readdir(backupDir)).length, final ? 1 : 0);
     }
   }
 });
@@ -343,7 +467,7 @@ test('remote read returns exact saved UTF-8 including a BOM and disposes the rea
     dispose: async () => { disposed = true; },
   });
   assert.deepEqual(await client.read('src/App.tsx', { remote: true }), {
-    fileKey: 'ExactKey', path: 'src/App.tsx', content, sha256: hash(content),
+    fileKey: 'ExactKey', path: 'src/App.tsx', content, sha256: hash(content), source: 'filesystem',
   });
   assert.equal(disposed, true);
   assert.equal(state.dispatches.length, 0);
@@ -386,12 +510,12 @@ test('remote read rejects mismatched identity, encoding and malformed text, alwa
   }
 });
 
-test('replacement saves private original and metadata before one dispatch, then verifies its server acknowledgement', async (t) => {
+test('replacement backs up the saved original before one bridge write, then verifies the acknowledgement and readback', async (t) => {
   const { client, state, backupDir } = await setup(t);
   const original = state.content;
   let backupWasPresent = false;
-  state.beforeDispatch = () => {
-    // Backup completion precedes dispatch; no source text passes through shell interpolation.
+  state.beforeFsWrite = () => {
+    // Backup completion precedes the write; no source text passes through shell interpolation.
     const directory = join(backupDir, readdirSync(backupDir)[0]);
     assert.equal(readFileSync(join(directory, 'original.txt'), 'utf8'), original);
     assert.equal(JSON.parse(readFileSync(join(directory, 'metadata.json'), 'utf8')).sha256, hash(original));
@@ -404,6 +528,7 @@ test('replacement saves private original and metadata before one dispatch, then 
   const metadata = JSON.parse(await readFile(join(dirname(result.backupPath), 'metadata.json'), 'utf8'));
   assert.equal(metadata.path, 'src/App.tsx');
   assert.equal(metadata.fileKey, 'ExactKey');
+  assert.equal(metadata.operation, 'replace');
   assert.equal(metadata.sha256, hash(original));
   assert.equal(metadata.replacementSha256, hash(replacement));
   // Windows access control uses ACLs; POSIX permission bits are not equivalent.
@@ -411,78 +536,204 @@ test('replacement saves private original and metadata before one dispatch, then 
     assert.equal((await stat(result.backupPath)).mode & 0o777, 0o600);
     assert.equal((await stat(dirname(result.backupPath))).mode & 0o777, 0o700);
   }
-  assert.equal(state.dispatches.length, 1);
-  assert.deepEqual(state.dispatches[0].changes, { from: 0, to: original.length, insert: replacement });
+  assert.deepEqual(state.fsWrites, ['src/App.tsx']);
+  assert.equal(state.fs['src/App.tsx'], replacement);
+  // Read for the hash, re-read just before the write, then read back.
+  assert.deepEqual(state.frames.filter(frame => frame.type?.startsWith('fs/')).map(frame => frame.type),
+    ['fs/file/read', 'fs/file/read', 'fs/file/write', 'fs/file/read']);
+  assert.equal(state.dispatches.length, 0);
   assert.equal(result.sha256, hash(replacement));
+  assert.equal(result.changed, true);
   assert.equal(result.verification, 'server-acknowledged');
+  assert.equal(result.readback, 'matched');
   assert.equal(result.persistence, 'acknowledged');
-  assert.deepEqual(state.methods, ['Emulation.setFocusEmulationEnabled', 'Network.enable', 'Emulation.setFocusEmulationEnabled']);
+  assert.deepEqual(result.receipt, { path: 'src/App.tsx', bytes: Buffer.byteLength(replacement), writtenAtMs: 1, modifiedAtMs: 2 });
+  assert.equal(state.methods.includes('Network.enable'), false);
   assert.equal(state.focusEnabled, false);
 });
 
-test('identical source content performs no write, save-observation setup, or backup', async (t) => {
+test('replacement works for a deeply nested file whose folder chain cannot fit in the file-tree viewport', async (t) => {
+  const extraFolders = ['components', 'lib', 'forms', 'fields'];
+  const { client, state, backupDir } = await setup(t, { extraFolders, rowName: 'Field.tsx', heading: 'Field.tsx', clientHeight: 64 });
+  const path = 'src/components/lib/forms/fields/Field.tsx';
+  assert.equal(state.path, path);
+  // The editor path refuses this file: its ancestry needs 192px of a 64px tree.
+  await assert.rejects(client.diagnostics(path), /cannot fit in the file-tree viewport/);
+  const read = await client.read(path);
+  assert.equal(read.source, 'filesystem');
+  assert.equal(read.sha256, hash(state.fs[path]));
+  const result = await client.replace(path, 'export const field = 1;\n', { expectedSha256: read.sha256, backupDir });
+  assert.equal(result.changed, true);
+  assert.equal(state.fs[path], 'export const field = 1;\n');
+  assert.deepEqual(state.fsWrites, [path]);
+  assert.equal(JSON.parse(await readFile(join(dirname(result.backupPath), 'metadata.json'), 'utf8')).path, path);
+  assert.equal(state.dispatches.length, 0);
+});
+
+test('Markdown reads through the bridge, where the editor shows no source document', async (t) => {
+  const { client, state } = await setup(t, { rowName: 'Guidelines.md', heading: 'Guidelines.md', editorCount: 0 });
+  const content = '# Guidelines\n\nUse the kit.\n';
+  state.fs['src/Guidelines.md'] = content;
+  assert.deepEqual(await client.read('src/Guidelines.md'), {
+    fileKey: 'ExactKey', path: 'src/Guidelines.md', content, sha256: hash(content), source: 'filesystem',
+  });
+  assert.equal(state.selected, false);
+});
+
+test('bridge capture succeeds although every file is already cached by Make', async (t) => {
+  // Make sends no fs/file/read when a cached file opens; the reconnect that
+  // focus emulation triggers identifies the socket instead.
+  const { client, state } = await setup(t, { fetchOnSelect: false });
+  assert.equal((await client.read('src/App.tsx')).source, 'filesystem');
+  assert.equal(state.selected, false, 'no candidate file had to be opened');
+  assert.equal(state.frames.filter(frame => frame.type === 'control/provision').length, 1);
+});
+
+test('a provisioned socket is used only after Make acknowledges creating its workspace', async (t) => {
+  const { client, state } = await setup(t, { workspaceDelay: 400 });
+  assert.equal((await client.read('src/App.tsx')).source, 'filesystem');
+  const types = state.frames.map(frame => frame.type);
+  assert.ok(types.indexOf('control/workspace_create') < types.indexOf('fs/file/read'));
+  assert.equal(state.frames.some(frame => frame.type === 'error'), false);
+});
+
+test('an open agent socket that provisioned unobserved is reconnected so its provisioning identifies it', async (t) => {
+  const { client, state } = await setup(t, { provisionOnFocus: false });
+  assert.equal((await client.read('src/App.tsx', { remote: true })).source, 'filesystem');
+  assert.equal(state.makeSocket.readyState, 3, 'the unidentified socket was closed');
+  assert.equal(state.selected, false, 'no file had to be opened');
+  assert.equal(state.frames.filter(frame => frame.type === 'control/provision').length, 1);
+  // The reconnected socket is cached, so the next operation leaves it open.
+  assert.equal((await client.read('src/App.tsx', { remote: true })).source, 'filesystem');
+  assert.equal(state.sockets.filter(socket => socket.readyState === 1).length, 1);
+});
+
+test('an unidentified agent socket is left open while Make is generating', async (t) => {
+  const { client, state } = await setup(t, { provisionOnFocus: false, busy: true });
+  await assert.rejects(client.read('src/App.tsx', { remote: true }), error => error.code === 'MAKE_FILESYSTEM_UNAVAILABLE');
+  assert.equal(state.makeSocket.readyState, 1);
+});
+
+test('a captured socket is reused by later operations until it closes', async (t) => {
+  const { client, state } = await setup(t);
+  await client.read('src/App.tsx');
+  state.provisionOnFocus = false;
+  assert.equal((await client.read('src/App.tsx', { remote: true })).source, 'filesystem');
+  for (const socket of state.sockets) socket.close();
+  await assert.rejects(client.read('src/App.tsx', { remote: true }), error => error.code === 'MAKE_FILESYSTEM_UNAVAILABLE');
+});
+
+test('capture ignores provisioning from another host or an insecure socket', async (t) => {
+  for (const change of [
+    (state) => { state.provisionUrl = 'wss://evil.example/api/agentcontrol/subscribe'; },
+    (state) => { state.provisionUrl = 'ws://www.figma.com/api/agentcontrol/subscribe'; },
+  ]) {
+    const { client, state, backupDir } = await setup(t, { provisionOnFocus: false });
+    change(state);
+    state.provisionOnFocus = true;
+    await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }),
+      error => error.code === 'MAKE_FILESYSTEM_UNAVAILABLE' && /no files were written/.test(error.message));
+    assert.deepEqual(state.fsWrites, []);
+    assert.deepEqual(await readdir(backupDir), []);
+  }
+});
+
+test('without a filesystem connection, read falls back to the editor but replacement writes nothing', async (t) => {
+  const { client, state, backupDir } = await setup(t, { provisionOnFocus: false, reconnectOnClose: false });
+  assert.equal((await client.read('src/App.tsx')).source, 'editor');
+  await assert.rejects(client.read('src/App.tsx', { remote: true }), /no files were written/);
+  await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }), /no files were written/);
+  assert.deepEqual(state.fsWrites, []);
+  assert.deepEqual(await readdir(backupDir), []);
+  assert.equal(state.dispatches.length, 0);
+});
+
+test('identical source content performs no write or backup', async (t) => {
   const { client, state, backupDir } = await setup(t);
   const result = await client.replace('src/App.tsx', state.content, { expectedSha256: hash(state.content), backupDir });
   assert.equal(result.changed, false);
   assert.equal(result.backupPath, null);
   assert.equal(result.verification, 'unchanged');
   assert.equal(result.persistence, 'unverified');
-  assert.equal(state.dispatches.length, 0);
-  assert.deepEqual(state.methods, ['Emulation.setFocusEmulationEnabled', 'Emulation.setFocusEmulationEnabled']);
+  assert.deepEqual(state.fsWrites, []);
   assert.equal(state.focusEnabled, false);
   assert.deepEqual(await readdir(backupDir), []);
 });
 
-test('missing and stale hashes never dispatch or create a backup', async (t) => {
+test('missing and stale hashes never write or create a backup', async (t) => {
   const { client, state, backupDir } = await setup(t);
   await assert.rejects(client.replace('src/App.tsx', 'new', { backupDir }), /expectedSha256/);
   await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash('stale'), backupDir }), /does not match/);
-  assert.equal(state.dispatches.length, 0);
+  // The saved file differs from what an earlier read hashed.
+  state.fs['src/App.tsx'] = 'export const collaborator = true;\n';
+  await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }), /does not match/);
+  assert.deepEqual(state.fsWrites, []);
   assert.deepEqual(await readdir(backupDir), []);
 });
 
-test('rejects busy, offline, ambiguous editor, read-only, and mismatched heading states', async (t) => {
+test('replacement refuses missing files, folders and unsafe paths and never creates', async (t) => {
+  const { client, state, backupDir } = await setup(t);
+  for (const [path, expected] of [
+    ['src/Missing.tsx', /missing/], ['src', /missing/], ['src/../App.tsx', /unambiguous/],
+    ['node_modules/pkg/index.js', /missing/],
+  ]) {
+    await assert.rejects(client.replace(path, 'new', { expectedSha256: hash(state.content), backupDir }), expected);
+  }
+  // Listed in the tree but absent from saved storage: refused before any backup.
+  delete state.fs['src/App.tsx'];
+  await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }), /read failed/);
+  assert.deepEqual(state.fsWrites, []);
+  assert.deepEqual(await readdir(backupDir), []);
+});
+
+test('replacement refuses while Make is generating, offline or read-only', async (t) => {
+  for (const [change, expected] of [
+    [{ busy: true }, /generating/], [{ offline: true }, /not be synced/], [{ readonly: true }, /read-only/],
+  ]) {
+    const { client, state, backupDir } = await setup(t, change);
+    await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }), expected);
+    assert.deepEqual(state.fsWrites, []);
+    assert.deepEqual(await readdir(backupDir), []);
+  }
+});
+
+test('editor reads reject busy, offline, ambiguous editor, read-only, and mismatched heading states', async (t) => {
   for (const [change, expected] of [
     [{ busy: true }, /generating/], [{ offline: true }, /not be synced/],
     [{ editorCount: 2 }, /exactly one visible/], [{ readonly: true }, /read-only/],
     [{ editable: false }, /read-only/], [{ heading: 'Other.tsx' }, /heading/],
   ]) {
-    const { client, state, backupDir } = await setup(t, change);
-    await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }), expected);
+    const { client, state } = await setup(t, change);
+    await assert.rejects(client.diagnostics('src/App.tsx'), expected);
     assert.equal(state.dispatches.length, 0);
-    assert.deepEqual(await readdir(backupDir), []);
   }
 });
 
-test('refuses changed file identity and changed source in the final synchronous pre-dispatch guard', async (t) => {
+test('a change between the backup and the write is refused in the page without sending the write', async (t) => {
   for (const mutate of [
+    (state) => { state.fs['src/App.tsx'] += '// collaborator edit'; },
     (state) => { state.key = 'OtherKey'; },
-    (state) => { state.content += '// collaborator edit'; },
-    (state) => { state.top = 64; },
-    (state) => { state.level = 3; },
-    (state) => { state.rowName = 'Other.tsx'; },
-    (state) => { state.selected = false; },
-    (state) => { state.busy = true; },
-    (state) => { state.offline = true; },
+    (state) => { delete state.fs['src/App.tsx']; },
   ]) {
     const { client, state, backupDir } = await setup(t);
-    state.beforeEvaluate = ({ isWrite }) => { if (isWrite) mutate(state); };
+    let reads = 0;
+    state.beforeFsRead = () => { if (++reads === 2) mutate(state); };
     let failure;
     await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }), (error) => {
       failure = error;
-      return /uncertain/.test(error.message) && /Original backup/.test(error.message);
+      return error.outcome === 'refused' && /No write was sent/.test(error.message) && /Original backup/.test(error.message);
     });
-    assert.equal(state.dispatches.length, 0);
+    assert.deepEqual(state.fsWrites, []);
     assert.equal(readFileSync(failure.backupPath, 'utf8'), 'export const original = true;\n');
   }
 });
 
-test('backup failure prevents any mutation', async (t) => {
+test('backup failure prevents any write', async (t) => {
   const { client, state, backupDir } = await setup(t);
   await assert.rejects(client.replace('src/App.tsx', 'new', {
     expectedSha256: hash(state.content), backupDir: join(backupDir, '\0invalid'),
   }));
-  assert.equal(state.dispatches.length, 0);
+  assert.deepEqual(state.fsWrites, []);
 });
 
 test('final ancestry guard refuses same-named, same-position, same-content leaves under changed parents', async (t) => {
@@ -495,37 +746,24 @@ test('final ancestry guard refuses same-named, same-position, same-content leave
     (state) => { state.folderHeight = 31; },
     (state) => { state.folderVisible = false; },
   ]) {
-    const { client, state, backupDir } = await setup(t);
-    const original = state.content;
-    state.beforeEvaluate = ({ isWrite }) => { if (isWrite) mutate(state); };
-    await assert.rejects(client.replace('src/App.tsx', 'new', {
-      expectedSha256: hash(original), backupDir,
-    }), /ancestor|ancestry/);
+    const { client, state } = await setup(t);
+    state.beforeEvaluate = ({ expression }) => { if (expression.includes(')({"type":"read"')) mutate(state); };
+    await assert.rejects(client.diagnostics('src/App.tsx'), /ancestor|ancestry/);
     assert.equal(state.dispatches.length, 0);
-    assert.equal(state.content, original);
     assert.equal(state.rowName, 'App.tsx');
     assert.equal(state.top, 32);
   }
 });
 
-test('read refuses changed parent metadata after selection', async (t) => {
-  const { client, state } = await setup(t);
-  state.beforeEvaluate = ({ expression }) => {
-    if (expression.includes(')({"type":"read"')) state.folderName = 'other';
-  };
-  await assert.rejects(client.read('src/App.tsx'), /ancestor/);
-  assert.equal(state.dispatches.length, 0);
-});
-
-test('lost response after dispatch reports original backup and never retries or rolls back', async (t) => {
-  const { client, state, backupDir } = await setup(t, { throwAfterDispatch: true });
+test('lost write response reports the original backup and never retries or rolls back', async (t) => {
+  const { client, state, backupDir } = await setup(t, { writeMode: 'lost' }, 2000);
   let failure;
   await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }), (error) => {
     failure = error;
     return error.outcome === 'uncertain' && /No retry or rollback/.test(error.message);
   });
-  assert.equal(state.content, 'new');
-  assert.equal(state.dispatches.length, 1);
+  assert.equal(state.fs['src/App.tsx'], 'new');
+  assert.deepEqual(state.fsWrites, ['src/App.tsx']);
   assert.equal(await readFile(failure.backupPath, 'utf8'), 'export const original = true;\n');
 });
 
@@ -537,33 +775,26 @@ test('bounds the operation and rejects concurrent operations on the same editor'
   assert.equal(state.dispatches.length, 0);
 });
 
-test('verification timeout after dispatch reports uncertainty without replaying the write', async (t) => {
-  const { client, state, backupDir } = await setup(t, { hangReadback: true }, 1000);
-  await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }), /uncertain.*timed out/);
-  assert.equal(state.dispatches.length, 1);
-  assert.equal(state.content, 'new');
-});
-
-test('missing or rejected save acknowledgements leave an uncertain outcome and backup, never success', async (t) => {
-  // Allow VM setup and backup I/O under the full parallel CI suite before timing out.
-  for (const saveMode of ['absent', 'failed']) {
-    const { client, state, backupDir } = await setup(t, { saveMode }, 1000);
+test('rejected writes and mismatched readback leave an uncertain outcome and backup, never success', async (t) => {
+  for (const writeMode of ['rejected', 'corrupt']) {
+    const { client, state, backupDir } = await setup(t, { writeMode });
     let failure;
     await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }), (error) => {
       failure = error;
-      return error.outcome === 'uncertain';
+      return error.outcome === 'uncertain' && (writeMode === 'rejected' ? /rejected/ : /readback/).test(error.message);
     });
-    assert.equal(state.dispatches.length, 1);
+    assert.deepEqual(state.fsWrites, ['src/App.tsx']);
     assert.equal(await readFile(failure.backupPath, 'utf8'), 'export const original = true;\n');
   }
 });
 
 test('temporary focus emulation is restored after both successful and failed operations', async (t) => {
   for (const options of [{}, { busy: true }]) {
-    const { client, state } = await setup(t, options);
-    if (options.busy) await assert.rejects(client.read('src/App.tsx'), /generating/);
-    else await client.read('src/App.tsx');
-    assert.deepEqual(state.protocolCalls, [
+    const { client, state, backupDir } = await setup(t, options);
+    const pending = client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir });
+    if (options.busy) await assert.rejects(pending, /generating/);
+    else await pending;
+    assert.deepEqual(state.protocolCalls.filter(call => call.method.startsWith('Emulation.')), [
       { method: 'Emulation.setFocusEmulationEnabled', params: { enabled: true } },
       { method: 'Emulation.setFocusEmulationEnabled', params: { enabled: false } },
     ]);
@@ -574,16 +805,20 @@ test('temporary focus emulation is restored after both successful and failed ope
 test('failed focus enable skips editor operations and still attempts cleanup', async (t) => {
   const { client, state, backupDir } = await setup(t, { focusEnableError: true });
   await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }), /focus enable reply lost/);
-  assert.equal(state.expressions.length, 0);
+  // Only the passive capture was armed; no editor, tree or filesystem action ran.
+  assert.equal(state.expressions.length, 1);
+  assert.match(state.expressions[0], /figma-cli\.make\.filesystem/);
   assert.equal(state.dispatches.length, 0);
+  assert.deepEqual(state.fsWrites, []);
   assert.equal(state.focusEnabled, false);
   assert.deepEqual(await readdir(backupDir), []);
   assert.deepEqual(state.protocolCalls.map((call) => call.params.enabled), [true, false]);
 });
 
 test('cleanup failure is reported without masking the original operation error', async (t) => {
-  const { client } = await setup(t, { busy: true, focusDisableError: true });
-  await assert.rejects(client.read('src/App.tsx'), /generating.*focus emulation could not be disabled/);
+  const { client, state, backupDir } = await setup(t, { busy: true, focusDisableError: true });
+  await assert.rejects(client.replace('src/App.tsx', 'new', { expectedSha256: hash(state.content), backupDir }),
+    /generating.*focus emulation could not be disabled/);
 });
 
 test('cleanup is bounded within the operation timeout even when the renderer does not reply', async (t) => {
