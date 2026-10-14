@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- `make write` and `make delete` no longer stall on Markdown files, which Make shows as a preview without an editor. When a `.md` file shows no editor within a few seconds, the client VFS, session sandbox and file tree must agree instead (`verification: "tree-vfs-sandbox-matched"`); every other file must still match through its editor. A read-back that never agrees fails at the timeout and names each view's state. A new file directly under the project root or in a new top-level folder is refused up front, because its absence cannot be proven through the filesystem bridge.
+- `make save-version` accepts root `AGENTS.md` and `CLAUDE.md` in the expected set even though Make leaves them out of its pending list. Their bytes are captured from the client VFS and sandbox before the save and read back after it, and reported under `unlistedFiles`. Unexpected pending paths and missing ordinary paths are still refused.
+
 ### Added
 
 - `make export-delta` emits saved Make component changes in the workspace `intake-make-delta` path format. `make sync` writes digest-bound dry-run plans and applies explicit workspace-to-Make requests through durable writes, version save, drift verification and receipts, writing the after-VENDOR.json beside the receipt. Export-delta flags files whose workspace copy also changed as conflicts.

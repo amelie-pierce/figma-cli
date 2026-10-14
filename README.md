@@ -284,6 +284,9 @@ The Make skill handles readable React/TSX, new modules, dependencies, hash-guard
 replacement, backups, session-content verification, and preview inspection.
 The original four write commands are session-only. For git-mode files, use
 `make write` and `make save-version` when a saved version is required.
+Markdown files, which Make shows as a preview without an editor, are verified
+through the client VFS, sandbox and file tree. Root `AGENTS.md` and `CLAUDE.md`
+are saved and read back even though Make leaves them out of its pending list.
 For a vendor kit, `make drift --file KEY --manifest VENDOR.json` reads every file
 under `src/vendor/atomic-aui`, compares raw bytes and SHA-256, and fails when
 the inventory or saved state cannot be verified. `--receipt` can pin an external

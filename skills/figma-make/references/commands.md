@@ -38,8 +38,13 @@ session's working copy and are lost when the file is reopened unless the user
 saves them in Make, which creates a new version through the file's saving mode.
 Git-mode `write` and `delete` use Make's client VFS. They check the prior hash,
 back up replaced or removed bytes, and verify the editor, tree, VFS and sandbox.
+Markdown has no Make editor, so its writes are verified by tree, VFS and sandbox
+(`verification: "tree-vfs-sandbox-matched"`). A new file directly under the
+project root, or in a new top-level folder, is refused before writing.
 They remain pending until `save-version` receives the complete changed-path set,
-creates a Make version and confirms a clean pending state. Snapshot mode is
+creates a Make version and confirms a clean pending state. Root `AGENTS.md` and
+`CLAUDE.md` belong in that set when changed, although Make does not list them;
+the result's `unlistedFiles` records their post-save hashes. Snapshot mode is
 refused. After an uncertain result, inspect state before retrying. Reload the
 exact Make tab and compare hashes plus `make drift` to prove persistence.
 `make sync` enforces this sequence for explicitly scoped workspace changes;

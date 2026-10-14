@@ -40,10 +40,10 @@ after-VENDOR.json beside the receipt as the next trusted `--manifest`.
 
 The inventory walks hidden files in 24-call renderer batches and checks saved
 version/pending state at each boundary, then validates
-`generated.manifest.json` when present (`src/make-client.js:592`,
-`src/make-client.js:655`, `src/make-drift.js:91`). A post-save drift match is
+`generated.manifest.json` when present (`src/make-client.js:672`,
+`src/make-client.js:735`, `src/make-drift.js:91`). A post-save drift match is
 working-copy proof; fresh-sandbox reload is still required for persisted-state
-proof (`src/commands/make.js:224`, `src/make-client.js:655`).
+proof (`src/commands/make.js:224`, `src/make-client.js:735`).
 
 Tests: `tests/make-sync.test.js` and `tests/make-drift.test.js`.
 
@@ -59,7 +59,7 @@ That path was saved as scratch version 9, then a new plan saved the remaining
 paths as version 10, git SHA `906b8f4853061cd327d03ec0e627d826bed971a3`.
 After an exact-tab reload, drift matched 4 files with no pending changes and
 VENDOR.json SHA-256 `38d87c73fdfb5c4fbdee8d78f5b71514967c411684a6aaca203c02ffa5df6cfb`.
-The dotfile read-back fix is at `src/make-client.js:451`; its regression test is
+The dotfile read-back fix is at `src/make-client.js:479`; its regression test is
 in `tests/make-durable.test.js`.
 
 A saved scratch component edit became a one-file delta at version 11, git SHA
