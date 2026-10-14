@@ -121,7 +121,14 @@ session and were missing after a reopen.
 file requires `--expected-sha256`; a new file omits it. Replaced or deleted
 bytes receive a private backup. The CLI checks the client VFS, file tree, editor
 (for existing or newly written files), and session sandbox before reporting a
-pending write. Snapshot-mode files are refused. A pending write is not saved.
+pending write. Make shows Markdown and other preview-only files without an
+editor; when no editor appears within a few seconds, the client VFS, sandbox
+and tree must agree instead (`verification: "tree-vfs-sandbox-matched"`).
+If the views still disagree at the timeout, the error names each view's state.
+A new file must sit below an existing top-level folder: the filesystem bridge
+cannot list the project root, so absence there cannot be proven and the write is
+refused before anything changes. Snapshot-mode files are refused. A pending
+write is not saved.
 
 `make save-version --title TITLE --expected-path PATH ...` calls Make's own
 in-page `createVersion` only when the complete pending path set matches the
@@ -129,6 +136,12 @@ supplied paths. It records the version ID, number, full git SHA, previous SHA,
 and changed-file set; `--receipt-out` writes these to a new private JSON file.
 The CLI then checks that Make reports the new baseline and no pending changes.
 At least one expected path is required, so a clean file never gets an empty version.
+Make hides root `AGENTS.md` and `CLAUDE.md` from its pending list although
+`createVersion` commits them. These two allowlisted paths may be expected
+without being listed: their client VFS and sandbox bytes must agree before the
+save and read back unchanged after it, and the result lists them under
+`unlistedFiles` with SHA-256. Any other expected path must be pending, and an
+unexpected pending path is still refused.
 If the version is created but the clean baseline is not observed, the error
 reports the version ID, number and git SHA, and `--receipt-out` is still
 written; do not retry the save.

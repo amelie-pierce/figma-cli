@@ -19,6 +19,12 @@ reached Make. Read affected paths and saved/pending version state before any
 retry. Keep returned backup and receipt paths. Never repeat `save-version`
 solely because its response was lost.
 
+A read-back timeout names each view, for example `vfs matched, sandbox
+different, tree present`. The write may have reached the client VFS; read the
+path and pending state, then decide. An error that says unlisted files changed
+across the save carries the created version: do not retry the save, read
+`AGENTS.md` or `CLAUDE.md` and reconcile against that version.
+
 ## Replacement rejected a stale hash
 
 A stale hash, or `outcome: "refused"`, means no write was sent. Read the file again. Preserve and understand the intervening edits before applying

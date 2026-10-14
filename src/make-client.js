@@ -15,6 +15,9 @@ import { compareVendor, digest, externalReceipt, sourcePath, vendorManifest, ver
 import { makeDurablePageAction, requireGitMode, requireExactPending } from './make-durable.js';
 
 const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
+// How long a selected file may show no source editor before it is treated as
+// preview-only. Make renders Markdown this way.
+const EDITOR_WAIT_MS = 3000;
 
 // Serialized into the Make page, with no dependency on private application stores.
 function makeEditorAction(action, workspace) {
@@ -291,10 +294,19 @@ export class MakeClient {
     }), deadline);
   }
 
-  async _read(path, deadline) {
+  // Make renders some files, such as Markdown, as a preview with no source
+  // editor. With editorWaitMs, a selected file whose editor has not appeared
+  // by then is reported as MAKE_NO_EDITOR instead of waiting for the deadline.
+  async _read(path, deadline, { editorWaitMs } = {}) {
     const entry = await this._select(path, deadline);
+    const editorDeadline = editorWaitMs == null ? deadline : Math.min(deadline, Date.now() + editorWaitMs);
     let state = await this._editor({ type: 'inspect' }, deadline);
     while (state.editorCount === 0) {
+      if (Date.now() >= editorDeadline && editorDeadline < deadline) {
+        const error = new Error(`Make shows no source editor for ${path}.`);
+        error.code = 'MAKE_NO_EDITOR';
+        throw error;
+      }
       await this._bounded(() => new Promise(resolve => setTimeout(resolve, 50)), deadline);
       state = await this._editor({ type: 'inspect' }, deadline);
     }
@@ -402,7 +414,10 @@ export class MakeClient {
         bridge = await this._fileBridge(deadline);
       } catch (error) {
         if (remote || error.code !== 'MAKE_FILESYSTEM_UNAVAILABLE' || path.startsWith('node_modules/')) throw error;
-        const result = await this._read(path, deadline);
+        const result = await this._read(path, deadline, { editorWaitMs: EDITOR_WAIT_MS }).catch(cause => {
+          if (cause.code === 'MAKE_NO_EDITOR') cause.message += ' The filesystem bridge is unavailable, so it cannot be read; retry.';
+          throw cause;
+        });
         return { fileKey: this.fileKey, path, content: result.content, sha256: result.sha256, source: 'editor' };
       }
       try {
@@ -448,44 +463,77 @@ export class MakeClient {
     });
   }
 
+  // Absence is proven by listing an existing ancestor folder, and the bridge
+  // cannot list the project root. Refuse before changing anything when the
+  // nearest listable ancestor would be the root.
+  async _requireListableAncestor(path, deadline) {
+    const [top, ...rest] = path.split('/');
+    if (!rest.length || (!top.startsWith('.') && !(await this._sourceTree(deadline))
+      .some(entry => entry.kind === 'folder' && entry.path === top))) {
+      throw new Error(`Make cannot prove ${path} absent: only files below an existing top-level folder can be created or deleted.`);
+    }
+  }
+
+  // Returns which independent views agreed. On timeout, the error names the
+  // last state of each view instead of a bare timeout.
   async _durableAgreement(path, expectedContent, deadline) {
     const hidden = path.split('/').some(part => part.startsWith('.'));
-    for (;;) {
-      const vfs = await this._durable({ type: 'read', path }, deadline);
-      const bridge = await this._fileBridge(deadline);
-      let sandbox;
-      let absentInSandbox = false;
-      try {
+    let observed = null;
+    try {
+      for (;;) {
+        const vfs = await this._durable({ type: 'read', path }, deadline);
+        const bridge = await this._fileBridge(deadline);
+        let sandbox;
+        let absentInSandbox = false;
+        try {
+          if (expectedContent === null) {
+            const segments = path.split('/');
+            for (let depth = segments.length - 1; depth >= 0; depth--) {
+              const remotePath = ['code', ...segments.slice(0, depth)].join('/');
+              // Make never answers a listing of a missing directory; try the parent.
+              const listing = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
+                'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
+              ]).catch(() => null);
+              if (listing?.success === true && listing.data?.path === remotePath && Array.isArray(listing.data.files)) {
+                absentInSandbox = !listing.data.files.some(entry => entry?.name === segments[depth]);
+                break;
+              }
+            }
+          } else sandbox = await this._bridgeRead(bridge, path).catch(() => null);
+        }
+        finally { await bridge.dispose(); }
+        const tree = await this._sourceTree(deadline);
+        const inTree = tree.some(entry => entry.kind === 'file' && entry.path === path);
         if (expectedContent === null) {
-          const segments = path.split('/');
-          for (let depth = segments.length - 1; depth >= 0; depth--) {
-            const remotePath = ['code', ...segments.slice(0, depth)].join('/');
-            // Make never answers a listing of a missing directory; try the parent.
-            const listing = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
-              'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
-            ]).catch(() => null);
-            if (listing?.success === true && listing.data?.path === remotePath && Array.isArray(listing.data.files)) {
-              absentInSandbox = !listing.data.files.some(entry => entry?.name === segments[depth]);
-              break;
+          observed = { vfs: vfs.exists ? 'present' : 'absent', sandbox: absentInSandbox ? 'absent' : 'present or unlisted',
+            tree: inTree ? 'present' : 'absent' };
+          if (!vfs.exists && absentInSandbox && !inTree) return 'tree-vfs-sandbox-delete-matched';
+        } else {
+          const view = (exists, content) => !exists ? 'absent' : content === expectedContent ? 'matched' : 'different';
+          observed = { vfs: view(vfs.exists, vfs.content), sandbox: sandbox ? view(true, sandbox.content) : 'unreadable',
+            tree: inTree ? 'present' : hidden ? 'omits dotfiles' : 'absent' };
+          if (observed.vfs === 'matched' && observed.sandbox === 'matched' && (inTree || hidden)) {
+            // Make's rendered tree deliberately omits dotfiles. VFS and sandbox
+            // agreement is the available independent proof for those paths.
+            if (hidden) return 'vfs-sandbox-matched';
+            try {
+              const editor = await this._read(path, deadline, { editorWaitMs: EDITOR_WAIT_MS });
+              observed.editor = editor.content === expectedContent ? 'matched' : 'different';
+              if (observed.editor === 'matched') return 'editor-tree-vfs-sandbox-matched';
+            } catch (error) {
+              // Markdown and other preview-only files have no editor to read.
+              // The client VFS, sandbox and rendered tree are the proof for them.
+              if (error.code === 'MAKE_NO_EDITOR') return 'tree-vfs-sandbox-matched';
+              observed.editor = 'unavailable';
             }
           }
-        } else sandbox = await this._bridgeRead(bridge, path);
+        }
+        await this._bounded(() => new Promise(resolve => setTimeout(resolve, 100)), deadline);
       }
-      finally { await bridge.dispose(); }
-      const tree = await this._sourceTree(deadline);
-      const inTree = tree.some(entry => entry.kind === 'file' && entry.path === path);
-      if (expectedContent === null) {
-        if (!vfs.exists && absentInSandbox && !inTree) return;
-      } else if (vfs.exists && vfs.content === expectedContent && sandbox?.content === expectedContent && (inTree || hidden)) {
-        // Make's rendered tree deliberately omits dotfiles. VFS and sandbox
-        // agreement is the available independent proof for those paths.
-        if (hidden) return;
-        try {
-          const editor = await this._read(path, deadline);
-          if (editor.content === expectedContent) return;
-        } catch { /* Wait for Make's tree/editor to observe its VFS update. */ }
-      }
-      await this._bounded(() => new Promise(resolve => setTimeout(resolve, 100)), deadline);
+    } catch (cause) {
+      if (!observed || cause.message !== 'Make operation timed out.') throw cause;
+      const views = Object.entries(observed).map(([name, value]) => `${name} ${value}`).join(', ');
+      throw new Error(`Make read-back for ${path} timed out before every view agreed (${views}).`);
     }
   }
 
@@ -501,6 +549,7 @@ export class MakeClient {
       if (existing.exists !== (expectedSha256 != null)) throw new Error('Expected SHA-256 is required for an existing file and forbidden for a new file.');
       const originalSha256 = existing.exists ? sha256(existing.content) : null;
       if (existing.exists && originalSha256 !== expectedSha256.toLowerCase()) throw new Error('Make source changed; SHA-256 does not match.');
+      if (!existing.exists) await this._requireListableAncestor(path, deadline);
       await this._durableAgreement(path, existing.exists ? existing.content : null, deadline);
       if (existing.exists && existing.content === content) return { fileKey: this.fileKey, path, changed: false, sha256: originalSha256, verification: 'unchanged' };
       const backupPath = existing.exists ? await this._bounded(() => this._backup(path, existing.content, {
@@ -510,10 +559,11 @@ export class MakeClient {
       if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {
         throw new Error('Make version or pending files changed before the durable write.');
       }
+      let verification;
       try {
         const accepted = await this._durable({ type: 'write', path, content, expectedContent: existing.exists ? existing.content : null }, deadline);
         if (accepted?.refused) throw new Error(accepted.refused);
-        await this._durableAgreement(path, content, deadline);
+        verification = await this._durableAgreement(path, content, deadline);
       } catch (cause) {
         const error = new Error(`Make durable write outcome is uncertain: ${cause.message}. Inspect before retrying.`);
         error.backupPath = backupPath;
@@ -521,7 +571,7 @@ export class MakeClient {
       }
       return { fileKey: this.fileKey, path, changed: true, beforeSha256: originalSha256,
         sha256: sha256(content), bytes: Buffer.byteLength(content), backupPath,
-        verification: 'editor-tree-vfs-sandbox-matched', persistence: 'pending-version' };
+        verification, persistence: 'pending-version' };
     });
   }
 
@@ -534,6 +584,7 @@ export class MakeClient {
       const before = requireGitMode((await this._driftState(deadline)).state);
       const original = await this._durable({ type: 'read', path }, deadline);
       if (!original.exists || sha256(original.content) !== expectedSha256.toLowerCase()) throw new Error('Make source is missing or changed; delete refused.');
+      await this._requireListableAncestor(path, deadline);
       await this._durableAgreement(path, original.content, deadline);
       const backupPath = await this._bounded(() => this._backup(path, original.content, { backupDir, operation: 'durable-delete' }), deadline);
       const immediate = requireGitMode((await this._driftState(deadline)).state);
@@ -554,6 +605,25 @@ export class MakeClient {
     });
   }
 
+  // Make does not list these paths as pending, so their bytes are captured
+  // from both the client VFS and the session sandbox, which must agree.
+  async _unlistedSnapshot(paths, deadline) {
+    if (!paths.length) return [];
+    const files = [];
+    const bridge = await this._fileBridge(deadline);
+    try {
+      for (const path of paths) {
+        const vfs = await this._durable({ type: 'read', path }, deadline);
+        const sandbox = await this._bridgeRead(bridge, path);
+        if (!vfs.exists || vfs.content !== sandbox.content) {
+          throw new Error(`Make client VFS and sandbox disagree for unlisted path ${path}.`);
+        }
+        files.push({ path, sha256: sha256(vfs.content) });
+      }
+    } finally { await bridge.dispose(); }
+    return files;
+  }
+
   saveVersion(title, expectedPaths) {
     if (typeof title !== 'string' || !title.trim() || title.length > 160) throw new Error('Make version title must be 1–160 characters.');
     if (!Array.isArray(expectedPaths) || !expectedPaths.length || expectedPaths.length > 1000) throw new Error('Provide the exact expected changed-file set.');
@@ -562,7 +632,8 @@ export class MakeClient {
       const ui = await this._ensureCode(deadline);
       if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
       const before = requireGitMode((await this._driftState(deadline)).state);
-      const changedFiles = requireExactPending(before, expectedPaths);
+      const { listed: changedFiles, unlisted } = requireExactPending(before, expectedPaths);
+      const unlistedFiles = await this._unlistedSnapshot(unlisted, deadline);
       let version;
       try { version = await this._durable({ type: 'save', title, expectedPaths: changedFiles, expectedGitSha: before.savedVersion }, deadline); }
       catch (cause) { throw new Error(`Make version outcome is uncertain: ${cause.message}. Inspect versions before retrying.`); }
@@ -570,16 +641,23 @@ export class MakeClient {
       if (typeof version?.id !== 'string' || !version.id || !Number.isSafeInteger(version.versionNumber) ||
           !/^[a-f0-9]{40}$/.test(version.gitSha || '')) throw new Error('Make version response is incomplete; inspect versions before retrying.');
       const saved = { fileKey: this.fileKey, title, versionId: version.id, versionNumber: version.versionNumber,
-        gitSha: version.gitSha, previousGitSha: before.savedVersion, changedFiles };
+        gitSha: version.gitSha, previousGitSha: before.savedVersion, changedFiles,
+        ...(unlistedFiles.length ? { unlistedFiles } : {}) };
       try {
         for (;;) {
           const after = (await this._driftState(deadline)).state;
           if (after?.mode === 'git' && after.hasBaseline && !after.isLoading && !after.error &&
-              after.savedVersion === version.gitSha && after.pendingCount === 0) return { ...saved, verification: 'saved-version-clean-pending' };
+              after.savedVersion === version.gitSha && after.pendingCount === 0) break;
           await this._bounded(() => new Promise(resolve => setTimeout(resolve, 100)), deadline);
         }
+        if (!unlistedFiles.length) return { ...saved, verification: 'saved-version-clean-pending' };
+        const afterUnlisted = await this._unlistedSnapshot(unlisted, deadline);
+        if (JSON.stringify(afterUnlisted) !== JSON.stringify(unlistedFiles)) {
+          throw new Error(`unlisted files changed across the save: ${unlisted.join(', ')}`);
+        }
+        return { ...saved, verification: 'saved-version-clean-pending; unlisted-post-save-read-matched' };
       } catch (cause) {
-        const error = new Error(`Make version ${version.versionNumber} (${version.gitSha}) was created but the clean baseline was not observed: ${cause.message}. Do not retry the save.`);
+        const error = new Error(`Make version ${version.versionNumber} (${version.gitSha}) was created but the clean baseline or unlisted-file read-back was not observed: ${cause.message}. Do not retry the save.`);
         error.version = saved;
         throw error;
       }

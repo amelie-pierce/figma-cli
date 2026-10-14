@@ -19,6 +19,7 @@ function fakeClient({ original = null, paths = [], post = state(paths), version 
   client._operation = fn => fn(Date.now() + 5000);
   client._ensureCode = async () => ({ busy: false, offline: false, readOnly: false });
   client._driftState = async () => ({ state: post });
+  client._sourceTree = async () => [{ kind: 'folder', path: 'src' }];
   client._durableAgreement = async (path, content) => calls.push(['agreement', path, content]);
   client._backup = async (path, content) => { calls.push(['backup', path, content]); return '/private/backup'; };
   let current = original;
@@ -264,4 +265,102 @@ test('page-side save sees a provider that wraps codeFileChanges in value', async
     assert.deepEqual(result, { id: 'v', versionNumber: 2, gitSha: next });
     assert.equal(saved, 1);
   } finally { globalThis.document = prior; }
+});
+
+test('Markdown read-back accepts VFS, sandbox and tree when Make shows no editor', async () => {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 5000 });
+  client.fileKey = 'ScratchKey';
+  client._durable = async () => ({ exists: true, content: '# Workbench\n' });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._bridgeRead = async () => ({ content: '# Workbench\n' });
+  client._sourceTree = async () => [{ kind: 'file', path: 'guidelines/workbench.md' }];
+  // Make renders Markdown as a preview: the selected file never gets an editor.
+  client._select = async () => ({ name: 'workbench.md' });
+  let inspections = 0;
+  client._editor = async action => { inspections++; assert.equal(action.type, 'inspect'); return { editorCount: 0 }; };
+  const started = Date.now();
+  const verification = await client._durableAgreement('guidelines/workbench.md', '# Workbench\n', Date.now() + 5000);
+  assert.equal(verification, 'tree-vfs-sandbox-matched');
+  assert.ok(inspections > 1);
+  assert.ok(Date.now() - started < 4500, 'the editor wait is bounded well inside the operation deadline');
+});
+
+test('a file with an editor is still compared through that editor', async () => {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
+  client.fileKey = 'ScratchKey';
+  client._durable = async () => ({ exists: true, content: 'new' });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._bridgeRead = async () => ({ content: 'new' });
+  client._sourceTree = async () => [{ kind: 'file', path: 'src/a.ts' }];
+  client._read = async (_path, _deadline, options) => {
+    assert.ok(options.editorWaitMs > 0);
+    return { content: 'new' };
+  };
+  assert.equal(await client._durableAgreement('src/a.ts', 'new', Date.now() + 1000), 'editor-tree-vfs-sandbox-matched');
+});
+
+test('read-back mismatch fails at the deadline and names each view', async () => {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
+  client.fileKey = 'ScratchKey';
+  client._durable = async () => ({ exists: true, content: 'new' });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._bridgeRead = async () => ({ content: 'stale' });
+  client._sourceTree = async () => [{ kind: 'file', path: 'AGENTS.md' }];
+  client._read = async () => { throw new Error('must not read an editor before VFS and sandbox agree'); };
+  const started = Date.now();
+  const error = await client._durableAgreement('AGENTS.md', 'new', Date.now() + 300).catch(cause => cause);
+  assert.match(error.message, /AGENTS\.md timed out before every view agreed \(vfs matched, sandbox different, tree present\)/);
+  assert.ok(Date.now() - started < 1500);
+});
+
+test('new file directly under the project root is refused before any write', async () => {
+  const { client, calls } = fakeClient();
+  await assert.rejects(client.writeDurable('NOTES.md', 'hello'), /cannot prove NOTES\.md absent/);
+  await assert.rejects(client.writeDurable('docs/probe.md', 'hello'), /cannot prove docs\/probe\.md absent/);
+  assert.equal(calls.some(call => ['backup', 'write', 'agreement'].includes(call[0])), false);
+});
+
+test('exact pending allows only allowlisted unlisted root files to be absent', () => {
+  assert.deepEqual(requireExactPending(state(['src/probe.md']), ['src/probe.md', 'AGENTS.md']),
+    { listed: ['src/probe.md'], unlisted: ['AGENTS.md'] });
+  assert.deepEqual(requireExactPending(state([]), ['CLAUDE.md']), { listed: [], unlisted: ['CLAUDE.md'] });
+  // Listed when Make does list it.
+  assert.deepEqual(requireExactPending(state(['AGENTS.md']), ['AGENTS.md']), { listed: ['AGENTS.md'], unlisted: [] });
+  // Unexpected extras and missing ordinary paths are still refused.
+  assert.throws(() => requireExactPending(state(['src/probe.md', 'src/other.ts']), ['src/probe.md', 'AGENTS.md']), /unrelated/);
+  assert.throws(() => requireExactPending(state(['AGENTS.md']), ['src/probe.md']), /unrelated/);
+  assert.throws(() => requireExactPending(state([]), ['README.md']), /unrelated/);
+  assert.throws(() => requireExactPending(state([]), ['docs/AGENTS.md']), /unrelated/);
+});
+
+function unlistedClient({ after = 'agents v2' } = {}) {
+  const fake = fakeClient({ original: 'agents v2', paths: ['src/probe.md'],
+    version: { id: 'version-id', versionNumber: 15, gitSha: next } });
+  let reads = 0;
+  fake.client._driftState = async () => ({ state: reads++ < 1 ? state(['src/probe.md']) : { ...state(), savedVersion: next } });
+  let saved = false;
+  const durable = fake.client._durable;
+  fake.client._durable = async action => {
+    if (action.type === 'save') { saved = true; assert.deepEqual(action.expectedPaths, ['src/probe.md']); }
+    if (action.type === 'read' && saved) return { exists: true, content: after };
+    return durable(action);
+  };
+  fake.client._fileBridge = async () => ({ dispose: async () => {} });
+  fake.client._bridgeRead = async () => ({ content: saved ? after : 'agents v2' });
+  return fake;
+}
+
+test('save-version saves an unlisted root file and verifies it by a post-save read', async () => {
+  const { client } = unlistedClient();
+  const result = await client.saveVersion('Saved', ['src/probe.md', 'AGENTS.md']);
+  assert.deepEqual(result.changedFiles, ['src/probe.md']);
+  assert.deepEqual(result.unlistedFiles, [{ path: 'AGENTS.md', sha256: hash('agents v2') }]);
+  assert.equal(result.verification, 'saved-version-clean-pending; unlisted-post-save-read-matched');
+});
+
+test('save-version reports the version when an unlisted file differs after the save', async () => {
+  const { client } = unlistedClient({ after: 'changed' });
+  const error = await client.saveVersion('Saved', ['src/probe.md', 'AGENTS.md']).catch(cause => cause);
+  assert.match(error.message, /version 15 .* was created .* unlisted files changed across the save: AGENTS\.md\. Do not retry/);
+  assert.equal(error.version.versionId, 'version-id');
 });

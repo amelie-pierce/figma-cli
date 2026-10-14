@@ -115,12 +115,17 @@ For exact commands and safe in-memory examples, read
 1. Separate new paths from existing paths. For git-mode durable work, use
    `write` with the prior SHA-256 for an existing file, omit it for a new file,
    and use `delete` with the prior SHA-256 for removals. Keep backup paths.
+   Markdown files have no Make editor; their write is verified through the
+   client VFS, sandbox and tree. New files must go below an existing top-level
+   folder, never directly under the project root.
    The original four commands retain their `--session-only` gate.
 2. Add supporting modules and dependencies before replacing the entry point, so
    the app spends less time with unresolved imports. Imports are sequential,
    not atomic; do not run concurrent writers or assume rollback is automatic.
 3. For durable work, call `save-version` with the exact pending path set and
-   record its version ID and git SHA. Verify the expected final source with
+   record its version ID and git SHA. Include root `AGENTS.md` or `CLAUDE.md`
+   when you changed them: Make does not list them as pending, so the result
+   reports them under `unlistedFiles` after a post-save read. Verify the expected final source with
    `make verify --manifest -`. Compare only
    files in scope; retain genuine vendor files byte-for-byte when unmodified.
    This verifies the working copy. For a saved version, reload the exact Make

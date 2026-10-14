@@ -81,12 +81,23 @@ export function requireGitMode(state) {
   return state;
 }
 
+// Root paths Make's client hides from codeFileChanges.changedFiles, although
+// createVersion still commits them. Only paths whose persistence was proven by
+// a saved version and a fresh-sandbox reload belong here; see the vault note
+// _vaults/figma-cli/wiki/make/persistence.md.
+export const UNLISTED_PERSISTED_PATHS = Object.freeze(['AGENTS.md', 'CLAUDE.md']);
+
+// Every pending path must be expected. Every expected path must be pending,
+// except an allowlisted unlisted path, which save-version verifies by reading
+// it back after the save instead.
 export function requireExactPending(state, expectedPaths) {
   requireGitMode(state);
   const actual = [...state.pendingPaths].sort();
   const expected = [...new Set(expectedPaths)].sort();
-  if (expected.length !== expectedPaths.length || JSON.stringify(actual) !== JSON.stringify(expected)) {
+  const unlisted = expected.filter(path => UNLISTED_PERSISTED_PATHS.includes(path) && !actual.includes(path));
+  const listed = expected.filter(path => !unlisted.includes(path));
+  if (expected.length !== expectedPaths.length || JSON.stringify(actual) !== JSON.stringify(listed)) {
     throw new Error(`Make has unrelated or missing pending changes; expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual)}.`);
   }
-  return actual;
+  return { listed: actual, unlisted };
 }
