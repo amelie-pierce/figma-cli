@@ -120,7 +120,8 @@ For exact commands and safe in-memory examples, read
    needs the user's explicit go-ahead before passing `--solo`. **Solo** files are
    edited directly. To switch modes, only when the user asks, use
    `make mode team --repo OWNER/REPO` (add `--first-version` on a never-saved
-   file) or `make mode solo --yes-turn-off-team-mode` (repo admins only; show
+   file; it reads the base itself, so no `--since`, e.g.
+   `make mode team --first-version --file ydPjoL41RjmufNbv93gPnq --repo amelie-pierce/hcs-design-prototype`) or `make mode solo --yes-turn-off-team-mode` (repo admins only; show
    the user its warning first). Never write `.figma-cli/project.json` any other
    way; every other write command refuses it.
    Separate new paths from existing paths. For git-mode durable work, use

@@ -276,8 +276,12 @@ marker, and it skips the write gate for that one path:
   as a tree: the working copy may differ from the saved version only in the
   marker, Make may list nothing pending, and the saved tree must equal the
   working tree that check read. `--first-version` does the same for a
-  never-saved file against the sandbox head read before the write (or
-  `--since <commit>` when the marker change is already in the working copy).
+  never-saved file against the sandbox head it reads itself before writing the
+  marker, so no `--since` is needed. Only a marker already in the working copy
+  but written outside `make mode` needs `--since <sha>`: the sandbox head
+  `make status` reported before that write (`MAKE_MODE_SINCE_REQUIRED`).
+  Example, a never-saved file's first save:
+  `figma-cli make mode team --first-version --file ydPjoL41RjmufNbv93gPnq --repo amelie-pierce/hcs-design-prototype`.
 - It then reloads only that Make tab and checks that Make reports the new
   version as a clean baseline, and that the saved tree, the sandbox and the
   client VFS all hold exactly the new marker (or none).
@@ -286,6 +290,10 @@ marker, and it skips the write gate for that one path:
   on `team` (`MAKE_MARKER_INVALID`), and no-ops (`MAKE_MODE_UNCHANGED`). A marker
   written or removed but never saved is saved rather than refused; an unsaved
   removal needs the locally recorded repo link for its admin check.
+- `solo` checks admin rights on the marker's repo, or on the locally recorded
+  link when the marker names no readable repo. It records that link before it
+  deletes, so a removal whose save failed can be finished by re-running
+  `make mode solo --yes-turn-off-team-mode`.
 - `team` reads the repo through `gh` (GET only) and records the local link;
   `solo` prints a warning, requires the caller to be an admin of the marker's
   repo (`MAKE_MODE_NOT_ADMIN`, also when `gh` cannot read it), needs

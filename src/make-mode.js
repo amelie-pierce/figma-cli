@@ -70,8 +70,11 @@ export function planModeChange({ action, fileKey, repo, status, vfsMarker, first
       }
       // Present but never saved: save what is there. Saved: nothing to do.
       if (!markerUnsaved && !firstVersion) fail(`Team mode is already on for ${repo}; nothing was changed.`, 'MAKE_MODE_UNCHANGED');
+      // make mode reads the base itself before it writes; a marker written
+      // some other way leaves no base it can know.
       if (firstVersion && since == null) {
-        fail(`${PROJECT_MARKER} is already in the working copy of a never-saved file; pass --since with the sandbox head from before it was written.`);
+        fail(`${PROJECT_MARKER} is already in the working copy of a never-saved file but was not written by make mode, so its base is unknown. ` +
+          'Pass --since <sha>: the sandbox head that make status reported before the marker was written. Nothing was changed.', 'MAKE_MODE_SINCE_REQUIRED');
       }
       return { ...plan, repo, write: false, content: Buffer.from(sandboxMarker).toString('utf8'), markerSha256: sha256(sandboxMarker) };
     }
@@ -144,12 +147,12 @@ export async function runModeChange(client, { action, repo, firstVersion = false
   const status = await client.projectStatus();
   const plan = planModeChange({ action, fileKey, repo, status, vfsMarker: await client.projectMarker(), firstVersion, since });
   requireModeTogglePaths(plan.paths);
-  // Saving a removal that an earlier run left unsaved: the marker is gone from
-  // the working copy, so the repo whose admins decide comes from the local link
-  // that run kept. Without it, refuse rather than skip the admin check.
-  if (action === 'solo' && !plan.delete) {
-    plan.repo = linkedRepo(fileKey, { home });
-    if (!plan.repo) fail(`${PROJECT_MARKER} was removed but not saved, and no linked repo is recorded to check admin rights against. Nothing was changed.`, 'MAKE_MODE_NOT_ADMIN');
+  // When the marker names no readable repo (or an earlier run removed it but
+  // did not save), the repo whose admins decide comes from the local link.
+  // Saving such a removal without one is refused rather than unchecked.
+  if (action === 'solo') {
+    plan.repo ??= linkedRepo(fileKey, { home });
+    if (!plan.repo && !plan.delete) fail(`${PROJECT_MARKER} was removed but not saved, and no linked repo is recorded to check admin rights against. Nothing was changed.`, 'MAKE_MODE_NOT_ADMIN');
   }
 
   let access = null;
@@ -175,14 +178,16 @@ export async function runModeChange(client, { action, repo, firstVersion = false
 
   let change = null;
   if (plan.write) change = await client.writeDurable(PROJECT_MARKER, plan.content, { firstVersion });
+  if (plan.delete && plan.repo) recordLinkedRepo(fileKey, plan.repo, { home });
   if (plan.delete) change = await client.deleteDurable(PROJECT_MARKER, { expectedSha256: plan.expectedSha256, firstVersion });
   const title = action === 'team' ? `figma-cli: team mode on (${plan.repo})` : 'figma-cli: team mode off';
   let version;
   try { version = await client.saveCheckedVersion(title, requireModeTogglePaths(plan.paths), { firstVersion, since: plan.since ?? undefined }); }
   catch (error) {
     if (!error.version) {
+      const flags = [...(action === 'solo' ? [CONFIRM_FLAG] : []), ...(firstVersion ? ['--first-version', `--since ${plan.since}`] : [])];
       error.message += ` ${PROJECT_MARKER} is ${action === 'team' ? 'written' : 'removed'} but unsaved; run make mode ${action} again` +
-        `${firstVersion ? ` with --first-version --since ${plan.since}` : ''} to save it.`;
+        `${flags.length ? ` with ${flags.join(' ')}` : ''} to save it.`;
     }
     throw error;
   }

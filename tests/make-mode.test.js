@@ -98,6 +98,21 @@ test('team mode on a never-saved file saves the marker as the first version sinc
   assert.deepEqual(writes(refused.calls), []);
 });
 
+test('a never-saved file with a marker pending from outside make mode needs --since, and saves from it', async t => {
+  const home = temp(t);
+  const pending = () => status({ persistence: blank(), treeSource: 'sandbox-head', markerBytes: marker });
+  const refused = fakeClient({ statuses: [pending()], vfs: [marker] });
+  const error = await runModeChange(refused.client, { action: 'team', repo, firstVersion: true }, { gh: gh(), home }).catch(cause => cause);
+  assert.equal(error.code, 'MAKE_MODE_SINCE_REQUIRED');
+  assert.match(error.message, /not written by make mode.*--since <sha>.*make status reported before the marker was written/);
+  assert.deepEqual(writes(refused.calls), []);
+  const after = status({ persistence: clean(next), makeFlat: withMarker, markerBytes: marker, makeTree: 'e'.repeat(40) });
+  const { client, calls } = fakeClient({ statuses: [pending(), after], vfs: [marker] });
+  const result = await runModeChange(client, { action: 'team', repo, firstVersion: true, since: saved }, { gh: gh(), home });
+  assert.equal(result.change, 'save-existing');
+  assert.deepEqual(writes(calls).map(call => [call[0], call[3]]), [['save', { firstVersion: true, since: saved }], ['reload', undefined]]);
+});
+
 test('team mode saves a marker that is already written but unsaved, without rewriting it', async t => {
   const home = temp(t);
   const before = status({ makeFlat: base, workingFlat: withMarker, markerBytes: marker });
@@ -216,6 +231,37 @@ test('a failed save after the write says how to finish it', async t => {
   client.saveCheckedVersion = async () => { throw new Error('Make state changed before the first version.'); };
   await assert.rejects(runModeChange(client, { action: 'team', repo, firstVersion: true }, { gh: gh(), home }),
     new RegExp(`written but unsaved; run make mode team again with --first-version --since ${head}`));
+});
+
+test('solo without a readable repo in the marker checks admin rights on the local link', async t => {
+  const home = temp(t);
+  const broken = Buffer.from('{');
+  const before = () => status({ makeFlat: withMarker, markerBytes: broken });
+  const warnings = [];
+  const unlinked = fakeClient({ statuses: [before()], vfs: [broken] });
+  const plan = await runModeChange(unlinked.client, { action: 'solo', dryRun: true }, { gh: () => assert.fail('no repo to read'), home, warn: line => warnings.push(line) });
+  assert.equal(plan.repo, null);
+  assert.match(warnings[0], /names no readable repo/);
+  recordLinkedRepo('ExactKey', repo, { home });
+  const notAdmin = fakeClient({ statuses: [before()], vfs: [broken] });
+  await assert.rejects(runModeChange(notAdmin.client, { action: 'solo', confirm: true }, { gh: gh('write'), home, warn: () => {} }),
+    error => error.code === 'MAKE_MODE_NOT_ADMIN' && /Only an admin of owner\/proto/.test(error.message));
+  assert.deepEqual(writes(notAdmin.calls), []);
+});
+
+test('a solo removal whose save failed can be finished on a machine with no prior link', async t => {
+  const home = temp(t);
+  const { client, calls } = fakeClient({ statuses: [status({ makeFlat: withMarker, markerBytes: marker })], vfs: [marker] });
+  client.saveCheckedVersion = async () => { throw new Error('Make state changed before the version.'); };
+  const error = await runModeChange(client, { action: 'solo', confirm: true }, { gh: gh(), home, warn: () => {} }).catch(cause => cause);
+  assert.match(error.message, /removed but unsaved; run make mode solo again with --yes-turn-off-team-mode to save it/);
+  assert.deepEqual(writes(calls).map(([kind]) => kind), ['delete']);
+  assert.equal(linkedRepo('ExactKey', { home }), repo);
+  const after = status({ persistence: clean(next), makeFlat: base, makeTree: 'e'.repeat(40) });
+  const finish = fakeClient({ statuses: [status({ makeFlat: withMarker, workingFlat: base }), after], vfs: [null] });
+  const finished = await runModeChange(finish.client, { action: 'solo', confirm: true }, { gh: gh(), home, warn: () => {} });
+  assert.deepEqual({ change: finished.change, repo: finished.repo, permission: finished.permission }, { change: 'save-removal', repo, permission: 'admin' });
+  assert.equal(linkedRepo('ExactKey', { home }), null);
 });
 
 test('the gate exemption covers exactly the marker path', () => {
