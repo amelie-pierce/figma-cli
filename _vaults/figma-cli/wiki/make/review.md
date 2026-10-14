@@ -33,6 +33,6 @@ Lavish's annotation locator walks up at most five elements and stops at the firs
 
 ## Live proof
 
-UNVERIFIED until the live run on `amelie-pierce/figma-testing-workflow` is recorded here.
+On `amelie-pierce/figma-testing-workflow` only (2026-10-14), with one GitHub account: a test branch and pull request; `reviews` listed it under `yours` (the account's own); `review --lavish` made the detached copy at `.figma-cli/reviews/pr-<n>` (clone status clean, clone still on `main`), warned that the `@make-kits` kit cannot install, and opened 1 Lavish page; a `--selector` note on the review page posted a line comment on the changed line, a plain comment and an app-locator note posted as general comments; `approve` and `request-changes` were refused with `TEAM_SELF_REVIEW` (the PR kept 0 approvals); `save --dir <copy>` was refused with `TEAM_REVIEW_COPY`; `feedback` and `address` ran on the author side. The PR was closed, the branch deleted, the copy removed, and `main` stayed at `7bc27ed`. A two-account approval was not run live (no second account); tests cover it.
 
 Tests: `tests/make-team-review.test.js` (two people, one bare origin, an in-memory GitHub; `gh`, `pnpm` and `lavish-axi` faked).

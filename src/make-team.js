@@ -252,7 +252,7 @@ export const REVIEWS_DIR = '.figma-cli/reviews';
 export const isReviewCopy = root => /[\\/]\.figma-cli[\\/]reviews[\\/]pr-\d+[\\/]?$/.test(String(root));
 export function requireNotReviewCopy(ctx) {
   if (isReviewCopy(ctx.root)) {
-    fail('This folder is a review copy of someone else\'s pull request, so nothing here is saved, synced or sent to GitHub. ' +
+    fail('This folder is a review copy of a pull request, so nothing here is saved, synced or sent to GitHub. ' +
       'Comment, approve or ask for changes instead, and work on your own tasks in the project clone.', 'TEAM_REVIEW_COPY');
   }
 }

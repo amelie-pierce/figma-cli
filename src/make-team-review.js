@@ -559,6 +559,6 @@ export function address(ctx, ref) {
   const todo = items.filter(item => item.kind !== 'approved');
   return { verb: 'address', url: pull.url, branch, todo, changesRequestedBy: state.changesRequestedBy.map(r => at(r.who)),
     next: ['Make each change in the to-do list', 'figma-cli team save -m "Address review comments"', 'figma-cli team sync', 'Ask the reviewers to look again'],
-    summary: `${[...notes, `On ${branch}.`].join(' ')} ${todo.length ? `${plural(todo.length, 'comment')} to work through from ${[...new Set(todo.map(t => t.who))].join(', ')}.`
+    summary: `${(notes.length ? notes : [`On ${branch}.`]).join(' ')} ${todo.length ? `${plural(todo.length, 'comment')} to work through from ${[...new Set(todo.map(t => t.who))].join(', ')}.`
       : 'No reviewer comments to work through.'} When done, save and get the latest, then ask for another look.` };
 }
