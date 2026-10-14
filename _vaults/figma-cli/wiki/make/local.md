@@ -14,11 +14,11 @@ In team mode GitHub `main` is the source of truth ([status.md](status.md)), so p
 
 ## Always main
 
-Clone passes `-- --branch main` to `gh repo clone` and checks the result is on `main` (`src/make-local.js:230`). Pull fetches `+refs/heads/main:refs/remotes/origin/main` explicitly (`src/make-local.js:257`), so the repo's default branch never matters (the scratch repo's default was moved once during testing).
+Clone passes `-- --branch main` to `gh repo clone` and checks the result is on `main` (`src/make-local.js:226`). Pull fetches `+refs/heads/main:refs/remotes/origin/main` explicitly (`src/make-local.js:253`), so the repo's default branch never matters (the scratch repo's default was moved once during testing).
 
 ## Install checks
 
-`install` (`src/make-local.js:211`) runs `preflightInstall` then refuses kits:
+`install` (`src/make-local.js:198`) reports committed credentials first, so they show even when a later check refuses, then checks the toolchain and refuses kits:
 - **Toolchain.** `.mise.toml` `[tools]` (`node`, `npm:pnpm`), `engines` and `packageManager` (`src/make-local.js:101`); `--version` runs in the clone so mise and corepack shims answer for it. Mismatches warn, a missing pnpm refuses. Make pins Node 22 / pnpm 10.34.3; a Node 24 / pnpm 10.33.2 machine installed and ran the scratch app fine (2026-10-14).
 - **`.npmrc`.** Tracked `.npmrc` files with `_authToken`, `_auth` or `_password` produce a path:line warning, never the value (`src/make-local.js:67`). Make's own `.npmrc` is Figma-managed and git-excluded ([status.md](status.md) `PROJECT_EXCLUDES`), so a clone never has it and figma-cli never copies it.
 - **Kits.** Any `@make-kits/*` dependency or `figma.kitAttachments` entry refuses with `MAKE_KIT_DEPENDENCY` (`src/make-local.js:43`). A kit attached in Make's UI resolves only through Make's registry; outside Make `pnpm install` fails with `ERR_PNPM_FETCH_404`. The design answer is vendored kit source pinned by `VENDOR.json` ([drift.md](drift.md)).
@@ -26,11 +26,11 @@ Clone passes `-- --branch main` to `gh repo clone` and checks the result is on `
 
 ## Pull
 
-Fast-forward only. Local commits on `main` refuse (`MAKE_PULL_LOCAL_COMMITS`), as do uncommitted tracked changes on a checked-out `main` (`MAKE_PULL_DIRTY`). On another branch only the `main` ref moves via `git update-ref` with the old value as a guard (`src/make-local.js:275`). Reinstall happens only when `pnpm-lock.yaml`'s blob at `HEAD` changed across the merge, compared by git blob id, so a pull from before `package.json` existed still works.
+Fast-forward only. Local commits on `main` refuse (`MAKE_PULL_LOCAL_COMMITS`), as do uncommitted tracked changes on a checked-out `main` (`MAKE_PULL_DIRTY`). On another branch only the `main` ref moves via `git update-ref` with the old value as a guard (`src/make-local.js:271`). Reinstall happens only when `pnpm-lock.yaml`'s blob at `HEAD` changed across the merge, compared by git blob id, so a pull from before `package.json` existed still works.
 
 ## Dev
 
-`devCommand` runs `pnpm run dev` from `scripts.dev` and refuses without one (`MAKE_NO_DEV_SCRIPT`, `src/make-local.js:299`). `runDev` mirrors output, scans only complete lines of each stream, buffered separately, for the first local URL (a chunk can end mid-URL, `src/make-local.js:322`), prints `figma-cli: local URL …` on stderr, and forwards SIGINT/SIGTERM/SIGHUP. It never returns while the server runs: agents background it and poll the URL. The scratch app's Vite config serves on port 8443, not 5173.
+`devCommand` runs `pnpm run dev` from `scripts.dev` and refuses without one (`MAKE_NO_DEV_SCRIPT`, `src/make-local.js:295`). `runDev` mirrors output, scans only complete lines of each stream, buffered separately, for the first local URL (a chunk can end mid-URL, `src/make-local.js:318`), prints `figma-cli: local URL …` on stderr, and forwards SIGINT/SIGTERM/SIGHUP. It never returns while the server runs: agents background it and poll the URL. The scratch app's Vite config serves on port 8443, not 5173.
 
 ## Live proof (2026-10-14)
 

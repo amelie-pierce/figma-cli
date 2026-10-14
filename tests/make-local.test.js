@@ -119,7 +119,8 @@ describe('make kits, .npmrc and toolchain checks', () => {
     write(dir, { 'pnpm-lock.yaml': '' });
     assert.deepEqual(detectPackageManager(dir, PKG), { name: 'pnpm', lockfile: 'pnpm-lock.yaml', version: null });
     assert.equal(detectPackageManager(dir, { packageManager: 'pnpm@10.34.3+sha512.abc' }).version, '10.34.3');
-    for (const packageManager of ['yarn@1.22.0', 'npm@10.9.0', 'bun@1.1.0', 'pnpm']) {
+    assert.deepEqual(detectPackageManager(dir, { packageManager: 'pnpm' }), { name: 'pnpm', lockfile: 'pnpm-lock.yaml', version: null });
+    for (const packageManager of ['yarn@1.22.0', 'npm@10.9.0', 'bun@1.1.0', 'pnpmx']) {
       assert.throws(() => detectPackageManager(dir, { packageManager }), error => error.code === 'MAKE_NO_LOCKFILE' && /install with pnpm/.test(error.message));
     }
   });
@@ -184,6 +185,19 @@ describe('make clone', () => {
     assert.match(warnings[0], /^\.npmrc:1 holds a registry credential/);
     assert.deepEqual(result.install.warnings, warnings);
     assert.ok(!warnings[0].includes('abc'));
+  });
+  it('still warns on a committed .npmrc token when a later check refuses', t => {
+    for (const [files, versions, expected] of [
+      [{ 'package.json': PKG, 'pnpm-lock.yaml': 'v\n' }, { node: '22.0.0' }, 'MAKE_TOOLCHAIN_MISSING'],
+      [{ 'package.json': PKG }, undefined, 'MAKE_NO_LOCKFILE'],
+      [{ 'package.json': { ...PKG, packageManager: 'yarn@1.22.0' }, 'pnpm-lock.yaml': 'v\n' }, undefined, 'MAKE_NO_LOCKFILE'],
+      [{ 'package.json': '{', 'pnpm-lock.yaml': 'v\n' }, undefined, 'MAKE_NOT_A_CLONE']]) {
+      const { root, origin } = remote(t, { ...files, '.npmrc': '//r.invalid/:_authToken=abc\n' });
+      const warnings = [];
+      code(() => cloneProject({ repo: REPO }, { run: fakeRun({ origin, versions }).run, cwd: root, warn: w => warnings.push(w) }), expected);
+      assert.equal(warnings.length, 1, expected);
+      assert.match(warnings[0], /^\.npmrc:1 holds a registry credential/);
+    }
   });
   it('refuses a non-empty target and a missing package manager', t => {
     const { root, origin } = remote(t);

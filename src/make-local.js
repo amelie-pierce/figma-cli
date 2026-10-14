@@ -86,7 +86,7 @@ const INSTALL = ['pnpm', ['install', '--frozen-lockfile', '--ignore-scripts']];
 // Make projects install with pnpm. A packageManager naming anything else, or
 // a missing pnpm-lock.yaml, is refused.
 export function detectPackageManager(dir, pkg) {
-  const declared = pkg?.packageManager == null ? null : /^pnpm@([^+\s]+)/.exec(String(pkg.packageManager));
+  const declared = pkg?.packageManager == null ? null : /^pnpm(?:@([^+\s]+)|$)/.exec(String(pkg.packageManager));
   if (pkg?.packageManager != null && !declared) {
     fail(`package.json packageManager is ${pkg.packageManager}, but Make projects install with pnpm. Switch it to pnpm through a pull request.`, 'MAKE_NO_LOCKFILE');
   }
@@ -193,24 +193,20 @@ function git(run, dir, args, what) {
   return result.stdout.trim();
 }
 
-// Checks shared by every install: toolchain and committed
-// credentials. Returns the package manager and warnings; install() refuses
-// kit dependencies after the warnings are shown.
-export function preflightInstall(dir, { run = defaultRun } = {}) {
+// Committed credentials are reported first, so every later refusal
+// (package.json, lockfile, toolchain, kits) still shows them.
+export function install(dir, { run = defaultRun, warn = () => {} } = {}) {
+  const tracked = run('git', ['ls-files', '-z'], { cwd: dir });
+  const files = tracked.status === 0 ? tracked.stdout.split('\0').filter(Boolean) : ['.npmrc'];
+  const warnings = npmrcTokenWarnings(dir, files);
+  warnings.forEach(warn);
   const pkg = readPackage(dir);
   const pm = detectPackageManager(dir, pkg);
   const expected = toolchainExpectations(dir, pkg, pm);
-  const actual = toolVersions(run, ['node', pm.name, ...expected.map(e => e.tool)], { cwd: dir });
-  const warnings = checkToolchain(expected, actual, pm);
-  const tracked = run('git', ['ls-files', '-z'], { cwd: dir });
-  const files = tracked.status === 0 ? tracked.stdout.split('\0').filter(Boolean) : ['.npmrc'];
-  warnings.push(...npmrcTokenWarnings(dir, files));
-  return { pkg, pm, warnings, toolchain: actual };
-}
-
-export function install(dir, { run = defaultRun, warn = () => {} } = {}) {
-  const { pkg, pm, warnings, toolchain } = preflightInstall(dir, { run });
-  warnings.forEach(warn);
+  const toolchain = toolVersions(run, ['node', pm.name, ...expected.map(e => e.tool)], { cwd: dir });
+  const toolWarnings = checkToolchain(expected, toolchain, pm);
+  toolWarnings.forEach(warn);
+  warnings.push(...toolWarnings);
   requireNoKitDependencies(pkg);
   const [command, args] = INSTALL;
   const result = run(command, args, { cwd: dir, stream: true });
