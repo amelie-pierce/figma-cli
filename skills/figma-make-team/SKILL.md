@@ -61,7 +61,7 @@ On failure the CLI prints `{error, code}` on stderr and exits 1:
 | `TEAM_BUILD_FAILED` / `TEAM_FORMAT_FAILED` | Nothing was saved; explain the error lines plainly and offer to fix the code |
 | `TEAM_CONFLICT` | Their branch is unchanged. For each file, name the person and the pull request link from `conflicts[].changedBy`, and suggest asking on the pull request |
 | `TEAM_PUSH_REJECTED` | GitHub has newer work on their branch (maybe another computer); check before syncing |
-| `TEAM_NOT_APPROVED` | Someone other than them must approve the pull request first; share the link |
+| `TEAM_NOT_APPROVED` | Someone other than them must approve the latest version of the pull request; share the link. A stale approval needs a fresh look |
 | `TEAM_CHANGES_REQUESTED` | A reviewer asked for changes; help make them, then save |
 | `TEAM_CHECKS_PENDING` / `TEAM_CHECKS_FAILED` | Wait for, or fix, the named checks |
 | `TEAM_BEHIND_MAIN` | Main moved; their branch was brought up to date, so ask to merge again after checks rerun |

@@ -263,7 +263,7 @@ export function pullProject(dir, { run = defaultRun, warn = () => {} } = {}) {
   const ahead = Number(git(run, root, ['rev-list', '--count', `${remote}..${local}`]));
   if (ahead > 0) {
     fail(`Local ${TRUNK} has ${ahead} commit(s) that are not on GitHub ${TRUNK}. make pull only fast-forwards ${TRUNK} and changed nothing. ` +
-      `Move that work onto a task branch and open a pull request (the planned figma-cli team sync will do this for you).`, 'MAKE_PULL_LOCAL_COMMITS');
+      `Move that work onto a task branch and open a pull request; figma-cli team never moves commits off ${TRUNK}, so ask for help with that one-time move.`, 'MAKE_PULL_LOCAL_COMMITS');
   }
   const behind = Number(git(run, root, ['rev-list', '--count', `${local}..${remote}`]));
   if (behind === 0) return { ...summary, updated: false, reinstalled: false, note: `${TRUNK} is up to date.` };

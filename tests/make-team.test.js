@@ -96,7 +96,13 @@ function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0 }
     const ok = value => ({ status: 0, stdout: typeof value === 'string' ? value : JSON.stringify(value), stderr: '' });
     if (args[0] === 'api' && args[1] === 'user') return ok(`${login}\n`);
     if (args[0] === 'api') {
-      const sha = /commits\/([a-f0-9]+)\/pulls/.exec(args[1])?.[1];
+      const path = args.find(a => a.startsWith('repos/'));
+      const number = /pulls\/(\d+)\/reviews$/.exec(path)?.[1];
+      if (number) {
+        assert.ok(args.includes('--paginate'));
+        return ok(prs.find(x => String(x.number) === number).reviews.map(r => `${JSON.stringify(r)}\n`).join(''));
+      }
+      const sha = /commits\/([a-f0-9]+)\/pulls/.exec(path)?.[1];
       return ok(pulls[sha] || []);
     }
     if (args[0] === 'pr' && args[1] === 'list') {
@@ -109,7 +115,7 @@ function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0 }
       assert.equal(flag('--repo'), REPO);
       const number = prs.length + 1;
       prs.push({ number, url: `https://github.com/${REPO}/pull/${number}`, state: 'OPEN', isDraft: false, author: { login },
-        headRefName: flag('--head'), baseRefName: 'main', title: flag('--title'), body: flag('--body'), latestReviews: [], reviewRequests: [], statusCheckRollup: [] });
+        headRefName: flag('--head'), baseRefName: 'main', title: flag('--title'), body: flag('--body'), reviews: [], isCrossRepository: false, reviewRequests: [], statusCheckRollup: [] });
       return ok(`Creating pull request\nhttps://github.com/${REPO}/pull/${number}\n`);
     }
     if (args[0] === 'pr' && args[1] === 'edit') {
@@ -142,6 +148,8 @@ function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0 }
   const ctx = (dir = p.clone) => teamContext({ dir, run, warn: m => warnings.push(m) });
   return { run, calls, prs, ctx, warnings, pnpm: () => calls.filter(c => c.command === 'pnpm').map(c => c.args.join(' ')) };
 }
+// A review of the branch's current GitHub head unless a commit is given.
+const review = (p, pull, login, state = 'APPROVED', commit = p.originSha(`refs/heads/${pull.headRefName}`)) => pull.reviews.push({ login, state, commit });
 const code = (fn, expected) => assert.throws(fn, error => { assert.equal(error.code, expected, error.message); return true; });
 
 describe('team: pure helpers', () => {
@@ -180,14 +188,19 @@ describe('team: pure helpers', () => {
     assert.equal(resolveIdenticalHunks('no markers\n'), null);
     assert.equal(resolveIdenticalHunks('<<<<<<< HEAD\nx\n'), null);
   });
-  it('counts only non-author approvals and latest reviews', () => {
-    const pull = { author: { login: 'alice' }, latestReviews: [
-      { author: { login: 'Alice' }, state: 'APPROVED' }, { author: { login: 'bob' }, state: 'COMMENTED' }], reviewRequests: [{ login: 'carol' }] };
-    assert.deepEqual(reviewState(pull).approvedBy, []);
-    assert.deepEqual(reviewState(pull).waitingOn, ['carol']);
-    pull.latestReviews.push({ author: { login: 'dave' }, state: 'APPROVED' }, { author: { login: 'erin' }, state: 'CHANGES_REQUESTED' });
-    assert.deepEqual(reviewState(pull).approvedBy.map(r => r.who), ['dave']);
-    assert.deepEqual(reviewState(pull).changesRequestedBy.map(r => r.who), ['erin']);
+  it('counts only current-head approvals from someone other than the author or merger', () => {
+    const head = 'a'.repeat(40);
+    const old = 'b'.repeat(40);
+    const base = { author: 'alice', merger: 'alice', head, requests: [{ login: 'carol' }] };
+    assert.deepEqual(reviewState({ ...base, reviews: [{ login: 'Alice', state: 'APPROVED', commit: head }, { login: 'bob', state: 'COMMENTED', commit: head }] }).approvedBy, []);
+    assert.deepEqual(reviewState({ ...base, reviews: [] }).waitingOn, ['carol']);
+    const stale = reviewState({ ...base, reviews: [{ login: 'bob', state: 'APPROVED', commit: old }] });
+    assert.deepEqual([stale.approvedBy, stale.staleApprovals.map(r => r.who)], [[], ['bob']]);
+    assert.deepEqual(reviewState({ ...base, author: 'bob', reviews: [{ login: 'alice', state: 'APPROVED', commit: head }] }).approvedBy, [], 'the merger never approves');
+    const later = reviewState({ ...base, reviews: [{ login: 'dave', state: 'APPROVED', commit: head }, { login: 'erin', state: 'APPROVED', commit: head },
+      { login: 'erin', state: 'CHANGES_REQUESTED', commit: head }, { login: 'dave', state: 'COMMENTED', commit: head }] });
+    assert.deepEqual(later.approvedBy.map(r => r.who), ['dave']);
+    assert.deepEqual(later.changesRequestedBy.map(r => r.who), ['erin']);
   });
   it('summarises checks', () => {
     assert.equal(checkState({ statusCheckRollup: [] }).state, 'none');
@@ -456,24 +469,29 @@ describe('team pr and merge', () => {
     const [pull] = f.prs;
     const mainBefore = p.originSha('main');
     code(() => merge(f.ctx()), 'TEAM_NOT_APPROVED');
-    pull.latestReviews = [{ author: { login: ME }, state: 'APPROVED' }];
+    review(p, pull, ME);
     code(() => merge(f.ctx()), 'TEAM_NOT_APPROVED');
-    pull.latestReviews.push({ author: { login: 'bob' }, state: 'CHANGES_REQUESTED' });
+    review(p, pull, 'bob', 'APPROVED', 'f'.repeat(40));
+    assert.throws(() => merge(f.ctx()), error => error.code === 'TEAM_NOT_APPROVED' && /@bob approved an earlier version/.test(error.message));
+    review(p, pull, 'bob', 'CHANGES_REQUESTED');
     code(() => merge(f.ctx()), 'TEAM_CHANGES_REQUESTED');
-    pull.latestReviews[1].state = 'APPROVED';
+    review(p, pull, 'bob');
     pull.statusCheckRollup = [{ name: 'build', status: 'COMPLETED', conclusion: 'FAILURE' }];
     code(() => merge(f.ctx()), 'TEAM_CHECKS_FAILED');
     pull.statusCheckRollup = [{ name: 'build', status: 'QUEUED' }];
     code(() => merge(f.ctx()), 'TEAM_CHECKS_PENDING');
     pull.isDraft = true;
     code(() => merge(f.ctx()), 'TEAM_PR_NOT_READY');
+    pull.isDraft = false;
+    pull.isCrossRepository = true;
+    code(() => merge(f.ctx()), 'TEAM_NO_PR');
     assert.equal(p.originSha('main'), mainBefore);
     assert.ok(!f.calls.some(c => c.command === 'gh' && c.args[1] === 'merge'));
   });
   it('syncs and asks again when main moved, and refuses unsaved work', t => {
     const { p, f } = ready(t);
     pr(f.ctx());
-    f.prs[0].latestReviews = [{ author: { login: 'bob' }, state: 'APPROVED' }];
+    review(p, f.prs[0], 'bob');
     const moved = p.land({ 'src/C.tsx': 'c\n' });
     code(() => merge(f.ctx()), 'TEAM_BEHIND_MAIN');
     assert.equal(sh(p.clone, 'rev-parse', 'HEAD^'), moved);
@@ -490,7 +508,7 @@ describe('team pr and merge', () => {
   it('squash-merges an approved, green, up-to-date PR, deletes the branch and returns to main', t => {
     const { p, f } = ready(t);
     pr(f.ctx());
-    f.prs[0].latestReviews = [{ author: { login: 'bob' }, state: 'APPROVED' }];
+    review(p, f.prs[0], 'bob');
     f.prs[0].statusCheckRollup = [{ name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' }];
     const result = merge(f.ctx());
     assert.deepEqual(result.approvedBy, ['@bob']);
@@ -518,7 +536,7 @@ describe('team status', () => {
     write(p.clone, { 'c.txt': 'c' });
     pr(f.ctx());
     write(p.clone, { 'd.txt': 'd' });
-    f.prs[0].latestReviews = [{ author: { login: 'bob' }, state: 'APPROVED' }];
+    review(p, f.prs[0], 'bob');
     p.land({ 'e.txt': 'e' });
     const result = status(f.ctx(), { now: Date.now() + 3 * 86400 * 1000 });
     assert.deepEqual(result.unsaved, ['new file: d.txt']);

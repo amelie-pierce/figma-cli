@@ -352,7 +352,7 @@ Errors are JSON on stderr with a `code`; results are JSON on stdout.
 - `make pull [dir]` fetches `origin main` and fast-forwards local `main` only.
   It refuses when local `main` has commits that are not on GitHub
   (`MAKE_PULL_LOCAL_COMMITS`; that work belongs on a task branch, which the
-  `team` verbs below handle) and when checked-out `main` has uncommitted
+  `team` verbs never move commits off `main`) and when checked-out `main` has uncommitted
   tracked changes (`MAKE_PULL_DIRTY`). On another branch only the local `main`
   ref moves. It reinstalls only when `pnpm-lock.yaml` changed, with the same checks.
 - `make dev [dir]` runs `pnpm run dev` (the same command as Make's
@@ -415,8 +415,12 @@ convention, not a server-side guarantee.
   changed files, except you; a failed request only warns.
 - `team merge` requires your own branch with no unsaved files, an open,
   non-draft pull request into `main` whose head equals your local and GitHub
-  branch (`TEAM_OUT_OF_DATE`), no outstanding requested changes, an approval
-  from a non-author (`TEAM_NOT_APPROVED`; self-approval never counts), passing
+  branch (`TEAM_OUT_OF_DATE`) and is not from a fork, no outstanding requested
+  changes, and an approval of that exact head commit from someone who is
+  neither the author nor you (`TEAM_NOT_APPROVED`; reviews are read from
+  `gh api repos/<repo>/pulls/<n>/reviews`, whose `commit_id` gh's
+  `latestReviews` leaves empty; an approval of an earlier commit is named as
+  stale and does not count), passing
   checks when any exist (`TEAM_CHECKS_FAILED`/`TEAM_CHECKS_PENDING`) and a
   branch containing `origin/main`. When `main` moved, it syncs and refuses
   (`TEAM_BEHIND_MAIN`) so checks and review can run again. Then `gh pr merge

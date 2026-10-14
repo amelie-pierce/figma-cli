@@ -626,12 +626,21 @@ export function conflicts(ctx) {
 
 // --- pull requests -----------------------------------------------------------
 
-const PR_FIELDS = 'number,url,state,isDraft,author,headRefName,headRefOid,baseRefName,latestReviews,reviewRequests,statusCheckRollup,title';
+const PR_FIELDS = 'number,url,state,isDraft,isCrossRepository,author,headRefName,headRefOid,baseRefName,reviewRequests,statusCheckRollup,title';
 
 function findPr(ctx, branch, { state = 'open' } = {}) {
   const list = ctx.ghJson(['pr', 'list', '--repo', ctx.repo(), '--head', branch, '--state', state, '--json', PR_FIELDS, '--limit', '5'],
     'Looking up your pull request');
-  return (Array.isArray(list) ? list : []).find(pr => pr.headRefName === branch) || null;
+  // A fork's pull request can share the branch name; only this repo's counts.
+  return (Array.isArray(list) ? list : []).find(pr => pr.headRefName === branch && !pr.isCrossRepository) || null;
+}
+
+// Reviews in submission order, with the commit each one reviewed. gh's
+// latestReviews leaves that commit empty, so the REST endpoint is read.
+function readReviews(ctx, number) {
+  const out = ctx.gh(['api', '--paginate', `repos/${ctx.repo()}/pulls/${number}/reviews`, '--jq', '.[] | {login: .user.login, state: .state, commit: .commit_id}'],
+    'Reading the reviews');
+  return out.split('\n').filter(Boolean).map(line => { try { return JSON.parse(line); } catch { fail('gh returned unreadable reviews.', 'TEAM_GH_FAILED'); } });
 }
 
 export function prBody({ branch, files, task }) {
@@ -709,20 +718,28 @@ export function pr(ctx, { title, message } = {}) {
       `${requested.length ? ` Asked ${requested.map(r => `@${r}`).join(', ')} to review.` : ' Ask a teammate to review it.'}` };
 }
 
-// The review state of a pull request: approvals from people other than the
-// author, and requested changes, from each reviewer's latest review.
-export function reviewState(pull) {
-  const author = (pull?.author?.login || '').toLowerCase();
+// The review state of a pull request from each reviewer's latest review. An
+// approval counts only when it is of the current head commit and comes from
+// someone who is neither the pull request's author nor the person merging.
+export function reviewState({ author, merger, head, reviews = [], requests = [] }) {
+  const excluded = new Set([author, merger].filter(Boolean).map(login => login.toLowerCase()));
   const latest = new Map();
-  for (const review of pull?.latestReviews || []) {
-    const who = review?.author?.login;
-    if (who && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(review.state)) latest.set(who.toLowerCase(), { who, state: review.state, commit: review.commit?.oid || null });
+  for (const review of reviews) {
+    if (review?.login && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(review.state)) {
+      latest.set(review.login.toLowerCase(), { who: review.login, state: review.state, commit: review.commit || null });
+    }
   }
-  const approvedBy = [...latest.values()].filter(r => r.state === 'APPROVED' && r.who.toLowerCase() !== author);
-  const changesRequestedBy = [...latest.values()].filter(r => r.state === 'CHANGES_REQUESTED');
-  const waitingOn = (pull?.reviewRequests || []).map(r => r.login || r.name || r.slug).filter(Boolean);
-  return { approvedBy, changesRequestedBy, waitingOn };
+  const approvals = [...latest.values()].filter(r => r.state === 'APPROVED' && !excluded.has(r.who.toLowerCase()));
+  return {
+    approvedBy: approvals.filter(r => head && r.commit === head),
+    staleApprovals: approvals.filter(r => !head || r.commit !== head),
+    changesRequestedBy: [...latest.values()].filter(r => r.state === 'CHANGES_REQUESTED'),
+    waitingOn: requests.map(r => r.login || r.name || r.slug).filter(Boolean),
+  };
 }
+
+const pullReviews = (ctx, pull, merger) => reviewState({ author: pull.author?.login, merger, head: pull.headRefOid,
+  reviews: readReviews(ctx, pull.number), requests: pull.reviewRequests || [] });
 
 // Checks on the pull request's head: none, passing, pending or failing.
 export function checkState(pull) {
@@ -759,13 +776,16 @@ export function merge(ctx) {
   if (pull.headRefOid !== head || remoteHead !== head) {
     fail(`The pull request ${pull.url} and this computer have different versions of ${branch}. Say "save my progress" or "get the latest", then ask again.`, 'TEAM_OUT_OF_DATE');
   }
-  const reviews = reviewState(pull);
+  if (pull.isCrossRepository) fail(`${pull.url} comes from a fork; figma-cli merges only pull requests from your own branch in ${ctx.repo()}.`, 'TEAM_PR_NOT_READY');
+  const reviews = pullReviews(ctx, pull, login);
   if (reviews.changesRequestedBy.length) {
     fail(`${reviews.changesRequestedBy.map(r => `@${r.who}`).join(', ')} asked for changes on ${pull.url}. Make them, save, and ask for another review.`, 'TEAM_CHANGES_REQUESTED');
   }
   if (!reviews.approvedBy.length) {
-    fail(`${pull.url} has no approval from someone other than its author (@${pull.author?.login || login}), so it was not merged. ` +
-      'Ask a teammate to review and approve it, then ask again.', 'TEAM_NOT_APPROVED', { url: pull.url });
+    const stale = reviews.staleApprovals.map(r => `@${r.who}`);
+    fail(`${pull.url} has no approval of its latest changes from someone other than its author (@${pull.author?.login || login}), so it was not merged. ` +
+      (stale.length ? `${stale.join(', ')} approved an earlier version; ask them to look again.` : 'Ask a teammate to review and approve it, then ask again.'),
+    'TEAM_NOT_APPROVED', { url: pull.url });
   }
   const checks = checkState(pull);
   if (checks.state === 'failing') fail(`Checks failed on ${pull.url}: ${checks.failing.join(', ')}. Fix them, save, and ask again.`, 'TEAM_CHECKS_FAILED');
@@ -817,15 +837,16 @@ export function status(ctx, { fetch = true, now = Date.now() } = {}) {
     try {
       const pull = findPr(ctx, branch, { state: 'all' });
       if (pull) {
-        const reviews = reviewState(pull);
+        const reviews = pullReviews(ctx, pull, login);
         const checks = checkState(pull);
         result.pr = { url: pull.url, state: pull.state, draft: !!pull.isDraft, approvedBy: reviews.approvedBy.map(r => `@${r.who}`),
+          ...(reviews.staleApprovals.length ? { approvedEarlierVersionBy: reviews.staleApprovals.map(r => `@${r.who}`) } : {}),
           changesRequestedBy: reviews.changesRequestedBy.map(r => `@${r.who}`), waitingOn: reviews.waitingOn.map(r => `@${r}`), checks: checks.state };
       } else result.pr = null;
     } catch (error) { result.prError = error.message; }
   }
   if (unsaved.length) notes.push(`${unsaved.length} unsaved file${unsaved.length === 1 ? '' : 's'}; say "save my progress".`);
   if (result.pr?.state === 'OPEN' && result.pr.approvedBy.length && !result.pr.changesRequestedBy.length) notes.push('Approved; say "merge it" when ready.');
-  result.summary = [branch ? `On ${branch}.` : 'Not on a branch.', ...notes].join(' ');
+  result.summary = [branch === TRUNK ? null : branch ? `On ${branch}.` : 'Not on a branch.', ...notes].filter(Boolean).join(' ');
   return result;
 }
