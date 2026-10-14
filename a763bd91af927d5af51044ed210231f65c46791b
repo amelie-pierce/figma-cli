@@ -1,0 +1,19 @@
+tests/make-mode.test.js
+  s_513a6058b61152::t_850df0bc2dd223 77-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a763bd91af927d5af51044ed210231f65c46791b",
+  "prompts": {},
+  "sessions": {
+    "s_513a6058b61152": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a354f6c-91a5-40a4-96e2-bf7c70202faa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
