@@ -304,7 +304,11 @@ own git objects), solo or team mode from a committed `.figma-cli/project.json`
 and, with `--repo`, how Make compares with GitHub `main`: the latest
 `make-deploy/<n>` base, commits that did not come from a merged PR, your repo
 permission, and whether Make's Push would overwrite other commits. In team mode
-every Make write, session-only ones included, refuses. See
+every Make write, session-only ones included, refuses. `make mode team --repo
+OWNER/REPO` and `make mode solo` (repo admins, with `--yes-turn-off-team-mode`)
+are the only way to add or remove the marker: each saves it as its own Make
+version, verifies it after a tab reload and writes a receipt under
+`~/.figma-cli/mode-receipts/`. See
 [status and modes](REFERENCE.md#make-project-status-and-soloteam-mode).
 
 `make export-delta` writes an explicit saved-version Make delta for workspace

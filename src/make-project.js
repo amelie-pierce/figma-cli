@@ -75,6 +75,19 @@ export function recordLinkedRepo(fileKey, repo, { home } = {}) {
   renameSync(temp, path);
 }
 
+// Turning team mode off drops the local link too, so later writes are solo
+// rather than ambiguous.
+export function forgetLinkedRepo(fileKey, { home } = {}) {
+  const files = readLinks(home);
+  if (!files[fileKey]) return false;
+  delete files[fileKey];
+  const path = linkStorePath(home);
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify({ schema: 'figma-cli/make-repos@1', files }, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temp, path);
+  return true;
+}
+
 // team: a valid marker for this file. ambiguous: no marker, but a repo is
 // known, from --repo or a link recorded by `make status --repo`.
 // invalid: a marker that cannot be trusted. solo: neither.
@@ -89,7 +102,19 @@ export function detectMode(marker, { repo, linked } = {}) {
   return { mode: 'solo', source: 'no-marker' };
 }
 
-export const MODE_CODES = Object.freeze(['MAKE_TEAM_MODE', 'MAKE_MARKER_INVALID', 'MAKE_MODE_AMBIGUOUS']);
+export const MODE_CODES = Object.freeze(['MAKE_TEAM_MODE', 'MAKE_MARKER_INVALID', 'MAKE_MODE_AMBIGUOUS', 'MAKE_MARKER_RESERVED',
+  'MAKE_MODE_UNCHANGED', 'MAKE_MODE_MISMATCH', 'MAKE_MODE_OTHER_PENDING', 'MAKE_MODE_NOT_ADMIN', 'MAKE_MODE_CONFIRM_REQUIRED']);
+
+// Only `make mode team|solo` adds or removes the marker. Every other write
+// command refuses it in every mode, so the mode never changes as a side effect.
+export function refuseMarkerPaths(paths) {
+  const reserved = PROJECT_MARKER.toLowerCase();
+  if (paths.some(path => typeof path === 'string' && path.replace(/^(\.\/)+/, '').toLowerCase() === reserved)) {
+    const error = new Error(`${PROJECT_MARKER} is changed only by make mode team or make mode solo.`);
+    error.code = 'MAKE_MARKER_RESERVED';
+    throw error;
+  }
+}
 
 export const SOLO_NOTE = `team mode is detected only through ${PROJECT_MARKER} or a prior make status --repo`;
 

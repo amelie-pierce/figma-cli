@@ -22,6 +22,8 @@ These examples are templates; choose paths/content for the actual requested work
 | Create the first version of a never-saved git-mode file | `figma-cli make write src/New.ts --file KEY --from - --first-version`, then `figma-cli make save-version --file KEY --first-version --since HEAD_FROM_STATUS --title "First version" --expected-path src/New.ts` |
 | Verify expected session content | `figma-cli make verify --file KEY --manifest - --timeout 120000` |
 | Read project status: tree SHAs, solo/team mode, GitHub main, unreviewed commits, Push safety | `figma-cli make status --file KEY [--repo OWNER/REPO] --json` |
+| Turn team mode on (writes and saves only the marker) | `figma-cli make mode team --file KEY --repo OWNER/REPO [--first-version] [--dry-run]` |
+| Turn team mode off (repo admins; shows a warning) | `figma-cli make mode solo --file KEY --yes-turn-off-team-mode [--dry-run]` |
 | Check vendor drift and saved state, including hidden files | `figma-cli make drift --file KEY --manifest VENDOR.json --json` |
 | Export a clean Make component delta for workspace intake | `figma-cli make export-delta --file KEY --manifest VENDOR.json --who NAME --candidate-dir candidates --out delta.json [--dependency PATH]` |
 | Review an explicit workspace package sync | `figma-cli make sync --file KEY --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --plan-out plan.json` |
@@ -62,6 +64,10 @@ task there instead of editing Make. When a repo is known (`--repo`, or a link
 recorded locally by a prior `make status --repo`) and there is no marker, the
 mode is ambiguous and writes refuse unless the user confirms `--solo`.
 Run `make status` (exit 0 clean, 1 unreadable, 2 attention) to see the mode first.
+Only `make mode team|solo` adds or removes the marker (`MAKE_MARKER_RESERVED`
+for any other command). It refuses when other paths are pending or unsaved,
+saves the marker change as its own version, reloads the tab to verify it, and
+writes a receipt to `~/.figma-cli/mode-receipts/`.
 `make sync` enforces this sequence for explicitly scoped workspace changes;
 its plan and receipt stay outside the Make source tree. See the
 [sync contract](../../../REFERENCE.md#make-delta-and-sync) for request

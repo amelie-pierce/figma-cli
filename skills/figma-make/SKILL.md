@@ -118,7 +118,11 @@ For exact commands and safe in-memory examples, read
    deploys from GitHub `main`: do not write to Make; tell the user to start a
    task in the repo. **Ambiguous** mode (a repo but no `.figma-cli/project.json`)
    needs the user's explicit go-ahead before passing `--solo`. **Solo** files are
-   edited directly.
+   edited directly. To switch modes, only when the user asks, use
+   `make mode team --repo OWNER/REPO` (add `--first-version` on a never-saved
+   file) or `make mode solo --yes-turn-off-team-mode` (repo admins only; show
+   the user its warning first). Never write `.figma-cli/project.json` any other
+   way; every other write command refuses it.
    Separate new paths from existing paths. For git-mode durable work, use
    `write` with the prior SHA-256 for an existing file, omit it for a new file,
    and use `delete` with the prior SHA-256 for removals. Keep backup paths.

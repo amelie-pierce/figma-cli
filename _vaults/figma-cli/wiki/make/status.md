@@ -35,6 +35,8 @@ The committed marker `.figma-cli/project.json` (`{fileKey, repo, trunk?}`) in Ma
 | ambiguous | no marker, a repo from `--repo` or a recorded link | refused unless `--solo` |
 | solo | neither | allowed, with a stderr note |
 
+Only `make mode team|solo` adds or removes the marker; every other write refuses that path (Updated 2026-10-14, see [mode.md](mode.md)).
+
 The Make page exposes no readable GitHub link: a read-only prop scan of Hinge found only `enableConnections: true` (2026-10-14). So `make status --repo` records the file key → repo link locally in `~/.figma-cli/make-repos.json` once the repo reads (never in the repo or in Make), and the write gate reads that record when the write has no `--repo`. Without a record or a marker a write is solo and prints a note that team mode is detected only through the marker or a prior `make status --repo`. The gate reads the marker through the client VFS before any write, session-only writes included (`checkWriteMode` in `src/make-project.js`).
 
 ## GitHub side

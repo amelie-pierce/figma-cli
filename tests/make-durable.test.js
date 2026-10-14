@@ -494,3 +494,49 @@ test('page-side first-version save requires Make to report no baseline', async (
     assert.equal(saved, 1);
   } finally { globalThis.document = prior; }
 });
+
+// A checked version with a baseline: Make lists nothing under a dot folder such
+// as .figma-cli/, so the working copy's difference from the saved tree is the check.
+function checkedClient({ before, drift = [state(), { ...state(), savedVersion: next }] } = {}) {
+  const { client, calls } = firstVersionClient({ statuses: [before, { ...afterStatus(), persistence: { ...state(), savedVersion: next } }],
+    version: { id: 'version-id', versionNumber: 9, gitSha: next }, drift });
+  const durable = client._durable;
+  client._durable = async action => { if (action.type === 'save') calls.push(['action', action]); return durable(action); };
+  return { client, calls };
+}
+const markerWorking = new Map([...sinceFlat, ['.figma-cli/project.json', { mode: '100644', blob: '3'.repeat(40) }]]);
+const savedStatus = (overrides = {}) => ({ persistence: state(), head, treeSource: 'saved-version', makeFlat: sinceFlat,
+  workingFlat: markerWorking, workingTree: 'd'.repeat(40), makeTree: 'e'.repeat(40), ...overrides });
+
+test('a checked version saves an unlisted path against the saved tree and verifies the tree', async () => {
+  const { client, calls } = checkedClient({ before: savedStatus() });
+  const result = await client.saveCheckedVersion('Mode', ['.figma-cli/project.json']);
+  const [, action] = calls.find(call => call[0] === 'action');
+  assert.deepEqual({ first: action.firstVersion, paths: action.expectedPaths, sha: action.expectedGitSha }, { first: undefined, paths: [], sha: base });
+  assert.deepEqual({ previous: result.previousGitSha, files: result.changedFiles, tree: result.tree, verification: result.verification },
+    { previous: base, files: ['.figma-cli/project.json'], tree: 'd'.repeat(40), verification: 'saved-version-clean-baseline; saved-tree-matched' });
+});
+
+test('a checked version refuses listed pending files, other unsaved paths or a missing baseline before createVersion', async () => {
+  const listed = checkedClient({ before: savedStatus({ persistence: state(['src/App.tsx']) }) });
+  await assert.rejects(listed.client.saveCheckedVersion('Mode', ['.figma-cli/project.json']), /other pending changes/);
+  const other = checkedClient({ before: savedStatus({ workingFlat: new Map([...markerWorking, ['src/x.ts', { mode: '100644', blob: '4'.repeat(40) }]]) }) });
+  await assert.rejects(other.client.saveCheckedVersion('Mode', ['.figma-cli/project.json']), /unrelated or missing/);
+  const headBase = checkedClient({ before: savedStatus({ treeSource: 'sandbox-head' }) });
+  await assert.rejects(headBase.client.saveCheckedVersion('Mode', ['.figma-cli/project.json']), /saved version was not the comparison base/);
+  for (const { calls } of [listed, other, headBase]) assert.equal(calls.some(call => call[0] === 'action'), false);
+});
+
+test('reload waits for a new document and its Make state', async () => {
+  const sent = [];
+  const client = new MakeClient({ transport: { close() {}, send: async method => { sent.push(method); return {}; } }, timeoutMs: 5000 });
+  client.fileKey = 'ScratchKey';
+  client._operation = fn => fn(Date.now() + 5000);
+  const answers = [true, false, new Error('Execution context was destroyed.'), true];
+  client._evaluate = async () => { const next = answers.shift(); if (next instanceof Error) throw next; return next; };
+  client._driftState = async () => ({ state: state() });
+  const result = await client.reloadPage();
+  assert.deepEqual(sent, ['Page.reload']);
+  assert.equal(answers.length, 0);
+  assert.equal(result.persistence.savedVersion, base);
+});
