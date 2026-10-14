@@ -12,12 +12,18 @@ import { makeWorkspace, openMakeFilesTab } from './make-workspace.js';
 import { makeUiSnapshot } from './make-ui.js';
 import { makePersistenceState, makeVersionHistory } from './make-persistence.js';
 import { compareVendor, digest, externalReceipt, sourcePath, vendorManifest, verifyGeneratedManifest } from './make-drift.js';
-import { makeDurablePageAction, requireGitMode, requireExactPending } from './make-durable.js';
+import { makeDurablePageAction, requireFirstVersionPending, requireGitMode, requireExactPending } from './make-durable.js';
 import { gitBlobSha, isIgnored, parseIgnore } from './git-tree.js';
 import { lfsMatcher, PROJECT_EXCLUDES, PROJECT_MARKER, treeOf, workingFlat } from './make-project.js';
 import { SandboxGit } from './sandbox-git.js';
 
 const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
+
+function saveRequest(title, expectedPaths) {
+  if (typeof title !== 'string' || !title.trim() || title.length > 160) throw new Error('Make version title must be 1–160 characters.');
+  if (!Array.isArray(expectedPaths) || !expectedPaths.length || expectedPaths.length > 1000) throw new Error('Provide the exact expected changed-file set.');
+  expectedPaths.forEach(sourcePath);
+}
 // How long a selected Markdown file may show no source editor before it is
 // treated as preview-only, which is how Make renders Markdown.
 const EDITOR_WAIT_MS = 3000;
@@ -542,14 +548,14 @@ export class MakeClient {
     }
   }
 
-  writeDurable(path, content, { expectedSha256, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
+  writeDurable(path, content, { expectedSha256, firstVersion = false, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     sourcePath(path);
     if (typeof content !== 'string') throw new Error('Make durable write requires UTF-8 text.');
     if (expectedSha256 != null && !/^[a-fA-F0-9]{64}$/.test(expectedSha256)) throw new Error('Invalid expected SHA-256.');
     return this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
       if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
-      const before = requireGitMode((await this._driftState(deadline)).state);
+      const before = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
       const existing = await this._durable({ type: 'read', path }, deadline);
       if (existing.exists !== (expectedSha256 != null)) throw new Error('Expected SHA-256 is required for an existing file and forbidden for a new file.');
       const originalSha256 = existing.exists ? sha256(existing.content) : null;
@@ -560,7 +566,7 @@ export class MakeClient {
       const backupPath = existing.exists ? await this._bounded(() => this._backup(path, existing.content, {
         backupDir, operation: 'durable-write', replacementSha256: sha256(content),
       }), deadline) : null;
-      const immediate = requireGitMode((await this._driftState(deadline)).state);
+      const immediate = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
       if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {
         throw new Error('Make version or pending files changed before the durable write.');
       }
@@ -580,19 +586,19 @@ export class MakeClient {
     });
   }
 
-  deleteDurable(path, { expectedSha256, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
+  deleteDurable(path, { expectedSha256, firstVersion = false, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     sourcePath(path);
     if (!/^[a-fA-F0-9]{64}$/.test(expectedSha256 || '')) throw new Error('Make durable delete requires expected SHA-256.');
     return this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
       if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
-      const before = requireGitMode((await this._driftState(deadline)).state);
+      const before = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
       const original = await this._durable({ type: 'read', path }, deadline);
       if (!original.exists || sha256(original.content) !== expectedSha256.toLowerCase()) throw new Error('Make source is missing or changed; delete refused.');
       await this._requireListableAncestor(path, deadline);
       await this._durableAgreement(path, original.content, deadline);
       const backupPath = await this._bounded(() => this._backup(path, original.content, { backupDir, operation: 'durable-delete' }), deadline);
-      const immediate = requireGitMode((await this._driftState(deadline)).state);
+      const immediate = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
       if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {
         throw new Error('Make version or pending files changed before the durable delete.');
       }
@@ -630,9 +636,7 @@ export class MakeClient {
   }
 
   saveVersion(title, expectedPaths) {
-    if (typeof title !== 'string' || !title.trim() || title.length > 160) throw new Error('Make version title must be 1–160 characters.');
-    if (!Array.isArray(expectedPaths) || !expectedPaths.length || expectedPaths.length > 1000) throw new Error('Provide the exact expected changed-file set.');
-    expectedPaths.forEach(sourcePath);
+    saveRequest(title, expectedPaths);
     return this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
       if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
@@ -667,6 +671,73 @@ export class MakeClient {
         throw error;
       }
     });
+  }
+
+  // The first version of a git-mode file that has never been saved. Make lists
+  // no pending files without a baseline, and its sandbox commits every write,
+  // so the expected set is checked against the working copy's difference from
+  // `since`, a sandbox commit the caller read before writing. The saved tree
+  // must equal the working tree that check read.
+  async saveFirstVersion(title, expectedPaths, { since } = {}) {
+    saveRequest(title, expectedPaths);
+    if (!/^[a-f0-9]{40}$/.test(since || '')) {
+      throw new Error('--first-version requires --since <commit>: the sandbox head make status reported before the writes.');
+    }
+    const before = await this.projectStatus();
+    const state = requireGitMode(before.persistence, { firstVersion: true });
+    if (before.treeSource !== 'sandbox-head') throw new Error('Make sandbox HEAD was not the comparison base; first version refused.');
+    const sinceFlat = await this._operation(async deadline => {
+      const bridge = await this._fileBridge(deadline);
+      try {
+        const reader = this._sandboxGit(bridge);
+        if (!await reader.reaches(before.head, since)) {
+          throw new Error(`Commit ${since} is not in the sandbox history of HEAD ${before.head}; first version refused.`);
+        }
+        return await reader.flatten(await reader.commitTree(since));
+      } finally { await bridge.dispose(); }
+    });
+    const changedFiles = requireFirstVersionPending(sinceFlat, before.workingFlat, expectedPaths);
+    const version = await this._operation(async deadline => {
+      const ui = await this._ensureCode(deadline);
+      if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
+      const now = requireGitMode((await this._driftState(deadline)).state, { firstVersion: true });
+      if (JSON.stringify(now) !== JSON.stringify(state)) throw new Error('Make state changed before the first version.');
+      const bridge = await this._fileBridge(deadline);
+      try {
+        if (await this._sandboxGit(bridge).head() !== before.head) throw new Error('Make sandbox HEAD changed before the first version.');
+      } finally { await bridge.dispose(); }
+      let created;
+      try { created = await this._durable({ type: 'save', firstVersion: true, title, expectedPaths: [], expectedGitSha: null }, deadline); }
+      catch (cause) { throw new Error(`Make version outcome is uncertain: ${cause.message}. Inspect versions before retrying.`); }
+      if (created?.refused) throw new Error(created.refused);
+      if (typeof created?.id !== 'string' || !created.id || !Number.isSafeInteger(created.versionNumber) ||
+          !/^[a-f0-9]{40}$/.test(created.gitSha || '')) throw new Error('Make version response is incomplete; inspect versions before retrying.');
+      return created;
+    });
+    const saved = { fileKey: this.fileKey, title, firstVersion: true, versionId: version.id, versionNumber: version.versionNumber,
+      gitSha: version.gitSha, previousGitSha: null, since, sandboxHead: before.head, changedFiles, workingTree: before.workingTree };
+    try {
+      await this._operation(async deadline => {
+        for (;;) {
+          const after = (await this._driftState(deadline)).state;
+          if (after?.mode === 'git' && after.hasBaseline && !after.isLoading && !after.error &&
+              after.savedVersion === version.gitSha && after.pendingCount === 0) return;
+          await this._bounded(() => new Promise(resolve => setTimeout(resolve, 100)), deadline);
+        }
+      });
+      const after = await this.projectStatus();
+      if (after.treeSource !== 'saved-version' || after.persistence?.savedVersion !== version.gitSha) {
+        throw new Error('the saved version is not the baseline Make reports');
+      }
+      if (after.makeTree !== before.workingTree || after.workingTree !== after.makeTree) {
+        throw new Error(`saved tree ${after.makeTree} differs from the checked working tree ${before.workingTree}`);
+      }
+      return { ...saved, tree: after.makeTree, verification: 'first-version-clean-baseline; saved-tree-matched' };
+    } catch (cause) {
+      const error = new Error(`Make version ${version.versionNumber} (${version.gitSha}) was created but its baseline or tree was not verified: ${cause.message}. Do not retry the save.`);
+      error.version = saved;
+      throw error;
+    }
   }
 
   // Bound each renderer/socket batch independently. Large kits can take more
@@ -832,6 +903,42 @@ export class MakeClient {
       batches: Math.ceil((seenDirectories.size + inventory.size) / batchSize) };
   }
 
+  // A sandbox git reader over the filesystem bridge.
+  _sandboxGit(bridge) {
+    // Make never answers a listing of a missing folder, so each folder is
+    // listed only after its parent shows it. '' is .git itself, which the
+    // root listing omits, so its absence cannot be proven: any failed
+    // listing fails the read.
+    const listings = new Map();
+    const listDir = async path => {
+      if (!listings.has(path)) {
+        let names = null;
+        const slash = path.lastIndexOf('/');
+        if (!path || (await listDir(slash < 0 ? '' : path.slice(0, slash)))?.includes(path.slice(slash + 1))) {
+          const remotePath = path ? `code/.git/${path}` : 'code/.git';
+          let reply;
+          try {
+            reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
+              'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
+            ]);
+          } catch (error) { throw new Error(`Make sandbox git is unavailable: ${remotePath}: ${error.message}`); }
+          if (reply?.success !== true || reply.data?.path !== remotePath || !Array.isArray(reply.data.files)) {
+            throw new Error(`Make sandbox git is unavailable: ${remotePath} could not be listed.`);
+          }
+          names = reply.data.files.map(entry => entry.name);
+        }
+        listings.set(path, names);
+      }
+      return listings.get(path);
+    };
+    const readFile = async path => {
+      const slash = path.lastIndexOf('/');
+      const names = await listDir(slash < 0 ? '' : path.slice(0, slash));
+      return names?.includes(path.slice(slash + 1)) ? this._bridgeReadBytes(bridge, `.git/${path}`) : null;
+    };
+    return new SandboxGit({ readFile, listDir });
+  }
+
   // Read-only inputs for `make status`: the saved version's own tree from the
   // sandbox git objects (exact file modes), the project inventory with that
   // tree's paths kept as tracked, the working-copy tree, the marker and the
@@ -842,43 +949,12 @@ export class MakeClient {
       const history = await this._evaluate(`(${makeVersionHistory.toString()})()`, deadline);
       const bridge = await this._fileBridge(deadline);
       try {
-        // Make never answers a listing of a missing folder, so each folder is
-        // listed only after its parent shows it. '' is .git itself, which the
-        // root listing omits, so its absence cannot be proven: any failed
-        // listing fails the status.
-        const listings = new Map();
-        const listDir = async path => {
-          if (!listings.has(path)) {
-            let names = null;
-            const slash = path.lastIndexOf('/');
-            if (!path || (await listDir(slash < 0 ? '' : path.slice(0, slash)))?.includes(path.slice(slash + 1))) {
-              const remotePath = path ? `code/.git/${path}` : 'code/.git';
-              let reply;
-              try {
-                reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
-                  'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
-                ]);
-              } catch (error) { throw new Error(`Make sandbox git is unavailable: ${remotePath}: ${error.message}`); }
-              if (reply?.success !== true || reply.data?.path !== remotePath || !Array.isArray(reply.data.files)) {
-                throw new Error(`Make sandbox git is unavailable: ${remotePath} could not be listed.`);
-              }
-              names = reply.data.files.map(entry => entry.name);
-            }
-            listings.set(path, names);
-          }
-          return listings.get(path);
-        };
-        const readFile = async path => {
-          const slash = path.lastIndexOf('/');
-          const names = await listDir(slash < 0 ? '' : path.slice(0, slash));
-          return names?.includes(path.slice(slash + 1)) ? this._bridgeReadBytes(bridge, `.git/${path}`) : null;
-        };
-        const reader = new SandboxGit({ readFile, listDir });
+        const reader = this._sandboxGit(bridge);
         const head = await reader.head();
         const saved = state?.hasBaseline && /^[a-f0-9]{40}$/.test(state.savedVersion || '') ? state.savedVersion : null;
         const tree = await reader.commitTree(saved || head);
         const flat = await reader.flatten(tree);
-        const exclude = await readFile('info/exclude');
+        const exclude = await reader.readFile('info/exclude');
         const after = (await this._driftState(deadline)).state;
         if (JSON.stringify(after) !== JSON.stringify(state)) throw new Error('Make state changed while reading its git objects.');
         return { state, history, head, tree, flat, treeSource: saved ? 'saved-version' : 'sandbox-head', exclude };

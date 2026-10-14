@@ -287,7 +287,7 @@ describe('make status', () => {
     const history = { generationInProgress: true, ambiguous: false, aiTurns: 3, latest: { versionNumber: 5, gitSha: sha('c') } };
     const { result } = await status({ make: makeSide({ saved: A, working: B, history, state: { hasBaseline: false, pendingCount: 2 } }),
       routes: repoRoutes({ main: A, commits: [] }) });
-    for (const item of ['Make has no saved version (baseline)', 'Make has 2 pending change(s)', 'A Make AI generation is running',
+    for (const item of ['Make has no saved version (baseline); make save-version --first-version can create one', 'Make has 2 pending change(s)', 'A Make AI generation is running',
       'Make\'s saved version came from an AI turn, which team mode does not allow', 'The Make working copy differs from its saved tree']) {
       assert.ok(result.attention.includes(item), item);
     }

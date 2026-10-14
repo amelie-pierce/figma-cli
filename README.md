@@ -283,7 +283,9 @@ verify source. Plugin/Safe mode is for Design and does not supply the Make adapt
 The Make skill handles readable React/TSX, new modules, dependencies, hash-guarded
 replacement, backups, session-content verification, and preview inspection.
 The original four write commands are session-only. For git-mode files, use
-`make write` and `make save-version` when a saved version is required.
+`make write` and `make save-version` when a saved version is required. A git-mode
+file that has never been saved needs `--first-version` on both, plus
+`--since <head from make status>` on `save-version`, to create its first version.
 Markdown files, which Make shows as a preview without an editor, are verified
 through the client VFS, sandbox and file tree. Root `AGENTS.md` and `CLAUDE.md`
 are saved and read back even though Make leaves them out of its pending list.

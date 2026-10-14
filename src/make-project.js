@@ -256,7 +256,7 @@ export function buildStatus({ fileKey, make, marker, repo, linked, github, githu
   if (!state) attention.push('Make saving mode or pending state is unavailable');
   else {
     if (state.mode !== 'git') attention.push('Make is in snapshot mode; tree comparison needs git mode');
-    if (!state.hasBaseline) attention.push('Make has no saved version (baseline)');
+    if (!state.hasBaseline) attention.push('Make has no saved version (baseline); make save-version --first-version can create one');
     if (state.pendingCount) attention.push(`Make has ${state.pendingCount} pending change(s)`);
     if (state.isLoading || state.error) attention.push('Make pending-state check is incomplete');
   }
