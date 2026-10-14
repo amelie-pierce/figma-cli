@@ -449,6 +449,33 @@ describe('team sync and conflicts', () => {
     assert.equal(p.originSha('refs/heads/alice/x'), sh(p.clone, 'rev-parse', 'HEAD'));
     assert.equal(sh(p.clone, 'show', 'origin/alice/x:a.txt'), 'a');
   });
+  it('points at sync when a refused sync had rebased saves GitHub already has', t => {
+    const p = project(t);
+    const f = fakes(p);
+    start(f.ctx(), 'x');
+    write(p.clone, { 'a.txt': 'a' });
+    save(f.ctx());
+    const pushed = p.originSha('refs/heads/alice/x');
+    protect(p);
+    write(p.clone, { 'leak.txt': 'sk_live_x' });
+    const mainSha = p.land({ 'src/B.tsx': 'b\n' });
+    assert.throws(() => sync(f.ctx()), error => {
+      assert.equal(error.code, 'TEAM_PUSH_BLOCKED');
+      assert.match(error.message, /GitHub still has your earlier saves/);
+      assert.match(error.message, /get the latest/);
+      assert.doesNotMatch(error.message, /unsent|save again/);
+      return true;
+    });
+    assert.equal(sh(p.clone, 'rev-parse', 'HEAD'), mainSha);
+    assert.equal(p.originSha('refs/heads/alice/x'), pushed);
+    write(p.clone, { 'leak.txt': null });
+    sync(f.ctx());
+    const head = sh(p.clone, 'rev-parse', 'HEAD');
+    assert.equal(p.originSha('refs/heads/alice/x'), head);
+    assert.equal(sh(p.clone, 'merge-base', '--is-ancestor', mainSha, head), '');
+    assert.equal(sh(p.clone, 'show', `${head}:a.txt`), 'a');
+    assert.equal(sh(p.clone, 'status', '--porcelain'), '');
+  });
   it('undoes only the caller\'s own unsent commits when a sync push is refused by rule', t => {
     const p = project(t);
     const f = fakes(p);

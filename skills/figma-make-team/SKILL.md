@@ -62,7 +62,7 @@ On failure the CLI prints `{error, code}` on stderr and exits 1:
 | `TEAM_BUILD_FAILED` / `TEAM_FORMAT_FAILED` | Nothing was saved (or, from `merge`, nothing merged); explain the error lines plainly and offer to fix the code. If the message says a task was started, they are on the new branch with their changes still unsaved |
 | `TEAM_CONFLICT` | Their branch is unchanged. For each file, name the person and the pull request link from `conflicts[].changedBy`, and suggest asking on the pull request |
 | `TEAM_PUSH_REJECTED` | GitHub has newer work on their branch (maybe another computer); their work is still saved here. Run `figma-cli team sync` to bring it in and send theirs |
-| `TEAM_PUSH_BLOCKED` | GitHub flagged something (for example a secret) and refused it; quote GitHub's reason. Their unsent saves were undone and every change is still in their files, so help remove what was flagged, then run `figma-cli team save` again. Syncing will not help |
+| `TEAM_PUSH_BLOCKED` | GitHub flagged something (for example a secret) and refused it; quote GitHub's reason. Their unsent saves were undone and every change is still in their files, so help remove what was flagged, then run `figma-cli team save` again, or `figma-cli team sync` when the message says "get the latest" (after a sync had rewritten saves GitHub already has). Syncing alone, without removing it, will not help |
 | `TEAM_NOT_APPROVED` | Someone other than them must approve the latest version of the pull request; share the link. A stale approval needs a fresh look |
 | `TEAM_CHANGES_REQUESTED` | A reviewer asked for changes; help make them, then save |
 | `TEAM_CHECKS_PENDING` / `TEAM_CHECKS_FAILED` | Wait for, or fix, the named checks |

@@ -410,7 +410,10 @@ convention, not a server-side guarantee.
   `git reset --soft` (back to GitHub's copy of your branch, or to where the
   branch left `main` when that is newer, as after a sync), keeping every change in
   the files; nothing GitHub already has, `main` or anyone else's branch is
-  touched. Remove what GitHub flagged and save again.
+  touched. Remove what GitHub flagged and save again. When that sync had
+  rebased saves GitHub already has, their rebased copies are undone locally
+  too (GitHub keeps the originals) and the message says to "get the latest"
+  (`team sync`) instead, since a plain save would be refused as out of date.
 - `team sync` commits locally (the same checks as `save`, no push), fetches
   your branch from GitHub and rebases local commits onto any newer saves there
   (commits already present in rewritten form, after an earlier sync whose push

@@ -432,8 +432,11 @@ function pushSaves(ctx, branch, options) {
     const isAncestor = (a, b) => ctx.tryGit(['merge-base', '--is-ancestor', a, b]).status === 0;
     const base = remote && isAncestor(remote, 'HEAD') && (!fromMain || isAncestor(fromMain, remote)) ? remote : fromMain;
     if (base && base !== revOf(ctx, 'HEAD')) ctx.git(['reset', '--soft', '--quiet', base], 'Undoing the saves GitHub refused');
-    error.message = `GitHub flagged something in your changes and refused them: ${error.reason}. Nothing was sent, and your unsent saves ` +
-      `on ${branch} were undone so the flagged content is in no save; every change is still in your files. Remove what GitHub flagged, then save again.`;
+    const rewritten = remote && !(base && isAncestor(remote, base));
+    error.message = `GitHub flagged something in your changes and refused them: ${error.reason}. Nothing was sent. ` + (rewritten
+      ? `The saves on ${branch} that were brought up to date with ${TRUNK} were undone on this computer, so the flagged content is in no save; ` +
+        'GitHub still has your earlier saves and every change is still in your files. Remove what GitHub flagged, then say "get the latest" (figma-cli team sync).'
+      : `Your unsent saves on ${branch} were undone so the flagged content is in no save; every change is still in your files. Remove what GitHub flagged, then save again.`);
     throw error;
   }
 }
