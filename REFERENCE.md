@@ -326,8 +326,9 @@ Errors are JSON on stderr with a `code`; results are JSON on stdout.
   non-`main` trunk refuses (`MAKE_CLONE_NO_REPO`). When the install step refuses,
   the clone stays and the error carries its `dir`.
 - `make install [dir]` checks the toolchain against `.mise.toml` `[tools]`
-  (`node`, `pnpm`/`npm:pnpm`), `package.json` `engines` and `packageManager`:
-  version mismatches only warn, a missing package manager refuses
+  (`node`, `pnpm`/`npm:pnpm`), `package.json` `engines` and `packageManager`,
+  each run in the clone so mise or corepack shims report its versions:
+  version mismatches only warn, a missing pnpm refuses
   (`MAKE_TOOLCHAIN_MISSING`). It warns on any tracked `.npmrc` that holds
   `_authToken`, `_auth` or `_password`, naming path and line only. It refuses
   any `@make-kits/*` dependency or `figma.kitAttachments` entry
@@ -336,10 +337,9 @@ Errors are JSON on stderr with a `code`; results are JSON on stdout.
   to vendor the kit's source by pull request (`src/vendor/<kit>/` pinned by
   `VENDOR.json`) and drop the dependency, or get registry access into your own
   `~/.npmrc`. Make's `.npmrc` is git-excluded and never copied. The install is
-  frozen and script-free: `pnpm install --frozen-lockfile --ignore-scripts`,
-  `npm ci --ignore-scripts`, `yarn install --frozen-lockfile --ignore-scripts`
-  (Berry: `--immutable --mode=skip-build`) or `bun install --frozen-lockfile
-  --ignore-scripts`. A repo without a lockfile refuses (`MAKE_NO_LOCKFILE`).
+  pnpm only, frozen and script-free: `pnpm install --frozen-lockfile
+  --ignore-scripts`. A repo without `pnpm-lock.yaml`, or whose `packageManager`
+  names anything other than pnpm, refuses (`MAKE_NO_LOCKFILE`).
   Make's own install uses `--no-frozen-lockfile`; locally the lockfile changes
   only in dependency pull requests.
 - `make pull [dir]` fetches `origin main` and fast-forwards local `main` only.
@@ -347,10 +347,10 @@ Errors are JSON on stderr with a `code`; results are JSON on stdout.
   (`MAKE_PULL_LOCAL_COMMITS`; that work belongs on a task branch, which the
   planned `team sync` will handle) and when checked-out `main` has uncommitted
   tracked changes (`MAKE_PULL_DIRTY`). On another branch only the local `main`
-  ref moves. It reinstalls only when a lockfile changed, with the same checks.
-- `make dev [dir]` runs `package.json` `scripts.dev` through the package
-  manager (the same command as Make's `.figma/make/dev`), or `.figma/make/dev`
-  when there is no dev script (`MAKE_NO_DEV_SCRIPT`). It needs installed
+  ref moves. It reinstalls only when `pnpm-lock.yaml` changed, with the same checks.
+- `make dev [dir]` runs `pnpm run dev` (the same command as Make's
+  `.figma/make/dev`) and refuses when `package.json` has no `scripts.dev`
+  (`MAKE_NO_DEV_SCRIPT`). It needs installed
   dependencies (`MAKE_NOT_INSTALLED`), mirrors the server's output, prints
   `figma-cli: local URL <url>` once on stderr, forwards Ctrl-C and exits with the
   server's code. It runs until stopped: **agents start it as a background job

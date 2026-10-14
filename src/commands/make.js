@@ -407,7 +407,7 @@ make.command('clone [repo] [dir]').description('Clone a team-mode project\'s Git
     finally { client?.close(); }
   });
 
-make.command('install [dir]').description('Install a cloned project\'s dependencies with its frozen lockfile and --ignore-scripts, after the toolchain, kit and .npmrc checks')
+make.command('install [dir]').description('Install a cloned project\'s dependencies with pnpm, its frozen lockfile and --ignore-scripts, after the toolchain, kit and .npmrc checks')
   .action(dir => {
     try {
       const root = repoRoot(resolve(dir || '.'));
@@ -424,7 +424,7 @@ make.command('pull [dir]').description('Fetch GitHub main and fast-forward local
     catch (error) { failure(error); }
   });
 
-make.command('dev [dir]').description('Run the project\'s dev server (package.json scripts.dev, else .figma/make/dev) in the foreground and print its local URL')
+make.command('dev [dir]').description('Run the project\'s dev server (pnpm run dev from package.json scripts.dev) in the foreground and print its local URL')
   .addHelpText('after', '\nIt runs until stopped (Ctrl-C). Agents must start it as a background job and poll the printed' +
     '\nURL (for example curl -sf http://localhost:5173/) instead of waiting for the command to return.')
   .action(async dir => {

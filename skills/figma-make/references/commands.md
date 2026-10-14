@@ -73,8 +73,8 @@ for any other command). It refuses when other paths are pending or unsaved,
 saves the marker change as its own version, reloads the tab to verify it, and
 writes a receipt to `~/.figma-cli/mode-receipts/`.
 To work on a team-mode project locally, `make clone` clones GitHub `main` with
-the user's own `gh` login and installs it (`pnpm install --frozen-lockfile
---ignore-scripts` or the repo's equivalent). It refuses a `@make-kits/*`
+the user's own `gh` login and installs it with pnpm (`pnpm install --frozen-lockfile
+--ignore-scripts`; it refuses a repo without `pnpm-lock.yaml`). It refuses a `@make-kits/*`
 dependency (`MAKE_KIT_DEPENDENCY`; vendor the kit by pull request instead),
 warns on a committed `.npmrc` credential and never copies Make's `.npmrc`.
 `make pull` refuses local commits on `main` (`MAKE_PULL_LOCAL_COMMITS`) and

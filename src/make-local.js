@@ -80,30 +80,20 @@ export function npmrcTokenWarnings(dir, files) {
   return warnings;
 }
 
-const LOCKFILES = [['pnpm-lock.yaml', 'pnpm'], ['package-lock.json', 'npm'], ['npm-shrinkwrap.json', 'npm'], ['yarn.lock', 'yarn'],
-  ['bun.lock', 'bun'], ['bun.lockb', 'bun']];
+const LOCKFILE = 'pnpm-lock.yaml';
+const INSTALL = ['pnpm', ['install', '--frozen-lockfile', '--ignore-scripts']];
 
-// The package manager, from package.json packageManager or the lockfile.
+// Make projects install with pnpm. A packageManager naming anything else, or
+// a missing pnpm-lock.yaml, is refused.
 export function detectPackageManager(dir, pkg) {
-  const declared = typeof pkg?.packageManager === 'string' ? /^(pnpm|npm|yarn|bun)@([^+\s]+)/.exec(pkg.packageManager) : null;
-  const found = LOCKFILES.filter(([file]) => existsSync(join(dir, file)));
-  const name = declared?.[1] ?? found[0]?.[1];
-  if (!name) fail('The repo has no lockfile, so it cannot be installed reproducibly. Add one through a pull request.', 'MAKE_NO_LOCKFILE');
-  const lockfile = found.find(([, manager]) => manager === name)?.[0];
-  if (!lockfile) fail(`package.json names ${name} but the repo has no ${name} lockfile, so it cannot be installed reproducibly.`, 'MAKE_NO_LOCKFILE');
-  const berry = name === 'yarn' && existsSync(join(dir, '.yarnrc.yml'));
-  return { name, lockfile, version: declared?.[2] ?? null, berry };
-}
-
-// The frozen, script-free install for each package manager.
-export function installCommand(pm) {
-  switch (pm.name) {
-    case 'pnpm': return ['pnpm', ['install', '--frozen-lockfile', '--ignore-scripts']];
-    case 'npm': return ['npm', ['ci', '--ignore-scripts']];
-    case 'yarn': return pm.berry ? ['yarn', ['install', '--immutable', '--mode=skip-build']] : ['yarn', ['install', '--frozen-lockfile', '--ignore-scripts']];
-    case 'bun': return ['bun', ['install', '--frozen-lockfile', '--ignore-scripts']];
-    default: return fail(`Unsupported package manager ${pm.name}.`);
+  const declared = pkg?.packageManager == null ? null : /^pnpm@([^+\s]+)/.exec(String(pkg.packageManager));
+  if (pkg?.packageManager != null && !declared) {
+    fail(`package.json packageManager is ${pkg.packageManager}, but Make projects install with pnpm. Switch it to pnpm through a pull request.`, 'MAKE_NO_LOCKFILE');
   }
+  if (!existsSync(join(dir, LOCKFILE))) {
+    fail(`The repo has no ${LOCKFILE}, so it cannot be installed reproducibly with pnpm. Add one through a pull request.`, 'MAKE_NO_LOCKFILE');
+  }
+  return { name: 'pnpm', lockfile: LOCKFILE, version: declared?.[1] ?? null };
 }
 
 // Expected tool versions from .mise.toml [tools], package.json engines and
@@ -120,11 +110,11 @@ export function toolchainExpectations(dir, pkg, pm) {
       const entry = /^"?([^"=]+?)"?\s*=\s*"([^"]+)"$/.exec(line);
       if (section !== 'tools' || !entry) continue;
       const tool = entry[1].replace(/^npm:/, '');
-      if (['node', 'pnpm', 'npm', 'yarn', 'bun'].includes(tool)) expected.push({ tool, range: entry[2], source: '.mise.toml' });
+      if (['node', 'pnpm'].includes(tool)) expected.push({ tool, range: entry[2], source: '.mise.toml' });
     }
   }
   for (const [tool, range] of Object.entries(pkg?.engines || {})) {
-    if (['node', 'pnpm', 'npm', 'yarn', 'bun'].includes(tool) && typeof range === 'string') expected.push({ tool, range, source: 'package.json engines' });
+    if (['node', 'pnpm'].includes(tool) && typeof range === 'string') expected.push({ tool, range, source: 'package.json engines' });
   }
   if (pm?.version) expected.push({ tool: pm.name, range: pm.version, source: 'package.json packageManager' });
   return expected;
@@ -188,10 +178,10 @@ export function defaultRun(command, args, { cwd, stream = false } = {}) {
   return { status: result.status ?? 1, stdout: result.stdout || '', stderr: result.stderr || '' };
 }
 
-export function toolVersions(run, tools) {
+export function toolVersions(run, tools, { cwd } = {}) {
   const versions = {};
   for (const tool of new Set(tools)) {
-    const result = run(tool, ['--version'], {});
+    const result = run(tool, ['--version'], { cwd });
     versions[tool] = result.status === 0 ? (/(\d+\.\d+\.\d+)/.exec(result.stdout)?.[1] ?? null) : null;
   }
   return versions;
@@ -210,7 +200,7 @@ export function preflightInstall(dir, { run = defaultRun } = {}) {
   const pkg = readPackage(dir);
   const pm = detectPackageManager(dir, pkg);
   const expected = toolchainExpectations(dir, pkg, pm);
-  const actual = toolVersions(run, ['node', pm.name, ...expected.map(e => e.tool)]);
+  const actual = toolVersions(run, ['node', pm.name, ...expected.map(e => e.tool)], { cwd: dir });
   const warnings = checkToolchain(expected, actual, pm);
   const tracked = run('git', ['ls-files', '-z'], { cwd: dir });
   const files = tracked.status === 0 ? tracked.stdout.split('\0').filter(Boolean) : ['.npmrc'];
@@ -222,7 +212,7 @@ export function install(dir, { run = defaultRun, warn = () => {} } = {}) {
   const { pkg, pm, warnings, toolchain } = preflightInstall(dir, { run });
   warnings.forEach(warn);
   requireNoKitDependencies(pkg);
-  const [command, args] = installCommand(pm);
+  const [command, args] = INSTALL;
   const result = run(command, args, { cwd: dir, stream: true });
   if (result.status !== 0) fail(`${command} ${args.join(' ')} failed (exit ${result.status}); see its output above.`, 'MAKE_INSTALL_FAILED');
   return { packageManager: pm.name, lockfile: pm.lockfile, command: [command, ...args].join(' '), toolchain, warnings };
@@ -290,32 +280,25 @@ export function pullProject(dir, { run = defaultRun, warn = () => {} } = {}) {
   if (dirty) {
     fail(`${TRUNK} has uncommitted changes to tracked files, so make pull changed nothing. Commit them on a task branch or discard them, then retry.`, 'MAKE_PULL_DIRTY');
   }
-  const lockfiles = LOCKFILES.map(([file]) => file);
-  const lockBefore = lockfiles.map(file => blobAt(run, root, 'HEAD', file));
+  const lockBefore = blobAt(run, root, 'HEAD', LOCKFILE);
   const merged = run('git', ['merge', '--ff-only', '--quiet', remote], { cwd: root });
   if (merged.status !== 0) fail(`git merge --ff-only failed: ${(merged.stderr || merged.stdout).trim().split('\n').pop()}`, 'MAKE_PULL_NOT_FAST_FORWARD');
   const after = { ...summary, updated: true, commits: behind };
-  const changed = lockfiles.filter((file, i) => blobAt(run, root, 'HEAD', file) !== lockBefore[i]);
-  if (!changed.length) {
+  if (blobAt(run, root, 'HEAD', LOCKFILE) === lockBefore) {
     const note = existsSync(join(root, 'node_modules')) ? undefined : 'Nothing is installed yet; run figma-cli make install.';
     return { ...after, lockfileChanged: false, reinstalled: false, ...(note ? { note } : {}) };
   }
   try { return { ...after, lockfileChanged: true, reinstalled: true, install: install(root, { run, warn }) }; }
   catch (error) {
-    error.message = `Fast-forwarded ${TRUNK} by ${behind} commit(s); ${changed.join(', ')} changed but the reinstall did not finish. ${error.message}`;
+    error.message = `Fast-forwarded ${TRUNK} by ${behind} commit(s); ${LOCKFILE} changed but the reinstall did not finish. ${error.message}`;
     throw error;
   }
 }
 
-// The dev command: package.json scripts.dev through the package manager, or
-// Make's own .figma/make/dev when the package has no dev script.
-export function devCommand(dir, pkg) {
-  if (typeof pkg?.scripts?.dev === 'string') {
-    const pm = detectPackageManager(dir, pkg);
-    return { command: pm.name, args: ['run', 'dev'], source: 'package.json scripts.dev' };
-  }
-  if (existsSync(join(dir, '.figma', 'make', 'dev'))) return { command: 'bash', args: ['.figma/make/dev'], source: '.figma/make/dev' };
-  fail('This project has no dev script (package.json scripts.dev or .figma/make/dev).', 'MAKE_NO_DEV_SCRIPT');
+// The dev command: pnpm run dev, the same command as Make's .figma/make/dev.
+export function devCommand(pkg) {
+  if (typeof pkg?.scripts?.dev !== 'string') fail('This project has no dev script (package.json scripts.dev).', 'MAKE_NO_DEV_SCRIPT');
+  return { command: 'pnpm', args: ['run', 'dev'], source: 'package.json scripts.dev' };
 }
 
 const ANSI = /\u001b\[[0-9;?]*[A-Za-z]/g;
@@ -331,19 +314,21 @@ export function runDev(dir, { spawnFn = spawn, out = process.stdout, err = proce
   const root = resolve(dir);
   const pkg = readPackage(root);
   if (!existsSync(join(root, 'node_modules'))) fail('Dependencies are not installed. Run figma-cli make install first.', 'MAKE_NOT_INSTALLED');
-  const { command, args, source } = devCommand(root, pkg);
+  const { command, args, source } = devCommand(pkg);
   err.write(`figma-cli: starting ${[command, ...args].join(' ')} (${source}) in ${root}\n`);
   const child = spawnFn(command, args, { cwd: root, stdio: ['inherit', 'pipe', 'pipe'], shell: false });
   let url = null;
-  let seen = '';
-  const watch = (stream, sink) => stream?.on('data', chunk => {
-    sink.write(chunk);
-    if (url) return;
-    // Only complete lines: a chunk may end mid-URL.
-    seen = (seen + chunk.toString()).slice(-4096);
-    url = findLocalUrl(seen.slice(0, seen.lastIndexOf('\n') + 1));
-    if (url) { err.write(`figma-cli: local URL ${url}\n`); onUrl?.(url); }
-  });
+  const watch = (stream, sink) => {
+    let seen = '';
+    stream?.on('data', chunk => {
+      sink.write(chunk);
+      if (url) return;
+      // Only complete lines of this stream: a chunk may end mid-URL.
+      seen = (seen + chunk.toString()).slice(-4096);
+      url = findLocalUrl(seen.slice(0, seen.lastIndexOf('\n') + 1));
+      if (url) { err.write(`figma-cli: local URL ${url}\n`); onUrl?.(url); }
+    });
+  };
   watch(child.stdout, out);
   watch(child.stderr, err);
   const forward = signal => () => child.kill(signal);

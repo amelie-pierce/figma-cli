@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkToolchain, cloneProject, defaultRun, detectPackageManager, devCommand, findLocalUrl, installCommand, kitRefusal,
+import { checkToolchain, cloneProject, defaultRun, detectPackageManager, devCommand, findLocalUrl, kitRefusal,
   makeKitDependencies, npmrcTokenWarnings, pullProject, resolveCloneRepo, runDev, satisfies, toolchainExpectations } from '../src/make-local.js';
 import { markerContent } from '../src/make-mode.js';
 
@@ -55,7 +55,7 @@ function remote(t, files = { 'package.json': PKG, 'pnpm-lock.yaml': 'lockfileVer
 }
 // The fake runner: real git; gh repo clone becomes a local git clone of
 // origin; tool versions and installs are recorded instead of run.
-function fakeRun({ origin, versions = { node: '22.12.0', pnpm: '10.34.3', npm: '10.9.0' }, installStatus = 0 } = {}) {
+function fakeRun({ origin, versions = { node: '22.12.0', pnpm: '10.34.3' }, installStatus = 0 } = {}) {
   const calls = [];
   const run = (command, args, options = {}) => {
     calls.push({ command, args, cwd: options.cwd });
@@ -112,19 +112,16 @@ describe('make kits, .npmrc and toolchain checks', () => {
     assert.ok(warnings.every(w => !w.includes('SECRETVALUE')));
     assert.deepEqual(npmrcTokenWarnings(dir, ['notes.txt']), []);
   });
-  it('detects the package manager and builds a frozen, script-free install', t => {
+  it('requires pnpm-lock.yaml and refuses a packageManager other than pnpm', t => {
     const dir = temp(t);
+    write(dir, { 'package-lock.json': '{}', 'yarn.lock': '' });
     code(() => detectPackageManager(dir, PKG), 'MAKE_NO_LOCKFILE');
     write(dir, { 'pnpm-lock.yaml': '' });
-    const pnpm = detectPackageManager(dir, PKG);
-    assert.deepEqual(installCommand(pnpm), ['pnpm', ['install', '--frozen-lockfile', '--ignore-scripts']]);
-    code(() => detectPackageManager(dir, { packageManager: 'yarn@1.22.0' }), 'MAKE_NO_LOCKFILE');
-    write(dir, { 'package-lock.json': '{}' });
-    assert.deepEqual(installCommand(detectPackageManager(dir, { packageManager: 'npm@10.9.0' })), ['npm', ['ci', '--ignore-scripts']]);
+    assert.deepEqual(detectPackageManager(dir, PKG), { name: 'pnpm', lockfile: 'pnpm-lock.yaml', version: null });
     assert.equal(detectPackageManager(dir, { packageManager: 'pnpm@10.34.3+sha512.abc' }).version, '10.34.3');
-    assert.ok(installCommand({ name: 'yarn', berry: false })[1].includes('--ignore-scripts'));
-    assert.ok(installCommand({ name: 'yarn', berry: true })[1].includes('--mode=skip-build'));
-    assert.ok(installCommand({ name: 'bun' })[1].includes('--ignore-scripts'));
+    for (const packageManager of ['yarn@1.22.0', 'npm@10.9.0', 'bun@1.1.0', 'pnpm']) {
+      assert.throws(() => detectPackageManager(dir, { packageManager }), error => error.code === 'MAKE_NO_LOCKFILE' && /install with pnpm/.test(error.message));
+    }
   });
   it('reads .mise.toml and engines, warns on mismatches and fails without the package manager', t => {
     const dir = temp(t);
@@ -158,6 +155,14 @@ describe('make clone', () => {
     assert.equal(result.branch, 'main');
     assert.equal(result.install.command, 'pnpm install --frozen-lockfile --ignore-scripts');
     assert.deepEqual(fake.installs().map(call => [call.command, ...call.args].join(' ')), ['pnpm install --frozen-lockfile --ignore-scripts']);
+    const versionChecks = fake.calls.filter(call => call.args[0] === '--version');
+    assert.ok(versionChecks.length && versionChecks.every(call => call.cwd === join(root, 'work')));
+  });
+  it('refuses a clone without pnpm-lock.yaml before installing', t => {
+    const { root, origin } = remote(t, { 'package.json': PKG, 'package-lock.json': '{}\n' });
+    const fake = fakeRun({ origin });
+    code(() => cloneProject({ repo: REPO }, { run: fake.run, cwd: root }), 'MAKE_NO_LOCKFILE');
+    assert.deepEqual(fake.installs(), []);
   });
   it('stops before installing on a @make-kits dependency and says how to fix it', t => {
     const kitPkg = { ...PKG, dependencies: { ...PKG.dependencies, '@make-kits/atomicaui-7-0': '1.0.1' } };
@@ -269,13 +274,10 @@ describe('make dev', () => {
     assert.equal(findLocalUrl('Network: use --host to expose'), null);
     assert.equal(findLocalUrl('ready on http://127.0.0.1:3000'), 'http://127.0.0.1:3000');
   });
-  it('prefers scripts.dev, then .figma/make/dev', t => {
-    const dir = temp(t);
-    write(dir, { 'pnpm-lock.yaml': '' });
-    assert.deepEqual(devCommand(dir, PKG), { command: 'pnpm', args: ['run', 'dev'], source: 'package.json scripts.dev' });
-    code(() => devCommand(dir, { scripts: {} }), 'MAKE_NO_DEV_SCRIPT');
-    write(dir, { '.figma/make/dev': '#!/usr/bin/env bash\npnpm run dev\n' });
-    assert.deepEqual(devCommand(dir, { scripts: {} }), { command: 'bash', args: ['.figma/make/dev'], source: '.figma/make/dev' });
+  it('runs pnpm run dev from scripts.dev and refuses without one', () => {
+    assert.deepEqual(devCommand(PKG), { command: 'pnpm', args: ['run', 'dev'], source: 'package.json scripts.dev' });
+    code(() => devCommand({ scripts: {} }), 'MAKE_NO_DEV_SCRIPT');
+    code(() => devCommand({}), 'MAKE_NO_DEV_SCRIPT');
   });
   it('mirrors output, prints the URL once, forwards signals and returns the exit code', async t => {
     const dir = temp(t);
@@ -291,8 +293,9 @@ describe('make dev', () => {
     const done = runDev(dir, { spawnFn: (command, args, options) => { spawned = { command, args, cwd: options.cwd, stdio: options.stdio }; return child; },
       out: { write: c => out.push(String(c)) }, err: { write: c => err.push(String(c)) }, signals });
     assert.deepEqual(spawned, { command: 'pnpm', args: ['run', 'dev'], cwd: dir, stdio: ['inherit', 'pipe', 'pipe'] });
-    child.stdout.emit('data', Buffer.from('  Local:   http://localhost:'));
-    child.stdout.emit('data', Buffer.from('5173/\n'));
+    child.stdout.emit('data', Buffer.from('  Local:   http://localhost:5'));
+    child.stderr.emit('data', Buffer.from('warn\n'));
+    child.stdout.emit('data', Buffer.from('173/\n'));
     child.stdout.emit('data', Buffer.from('again http://localhost:5173/\n'));
     signals.emit('SIGINT');
     assert.deepEqual(child.killed, ['SIGINT']);
@@ -301,6 +304,7 @@ describe('make dev', () => {
     assert.equal(result.url, 'http://localhost:5173/');
     assert.equal(result.code, 0);
     assert.equal(out.join(''), '  Local:   http://localhost:5173/\nagain http://localhost:5173/\n');
+    assert.equal(err.join('').includes('warn\n'), true);
     assert.equal(err.filter(line => line.includes('local URL')).length, 1);
     assert.equal(signals.listenerCount('SIGINT'), 0);
     assert.ok(existsSync(join(dir, 'package.json')) && readFileSync(join(dir, 'package.json'), 'utf8').includes('vite'));
