@@ -1,0 +1,21 @@
+src/make-team-review.js
+  s_9bfa55fca5e0e7::t_b83b174823fdf1 389-391,393-396,409,414-415,425
+tests/make-team-review.test.js
+  s_9bfa55fca5e0e7::t_b83b174823fdf1 331-344
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "74f9acce3c7637e83fbe7576b99977dccb07e8d3",
+  "prompts": {},
+  "sessions": {
+    "s_9bfa55fca5e0e7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b7670e89-dd71-4b9e-984c-ad7b54721d64",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
