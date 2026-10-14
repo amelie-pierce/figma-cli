@@ -38,4 +38,6 @@ In team mode GitHub `main` is the source of truth and people work in a local clo
 
 On `amelie-pierce/figma-testing-workflow` only: `status` on `main`, `start` (branch pushed with upstream), a `save` refused for `src/.npmrc`, a `save` that ran `format` and `build` and pushed 4 files, `pr` (template rendered, base `main`), and `merge` refused with `TEAM_NOT_APPROVED` (no second account, so no non-author approval). The test PR was closed and the branch deleted; `main` stayed at `7bc27ed`. The repo's `@make-kits` kit cannot install outside Make, so the proof installed with a git-excluded `.pnpmfile.cjs` that drops it; without an install, `save` refuses at the `format`/`build` step, which is the intended behaviour.
 
+Reviewing someone else's pull request (review copy, comments, approvals, author feedback) is in [review.md](review.md).
+
 Tests: `tests/make-team.test.js` (real git against a bare origin; `gh` and `pnpm` faked).

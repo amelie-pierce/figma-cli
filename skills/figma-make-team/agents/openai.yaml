@@ -1,4 +1,4 @@
 interface:
   display_name: "Figma Make Team"
-  short_description: "Branches, saves, pull requests and merges for designers, in plain words"
+  short_description: "Branches, saves, reviews, pull requests and merges for designers, in plain words"
   default_prompt: "Use $figma-make-team to save my progress on this prototype and tell me in plain words what happened."

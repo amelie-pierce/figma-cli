@@ -33,6 +33,8 @@ These examples are templates; choose paths/content for the actual requested work
 | Bring in the latest `main` (and newer saves of your branch); sort out or undo a conflict | `figma-cli team sync` / `figma-cli team conflicts` |
 | Open the pull request into `main`; merge it after a non-author approval | `figma-cli team pr` / `figma-cli team merge` |
 | Branch, unsaved files, review state, distance from `main` | `figma-cli team status` |
+| Review a teammate's pull request: list, review copy, comment, approve or ask for changes | `figma-cli team reviews` / `team review <pr\|login> [--lavish]` / `team comment` / `team approve` / `team request-changes` |
+| Author side: read review feedback, go back to the branch to address it | `figma-cli team feedback` / `figma-cli team address` |
 | Check vendor drift and saved state, including hidden files | `figma-cli make drift --file KEY --manifest VENDOR.json --json` |
 | Export a clean Make component delta for workspace intake | `figma-cli make export-delta --file KEY --manifest VENDOR.json --who NAME --candidate-dir candidates --out delta.json [--dependency PATH]` |
 | Review an explicit workspace package sync | `figma-cli make sync --file KEY --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --plan-out plan.json` |

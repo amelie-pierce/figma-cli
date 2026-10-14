@@ -9,4 +9,5 @@
 - [status.md](status.md): read-only `make status`, git tree SHAs from Make's sandbox objects, the project-root inventory, solo/team mode and the write gate.
 - [local.md](local.md): `make clone`, `install`, `pull` and `dev` for running a team-mode project from GitHub `main`; kit refusal, `.npmrc` handling and the frozen, script-free pnpm install.
 - [team.md](team.md): `figma-cli team` verbs for designers; own-branch and push rules in code, save checks, conflict auto-resolution limits, and the current-head non-author approval for merge.
+- [review.md](review.md): cross-review verbs (`team reviews`, `review`, `comment`, `approve`, `request-changes`, `feedback`, `address`); no self-review, no push from the detached review copy, commit-pinned approvals, and how Lavish notes map to pull request comments.
 - [mode.md](mode.md): `make mode team|solo`, the only path that adds or removes the team marker; tree-checked save, gate exemption scope, reload verification and receipts.
