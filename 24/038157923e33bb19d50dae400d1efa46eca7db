@@ -1,0 +1,23 @@
+src/make-team.js
+  s_5739732c5bb489::t_57bae0a9f1a81a 255
+_vaults/figma-cli/wiki/make/review.md
+  s_5739732c5bb489::t_57bae0a9f1a81a 36
+src/make-team-review.js
+  s_5739732c5bb489::t_57bae0a9f1a81a 562
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "24038157923e33bb19d50dae400d1efa46eca7db",
+  "prompts": {},
+  "sessions": {
+    "s_5739732c5bb489": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9c898cee-7388-4926-9e5a-a0495dd45dca",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
