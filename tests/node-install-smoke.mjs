@@ -39,7 +39,7 @@ try {
   assert.equal(realpathSync(cli), realpathSync(join(root, 'src/index.js')));
   const status = JSON.parse(run([cli, 'skills', 'status', '--agent', 'copilot']));
   assert.equal(status.ready, true);
-  assert.deepEqual(status.results.map(x => x.name).sort(), ['figma-cli', 'figma-make']);
+  assert.deepEqual(status.results.map(x => x.name).sort(), ['figma-cli', 'figma-make', 'figma-make-team']);
   assert.ok(status.results.every(x => x.agent === 'copilot' && x.status === 'up-to-date'));
   assert.match(run([cli, 'make', '--help']), /replace/);
   assert.match(run([cli, 'connect', '--help']), /--make/);
