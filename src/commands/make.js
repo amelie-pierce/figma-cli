@@ -9,6 +9,7 @@ import { driftExitCode, digest } from '../make-drift.js';
 import { buildStatus, checkWriteMode, linkedRepo, MODE_CODES, parseMarker, readGithub, recordLinkedRepo, refuseMarkerPaths,
   repoName, statusExitCode } from '../make-project.js';
 import { CONFIRM_FLAG, runModeChange } from '../make-mode.js';
+import { cloneProject, install, LOCAL_CODES, pullProject, repoRoot, resolveCloneRepo, runDev } from '../make-local.js';
 import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, planSync, validatePlanDigest, VENDOR_ROOT,
   writeApplyOutputs } from '../make-sync.js';
 
@@ -19,7 +20,8 @@ const make = program.command('make')
     '\n(replace, create, import, remove) are session-only and require --session-only.' +
     '\nEvery write refuses in team mode, and in ambiguous mode without --solo.' +
     '\nOnly make mode team|solo adds or removes the .figma-cli/project.json team marker.' +
-    '\nGit-mode write/delete use Make client VFS; save-version records a saved version.');
+    '\nGit-mode write/delete use Make client VFS; save-version records a saved version.' +
+    '\nclone, install, pull and dev run a team-mode project locally from GitHub main; they never write to Make.');
 
 function report(value) { console.log(JSON.stringify(value, null, 2)); }
 function failure(error) {
@@ -29,7 +31,8 @@ function failure(error) {
     ...(error.receiptPath ? { receiptPath: error.receiptPath } : {}),
     ...(error.version ? { version: error.version } : {}),
     ...(error.completedWrites ? { completedWrites: error.completedWrites } : {}),
-    ...(error.code === 'MAKE_SESSION_ONLY_REQUIRED' || MODE_CODES.includes(error.code) ? { code: error.code } : {}),
+    ...(error.code === 'MAKE_SESSION_ONLY_REQUIRED' || MODE_CODES.includes(error.code) || LOCAL_CODES.includes(error.code) ? { code: error.code } : {}),
+    ...(error.dir ? { dir: error.dir } : {}),
     ...(error.sessionWrites ? { sessionWrites: error.sessionWrites, requestedPaths: error.requestedPaths, observedWrites: error.observedWrites } : {}) }));
   process.exitCode = 1;
 }
@@ -370,3 +373,63 @@ modeCommand(mode.command('solo').description('Remove the team marker, save that 
     action: 'solo', firstVersion: options.firstVersion === true, since: options.since, dryRun: options.dryRun === true,
     confirm: options.yesTurnOffTeamMode === true,
   }))));
+
+// Local runs of a team-mode project. They read GitHub through the caller's
+// own gh and git logins and never write to Make; only clone --file reads Make
+// (the team marker, through the same client VFS read as the write gate).
+const localWarning = message => console.error(`warning: ${message}`);
+make.command('clone [repo] [dir]').description('Clone a team-mode project\'s GitHub repo at main with your own gh login, then install it (frozen lockfile, --ignore-scripts)')
+  .option('--file <key-or-url>', 'Take the repo from this open Make file\'s team marker instead of naming owner/repo')
+  .option('--timeout <ms>', 'Maximum time to read the Make team marker', timeout, 15000)
+  .addHelpText('after', '\nWith --file, the only argument is the folder: make clone --file KEY [dir].' +
+    '\nStops before installing when package.json has a @make-kits/* dependency (kit attached in Make),' +
+    '\nwhich installs only inside Make. Never copies Make\'s .npmrc; warns on a committed .npmrc credential.')
+  .action(async (repoArg, dirArg, options) => {
+    let client;
+    try {
+      let repo = repoArg;
+      let dir = dirArg;
+      let markerBytes;
+      let fileKey;
+      if (options.file) {
+        if (dirArg !== undefined) throw new Error('With --file, pass only the folder: make clone --file KEY [dir].');
+        [repo, dir] = [undefined, repoArg];
+        client = new MakeClient({ timeoutMs: options.timeout });
+        await client.connect(options.file);
+        fileKey = client.fileKey;
+        markerBytes = await client.projectMarker();
+        client.close();
+        client = null;
+      }
+      const resolved = resolveCloneRepo({ repo, fileKey, markerBytes });
+      report(cloneProject({ ...resolved, dir }, { warn: localWarning }));
+    } catch (error) { failure(error); }
+    finally { client?.close(); }
+  });
+
+make.command('install [dir]').description('Install a cloned project\'s dependencies with its frozen lockfile and --ignore-scripts, after the toolchain, kit and .npmrc checks')
+  .action(dir => {
+    try {
+      const root = repoRoot(resolve(dir || '.'));
+      report({ dir: root, ...install(root, { warn: localWarning }) });
+    }
+    catch (error) { failure(error); }
+  });
+
+make.command('pull [dir]').description('Fetch GitHub main and fast-forward local main only; reinstall (--ignore-scripts) only when the lockfile changed')
+  .addHelpText('after', '\nRefuses when local main has commits that are not on GitHub, or main has uncommitted tracked changes.' +
+    '\nOn another branch, only the local main ref moves; your branch and node_modules stay as they are.')
+  .action(dir => {
+    try { report(pullProject(resolve(dir || '.'), { warn: localWarning })); }
+    catch (error) { failure(error); }
+  });
+
+make.command('dev [dir]').description('Run the project\'s dev server (package.json scripts.dev, else .figma/make/dev) in the foreground and print its local URL')
+  .addHelpText('after', '\nIt runs until stopped (Ctrl-C). Agents must start it as a background job and poll the printed' +
+    '\nURL (for example curl -sf http://localhost:5173/) instead of waiting for the command to return.')
+  .action(async dir => {
+    try {
+      const result = await runDev(repoRoot(resolve(dir || '.')));
+      process.exitCode = result.code;
+    } catch (error) { failure(error); }
+  });

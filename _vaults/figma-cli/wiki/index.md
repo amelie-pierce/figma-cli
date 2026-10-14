@@ -7,7 +7,7 @@ date: 2026-10-13
 # figma-cli knowledge vault
 
 figma-cli controls Figma Desktop over the Chrome DevTools Protocol (CDP), with no API key.
-This fork adds `make` commands for Figma Make source. Saving modes and inventory checks are described in [make/persistence.md](make/persistence.md) and [make/drift.md](make/drift.md); explicit library exchange is in [make/sync.md](make/sync.md); project status and solo/team mode are in [make/status.md](make/status.md); switching modes is in [make/mode.md](make/mode.md).
+This fork adds `make` commands for Figma Make source. Saving modes and inventory checks are described in [make/persistence.md](make/persistence.md) and [make/drift.md](make/drift.md); explicit library exchange is in [make/sync.md](make/sync.md); project status and solo/team mode are in [make/status.md](make/status.md); switching modes is in [make/mode.md](make/mode.md); running a team-mode project locally is in [make/local.md](make/local.md).
 Source lives in `src/` (CLI entry `src/index.js`, Make code in `src/make-*.js` and `src/commands/make.js`); tests live in `tests/`.
 
 ## Operating mode

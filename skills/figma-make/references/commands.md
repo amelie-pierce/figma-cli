@@ -24,6 +24,10 @@ These examples are templates; choose paths/content for the actual requested work
 | Read project status: tree SHAs, solo/team mode, GitHub main, unreviewed commits, Push safety | `figma-cli make status --file KEY [--repo OWNER/REPO] --json` |
 | Turn team mode on (writes and saves only the marker) | `figma-cli make mode team --file KEY --repo OWNER/REPO [--first-version] [--dry-run]` |
 | Turn team mode off (repo admins; shows a warning) | `figma-cli make mode solo --file KEY --yes-turn-off-team-mode [--dry-run]` |
+| Clone a team-mode repo at `main` and install it (frozen lockfile, `--ignore-scripts`) | `figma-cli make clone OWNER/REPO [dir]` or `figma-cli make clone --file KEY [dir]` |
+| Install a clone again after its checks | `figma-cli make install [dir]` |
+| Fast-forward `main` only; reinstall when the lockfile changed | `figma-cli make pull [dir]` |
+| Start the dev server and print its local URL (agents: background job, then poll the URL) | `figma-cli make dev [dir]` |
 | Check vendor drift and saved state, including hidden files | `figma-cli make drift --file KEY --manifest VENDOR.json --json` |
 | Export a clean Make component delta for workspace intake | `figma-cli make export-delta --file KEY --manifest VENDOR.json --who NAME --candidate-dir candidates --out delta.json [--dependency PATH]` |
 | Review an explicit workspace package sync | `figma-cli make sync --file KEY --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --plan-out plan.json` |
@@ -68,6 +72,14 @@ Only `make mode team|solo` adds or removes the marker (`MAKE_MARKER_RESERVED`
 for any other command). It refuses when other paths are pending or unsaved,
 saves the marker change as its own version, reloads the tab to verify it, and
 writes a receipt to `~/.figma-cli/mode-receipts/`.
+To work on a team-mode project locally, `make clone` clones GitHub `main` with
+the user's own `gh` login and installs it (`pnpm install --frozen-lockfile
+--ignore-scripts` or the repo's equivalent). It refuses a `@make-kits/*`
+dependency (`MAKE_KIT_DEPENDENCY`; vendor the kit by pull request instead),
+warns on a committed `.npmrc` credential and never copies Make's `.npmrc`.
+`make pull` refuses local commits on `main` (`MAKE_PULL_LOCAL_COMMITS`) and
+uncommitted tracked changes on it (`MAKE_PULL_DIRTY`). `make dev` never returns
+while the server runs: start it in the background and poll the printed URL.
 `make sync` enforces this sequence for explicitly scoped workspace changes;
 its plan and receipt stay outside the Make source tree. See the
 [sync contract](../../../REFERENCE.md#make-delta-and-sync) for request

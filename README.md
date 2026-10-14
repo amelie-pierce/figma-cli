@@ -311,6 +311,16 @@ version, verifies it after a tab reload and writes a receipt under
 `~/.figma-cli/mode-receipts/`. See
 [status and modes](REFERENCE.md#make-project-status-and-soloteam-mode).
 
+To run a team-mode project locally, `make clone OWNER/REPO` (or
+`make clone --file KEY`, which reads the repo from the team marker) clones
+GitHub `main` with your own `gh` login and installs with a frozen lockfile and
+`--ignore-scripts`. It stops on a `@make-kits/*` dependency, which installs only
+inside Make, and explains how to vendor the kit instead; it never copies Make's
+`.npmrc`. `make pull` fast-forwards `main` only and reinstalls only when the
+lockfile changed; `make dev` starts the dev server and prints its local URL
+(agents run it in the background). See
+[running locally](REFERENCE.md#running-a-team-mode-project-locally).
+
 `make export-delta` writes an explicit saved-version Make delta for workspace
 `atomic-cli intake-make-delta --from`. `make sync` accepts a committed
 `package-make-kit` artifact, a trusted VENDOR.json baseline and a recorded
