@@ -1,0 +1,21 @@
+tests/make-sync.test.js
+  s_ea5a0479eb0fba::t_6036ec45909d5f 340-357
+src/make-sync.js
+  s_ea5a0479eb0fba::t_6036ec45909d5f 302-314,317,320,323-324
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1ffecfedda2c0ed1c3732f6dccec2cf08e5fd1bd",
+  "prompts": {},
+  "sessions": {
+    "s_ea5a0479eb0fba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d51eb851-28d2-497a-840a-cc5f579dff26",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
