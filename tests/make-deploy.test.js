@@ -611,6 +611,62 @@ describe('make deploy recovery', () => {
     assert.equal(verified.stage, 'deployed');
   });
 
+  it('verify pushes a pending tag even after Make has changed since the checked save', async t => {
+    const s = setup(t);
+    landChange(s);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    let pushFails = true;
+    const run = (command, args, options) => {
+      if (pushFails && command === 'git' && args[0] === 'push') { pushFails = false; return { status: 1, stdout: '', stderr: 'network down' }; }
+      return s.deps.run(command, args, options);
+    };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, { ...s.deps, run }), error => {
+      receiptPath = error.receiptPath;
+      return error.code === 'DEPLOY_TAG_FAILED';
+    });
+    assert.equal(readReceipt(receiptPath).stage, 'tag-pending');
+    s.make.working.set('src/main.tsx', Buffer.from('a designer edit\n'));
+    s.make.commitVersion();
+    const verified = await deployVerify(s.make, { ...s.opts, receiptPath }, s.deps);
+    assert.equal(verified.stage, 'deployed');
+    assert.equal(verified.outcome, 'ok');
+    assert.equal(verified.verification, 'saved-clean-tree-matched');
+    assert.deepEqual(s.p.tags(), ['make-deploy/0']);
+    landChange(s, { 'src/App.tsx': 'v3\n' });
+    await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_MAKE_AHEAD', /make rescue/);
+  });
+
+  it('verify records saved-drift when Make moved past a saved version whose drift check could not run', async t => {
+    const s = setup(t);
+    landChange(s);
+    const first = await deployPlan(s.make, s.opts, s.deps);
+    await deployApply(s.make, { ...s.opts, planPath: first.planPath }, s.deps);
+    landChange(s, { 'src/App.tsx': 'v3\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    const status = s.make.projectStatus.bind(s.make);
+    s.make.projectStatus = async () => {
+      if (s.make.calls.at(-1)?.[0] === 'save') { s.make.projectStatus = status; throw new Error('Make operation timed out.'); }
+      return status();
+    };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => {
+      receiptPath = error.receiptPath;
+      return error.code === 'DEPLOY_DRIFT';
+    });
+    assert.equal(readReceipt(receiptPath).stage, 'saved');
+    await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_UNFINISHED', /--verify/);
+    s.make.working.set('src/main.tsx', Buffer.from('a designer edit\n'));
+    s.make.commitVersion();
+    await refuses(deployVerify(s.make, { ...s.opts, receiptPath }, s.deps), 'DEPLOY_VERIFY_FAILED', /moved past version/);
+    const receipt = readReceipt(receiptPath);
+    assert.equal(receipt.stage, 'saved-drift');
+    assert.equal(receipt.outcome, 'uncertain');
+    assert.equal(receipt.makeAfter.versionNumber, 5);
+    await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_MAKE_AHEAD', /make rescue/);
+    assert.deepEqual(s.p.tags(), ['make-deploy/0']);
+  });
+
   it('reports a verify that finds Make no longer holding the deploy', async t => {
     const s = setup(t);
     landChange(s);

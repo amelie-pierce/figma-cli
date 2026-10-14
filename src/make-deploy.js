@@ -750,11 +750,19 @@ export async function deployVerify(client, { dir, receiptPath } = {}, deps = {})
   if (problems.length && receipt.outcome === 'ok') {
     fail(`Make no longer holds this deploy after a fresh reload: ${problems.join('; ')}. A later deploy or a Make edit changed it.`, 'DEPLOY_VERIFY_FAILED');
   }
+  if (problems.length && receipt.stage === 'tag-pending') {
+    await requireAdmin(receipt.repo, deps.gh);
+    await tagAndFinish(ctx, receipt, deps.home);
+    return result(receipt, `Pushed ${receipt.tag.name}: Make version ${receipt.makeAfter.versionNumber ?? short(receipt.makeAfter.versionGitSha)} matched main ` +
+      `${short(receipt.mainCommit)} when it was saved, but Make has changed since: ${problems.join('; ')}.`);
+  }
   if (problems.length) {
     const saved = state?.savedVersion === receipt.makeAfter.versionGitSha;
     if (saved) receipt.makeAfter.tree = status.makeTree;
-    stop(receipt, null, saved ? 'saved-drift' : receipt.stage, `Verification after a fresh reload failed: ${problems.join('; ')}.` +
-      `${saved ? ' The next dry run plans from this version.' : ''}`, 'DEPLOY_VERIFY_FAILED');
+    stop(receipt, null, 'saved-drift', `Verification after a fresh reload failed: ${problems.join('; ')}.` +
+      (saved ? ' The next dry run plans from this version.'
+        : ` Make has moved past version ${receipt.makeAfter.versionNumber ?? short(receipt.makeAfter.versionGitSha)}; the next dry run checks Make against the last deploy tag.`),
+      'DEPLOY_VERIFY_FAILED');
   }
   receipt.makeAfter.tree = status.makeTree;
   receipt.verification = 'saved-clean-tree-matched, fresh-sandbox-verified';

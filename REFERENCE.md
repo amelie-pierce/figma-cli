@@ -444,9 +444,10 @@ Recovery:
 |---|---|---|
 | A write, before any save (`DEPLOY_WRITE_FAILED`) | `writing` / `written` | `--resume` writes the remaining paths and saves; each planned path must hold its before or after content and nothing else may be unsaved. `--abort` restores the written paths from the backups instead |
 | createVersion ran but was not confirmed (`DEPLOY_SAVE_UNCERTAIN`) | `save-uncertain` / `saved-unverified` | `--verify` only; the save is never retried |
-| Saved, but Make does not equal `main` (`DEPLOY_DRIFT`) | `saved-drift` | Look at the listed paths; the next dry run plans from this version |
+| Saved, but the drift check could not read Make (`DEPLOY_DRIFT`) | `saved` | `--verify`; if Make has moved past the saved version, it records `saved-drift` |
+| Saved, but Make does not equal `main` (`DEPLOY_DRIFT`) | `saved-drift` | Look at the listed paths; the next dry run plans from this version, or refuses as make-ahead when Make has moved past it |
 | Tag number taken after the save | `tag-clash` | A new dry run plans from this version |
-| Tag push failed | `tag-pending` | `--verify` pushes it |
+| Tag push failed | `tag-pending` | `--verify` pushes it, even when Make has changed since, because the save already passed the drift check |
 
 `--verify` reloads the Make tab, requires Make's saved version and tree to be the
 deploy's with nothing pending, adopts the version an unconfirmed save created,

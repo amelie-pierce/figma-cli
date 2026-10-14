@@ -41,7 +41,7 @@ Receipts are `figma-cli/make-deploy-receipt@1` files in `~/.figma-cli/deploys/`,
 | `saving`, `save-uncertain`, `saved-unverified`, `saved`, `tag-pending` | createVersion may have run | `--verify` only; never save again |
 | `saved-drift`, `tag-clash` | the version exists but is not the deploy | the next dry run plans from it |
 
-`--verify` reloads the tab (`reloadPage`). It adopts a version that an unconfirmed save created only when that version's saved content equals `main`; any other version may hold Make edits, so verify fails and leaves the receipt's stage unchanged (never `saved-drift`). It checks the saved content against `main`, pushes a missing tag and appends `fresh-sandbox-verified`.
+`--verify` reloads the tab (`reloadPage`). It adopts a version that an unconfirmed save created only when that version's saved content equals `main`; any other version may hold Make edits, so verify fails and leaves the receipt's stage unchanged (never `saved-drift`). It checks the saved content against `main`, pushes a missing tag and appends `fresh-sandbox-verified`. When a version this deploy recorded no longer holds `main`, verify records `saved-drift`, so the receipt stops blocking; the next dry run plans from that version, or meets the make-ahead guard once Make has moved past it. A `tag-pending` receipt already passed the drift check at save time, so verify pushes its tag even when Make has changed since.
 
 ## Live proof (2026-10-15)
 
