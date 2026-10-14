@@ -6,7 +6,8 @@ import { MakeClient } from '../make-client.js';
 import { decodeMakeSource } from '../make-source.js';
 import { requireSessionOnly } from '../make-session.js';
 import { driftExitCode, digest } from '../make-drift.js';
-import { buildStatus, checkWriteMode, MODE_CODES, parseMarker, readGithub, repoName, statusExitCode } from '../make-project.js';
+import { buildStatus, checkWriteMode, linkedRepo, MODE_CODES, parseMarker, readGithub, recordLinkedRepo, repoName,
+  statusExitCode } from '../make-project.js';
 import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, planSync, validatePlanDigest, VENDOR_ROOT,
   writeApplyOutputs } from '../make-sync.js';
 
@@ -15,6 +16,7 @@ const make = program.command('make')
   .addHelpText('after', '\nAll Make commands accept --port PORT (global option). Use connection --save-port PORT to persist it.' +
     '\n\nReads (read, files, verify) see the open session\'s working copy. The original writes' +
     '\n(replace, create, import, remove) are session-only and require --session-only.' +
+    '\nEvery write refuses in team mode, and in ambiguous mode without --solo.' +
     '\nGit-mode write/delete use Make client VFS; save-version records a saved version.');
 
 function report(value) { console.log(JSON.stringify(value, null, 2)); }
@@ -44,15 +46,15 @@ function target(command, timeoutDefault = 15000) {
   return command.requiredOption('--file <key-or-url>', 'Exact open Make file key or URL')
     .option('--timeout <ms>', 'Maximum operation time', timeout, timeoutDefault);
 }
-// Make writes reach only the open session's working copy; refuse before
-// connecting unless the caller accepted that with --session-only.
-function sessionWrite(command) {
-  return target(command).option('--session-only', 'Accept that the write is lost when the file is reopened unless saved in Make');
-}
-// Persistent writes (write, delete, save-version, sync) honour solo/team mode.
+// Every Make write honours solo/team mode.
 function modeGated(command) {
   return command.option('--solo', 'Write although a repo is known but Make holds no team marker (ambiguous mode)')
     .option('--repo <owner/repo>', 'GitHub repo this Make file pushes to, if any; without a marker this makes the mode ambiguous', repoName);
+}
+// Make writes reach only the open session's working copy; refuse before
+// connecting unless the caller accepted that with --session-only.
+function sessionWrite(command) {
+  return modeGated(target(command).option('--session-only', 'Accept that the write is lost when the file is reopened unless saved in Make'));
 }
 async function withClient(options, fn, write) {
   let client;
@@ -60,9 +62,10 @@ async function withClient(options, fn, write) {
     if (write && write !== 'mode') requireSessionOnly(write, options);
     client = new MakeClient({ timeoutMs: options.timeout });
     await client.connect(options.file);
-    if (write === 'mode') {
-      const { warning } = await checkWriteMode(client, options);
+    if (write) {
+      const { warning, note } = await checkWriteMode(client, options);
       if (warning) console.error(`warning: ${warning}`);
+      if (note) console.error(`note: ${note}`);
     }
     await fn(client);
   } catch (error) { failure(error); }
@@ -170,7 +173,7 @@ target(make.command('drift').description('Read-only vendor inventory, manifest c
   }));
 
 target(make.command('status').description('Read-only project status: Make saved and working tree SHAs, solo/team mode and, with --repo, GitHub main'), 120000)
-  .option('--repo <owner/repo>', 'Compare with this GitHub repo through your gh login (GET requests only)', repoName)
+  .option('--repo <owner/repo>', 'Compare with this GitHub repo through your gh login (GET requests only); records the link in ~/.figma-cli for the write gate', repoName)
   .option('--json', 'Print the complete machine-readable result')
   .addHelpText('after', '\nExit codes: 0 all read and nothing needs attention; 1 the status could not be read' +
     '\n(Make or GitHub error); 2 read completely, with attention items listed.')
@@ -183,8 +186,10 @@ target(make.command('status').description('Read-only project status: Make saved 
       const trunk = marker.state === 'valid' && marker.repo === options.repo ? marker.trunk : 'main';
       try { github = await readGithub(options.repo, { trunk }); }
       catch (error) { githubError = error.message; }
+      if (github) recordLinkedRepo(client.fileKey, options.repo);
     }
-    const result = buildStatus({ fileKey: client.fileKey, make, marker, repo: options.repo, github, githubError });
+    const linked = options.repo ? null : linkedRepo(client.fileKey);
+    const result = buildStatus({ fileKey: client.fileKey, make, marker, repo: options.repo, linked, github, githubError });
     if (options.json) report(result);
     else {
       const m = result.make;

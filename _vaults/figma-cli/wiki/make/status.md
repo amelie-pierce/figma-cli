@@ -19,22 +19,23 @@ date: 2026-10-14
 
 `inventoryProject` lists the `code` root through the bridge (`src/make-client.js:743`). The bridge allows `code` for `fs/dir/list` only (`src/make-rpc.js:113`).
 - The root listing **omits `.git`** even with `includeHidden`, so `.git` is listed directly.
-- **Make never answers a listing of a missing folder**; the request times out. Sandbox git folders are listed only after their parent shows them (`src/make-client.js:850`).
-- Excluded and never read: `.git`, `PROJECT_EXCLUDES` (`.npmrc`, `.figma/design-context/`, `node_modules/`, `dist/`; `src/make-project.js:11`), the runtime `.git/info/exclude`, and each folder's `.gitignore`, applied as git does (`src/git-tree.js:86`). Symbolic links are refused.
-- Version and pending state are compared at every batch boundary and again after the git objects are read.
+- **Make never answers a listing of a missing folder**; the request times out. `projectStatus` lists `.git` once; a failed listing means no sandbox git, reported as `treeSource: "none"`. Sandbox git folders are listed only after their parent shows them.
+- The saved tree is read first; its paths count as tracked. Always excluded and never read: `.git` and `PROJECT_EXCLUDES` (`.npmrc`, `.figma/design-context/`; `src/make-project.js`). The runtime `.git/info/exclude` and each folder's `.gitignore` are applied as git does (`src/git-tree.js`), except that tracked paths are kept (a committed, ignored `dist/` is hashed). An untracked `node_modules/` is skipped. Symbolic links are refused.
+- Version and pending state are compared around the git-object read and at every inventory batch boundary.
+- LFS paths are left out of every comparison: working vs saved, Make vs main, and the mirror check. Submodule gitlinks (`160000`) hash as git does.
 
 ## Mode
 
 The committed marker `.figma-cli/project.json` (`{fileKey, repo, trunk?}`) in Make's working copy decides the mode (`src/make-project.js:26`, `src/make-project.js:49`):
 
-| Mode | When | Writes (`write`, `delete`, `save-version`, `sync`) |
+| Mode | When | Writes (all, session-only ones included) |
 |---|---|---|
 | team | marker names this file | refused, `MAKE_TEAM_MODE` |
 | invalid | marker unreadable or names another file | refused, `MAKE_MARKER_INVALID` |
-| ambiguous | no marker, `--repo` given | refused unless `--solo` |
-| solo | neither | allowed, as before |
+| ambiguous | no marker, a repo from `--repo` or a recorded link | refused unless `--solo` |
+| solo | neither | allowed, with a stderr note |
 
-The Make page exposes no readable GitHub link: a read-only prop scan of Hinge found only `enableConnections: true` (2026-10-14). So only the caller can make a file ambiguous, through `--repo`. The write gate reads the marker through the client VFS before any write (`src/make-project.js:64`). Session-only commands are not gated.
+The Make page exposes no readable GitHub link: a read-only prop scan of Hinge found only `enableConnections: true` (2026-10-14). So `make status --repo` records the file key → repo link locally in `~/.figma-cli/make-repos.json` once the repo reads (never in the repo or in Make), and the write gate reads that record when the write has no `--repo`. Without a record or a marker a write is solo and prints a note that team mode is detected only through the marker or a prior `make status --repo`. The gate reads the marker through the client VFS before any write, session-only writes included (`checkWriteMode` in `src/make-project.js`).
 
 ## GitHub side
 

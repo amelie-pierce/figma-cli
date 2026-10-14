@@ -1,8 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { gitBlobSha } from '../src/git-tree.js';
-import { buildStatus, checkWriteMode, detectMode, differingPaths, lfsMatcher, parseMarker, readGithub, relationOf,
-  requireWritableMode, statusExitCode, treeOf, workingFlat } from '../src/make-project.js';
+import { buildStatus, checkWriteMode, detectMode, differingPaths, lfsMatcher, linkedRepo, linkStorePath, parseMarker, readGithub,
+  recordLinkedRepo, relationOf, requireWritableMode, statusExitCode, treeOf, workingFlat } from '../src/make-project.js';
 
 const KEY = 'ExactKey';
 const REPO = 'owner/proto';
@@ -45,6 +48,28 @@ describe('team marker and mode detection', () => {
     await assert.rejects(checkWriteMode(client(null), { repo: REPO }), { code: 'MAKE_MODE_AMBIGUOUS' });
     assert.ok((await checkWriteMode(client(null), { repo: REPO, solo: true })).warning);
     await assert.rejects(checkWriteMode(client(marker({ fileKey: 'Other', repo: REPO }))), { code: 'MAKE_MARKER_INVALID' });
+  });
+
+  it('a repo link recorded by make status --repo makes a marker-less write ambiguous', async t => {
+    const home = mkdtempSync(join(tmpdir(), 'figma-cli-make-link-'));
+    t.after(() => rmSync(home, { recursive: true, force: true }));
+    const client = bytes => ({ fileKey: KEY, projectMarker: async () => bytes });
+    const solo = await checkWriteMode(client(null), { home });
+    assert.equal(solo.mode.mode, 'solo');
+    assert.match(solo.note, /only through \.figma-cli\/project\.json or a prior make status --repo/);
+    recordLinkedRepo(KEY, REPO, { home });
+    assert.equal(linkedRepo(KEY, { home }), REPO);
+    assert.equal(linkedRepo('OtherKey', { home }), null);
+    await assert.rejects(checkWriteMode(client(null), { home }), { code: 'MAKE_MODE_AMBIGUOUS' });
+    const forced = await checkWriteMode(client(null), { home, solo: true });
+    assert.equal(forced.mode.source, 'linked');
+    assert.match(forced.warning, /owner\/proto exists but Make holds no/);
+    assert.equal(forced.note, undefined);
+    await assert.rejects(checkWriteMode(client(marker({ fileKey: KEY, repo: REPO })), { home, solo: true }), { code: 'MAKE_TEAM_MODE' });
+    assert.equal((await checkWriteMode(client(null), { home: join(home, 'empty') })).mode.mode, 'solo');
+    mkdirSync(join(home, 'bad', '.figma-cli'), { recursive: true });
+    writeFileSync(linkStorePath(join(home, 'bad')), '{');
+    await assert.rejects(checkWriteMode(client(null), { home: join(home, 'bad') }), /make-repos\.json is unreadable/);
   });
 });
 
@@ -234,6 +259,36 @@ describe('make status', () => {
     assert.equal(result.github.relation, 'in-sync');
     assert.ok(result.github.comparedWithoutLfs);
     assert.ok(result.attention.some(item => /1 LFS path/.test(item)));
+  });
+
+  it('leaves LFS paths out of the working-vs-saved and mirror comparisons', async () => {
+    const png = content => new Map([...A, ['public/a.png', { mode: '100644', blob: blob(content) }]]);
+    const make = makeSide({ saved: png('pointer'), working: png('raw'), lfs: ['public/a.png'] });
+    const { result } = await status({ make, routes: repoRoutes({ main: png('raw'), commits: [{ sha: sha('d'), author: { login: 'dev' } }],
+      pulls: { [sha('d')]: merged(1) } }) });
+    assert.ok(!result.attention.includes('The Make working copy differs from its saved tree'));
+    assert.equal(result.github.mirror.state, 'safe');
+    assert.match(result.github.mirror.reason, /equals main$/);
+  });
+
+  it('hashes submodule gitlinks instead of failing the status', async () => {
+    const withSubmodule = new Map([...A, ['vendor/lib', { mode: '160000', blob: sha('e') }]]);
+    const { result } = await status({ make: makeSide({ saved: withSubmodule }), routes: repoRoutes({ main: withSubmodule, commits: [] }) });
+    assert.equal(result.github.relation, 'in-sync');
+  });
+
+  it('a sandbox without .git reports no saved tree instead of a working-copy difference', () => {
+    const make = { ...makeSide({ saved: A }), head: null, makeTree: null, makeFlat: null, treeSource: 'none' };
+    const result = buildStatus({ fileKey: KEY, make, marker: parseMarker(null, KEY) });
+    assert.ok(result.attention.includes('Make has no sandbox git repository to read a saved tree from'));
+    assert.ok(!result.attention.includes('The Make working copy differs from its saved tree'));
+    assert.equal(result.make.treeSource, 'none');
+  });
+
+  it('status mode uses a recorded repo link when --repo is omitted', () => {
+    const result = buildStatus({ fileKey: KEY, make: makeSide({ saved: A }), marker: parseMarker(null, KEY), linked: REPO });
+    assert.equal(result.mode.mode, 'ambiguous');
+    assert.equal(result.mode.source, 'linked');
   });
 
   it('reports Make-side problems: no baseline, pending, AI-turn baseline in team mode, generation, ambiguous mode', async () => {

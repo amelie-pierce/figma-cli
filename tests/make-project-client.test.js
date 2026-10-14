@@ -121,6 +121,48 @@ test('a state change while reading the sandbox git objects fails the status', as
   await assert.rejects(c.projectStatus(), /Make state changed/);
 });
 
+test('a committed but ignored dist/ is still inventoried and hashed, as git keeps tracked files', async t => {
+  const dir = sandbox(t);
+  git(dir, 'add', '-f', 'dist/app.js');
+  git(dir, 'commit', '-q', '-m', 'fs write: 2');
+  const head = git(dir, 'rev-parse', 'HEAD');
+  mkdirSync(join(dir, 'dist/extra'), { recursive: true });
+  writeFileSync(join(dir, 'dist/extra/untracked.js'), 'u');
+  writeFileSync(join(dir, 'dist/untracked.js'), 'u');
+  const { c, calls } = client(dir, { state: clean(head) });
+  const result = await c.projectStatus();
+  assert.equal(result.makeTree, git(dir, 'rev-parse', 'HEAD^{tree}'));
+  assert.equal(result.workingTree, result.makeTree);
+  assert.ok(result.workingFlat.has('dist/app.js'));
+  assert.ok(!result.workingFlat.has('dist/untracked.js'));
+  assert.ok(result.excluded.includes('dist/untracked.js') && result.excluded.includes('dist/extra/'));
+  assert.ok(result.excluded.includes('node_modules/'));
+  assert.ok(!calls.some(call => call.path.startsWith('code/node_modules')), 'an untracked node_modules is never listed');
+});
+
+test('an untracked node_modules without an ignore rule is skipped', async t => {
+  const dir = sandbox(t);
+  writeFileSync(join(dir, '.gitignore'), 'dist\n*.log\n');
+  git(dir, 'commit', '-qam', 'fs write: 2');
+  const { c } = client(dir, { state: clean(git(dir, 'rev-parse', 'HEAD')) });
+  const result = await c.projectStatus();
+  assert.ok(result.excluded.includes('node_modules/'));
+  assert.equal(result.workingTree, result.makeTree);
+});
+
+test('a sandbox without .git reports no saved tree after a single .git listing', async t => {
+  const dir = sandbox(t);
+  rmSync(join(dir, '.git'), { recursive: true, force: true });
+  const { c, calls } = client(dir, { state: { mode: 'snapshot', hasBaseline: false, savedVersion: null, pendingCount: 0 } });
+  const result = await c.projectStatus();
+  assert.equal(result.treeSource, 'none');
+  assert.equal(result.makeTree, null);
+  assert.equal(result.head, null);
+  assert.equal(result.excludeSource, 'baseline-only');
+  assert.equal(calls.filter(call => call.path === 'code/.git' || call.path.startsWith('code/.git/')).length, 1);
+  assert.ok(result.workingFlat.has('src/App.tsx'));
+});
+
 test('symbolic links are refused rather than hashed', async t => {
   const dir = sandbox(t);
   const { c } = client(dir, { state: clean(git(dir, 'rev-parse', 'HEAD')) });

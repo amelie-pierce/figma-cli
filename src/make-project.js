@@ -1,4 +1,7 @@
 import { execFile } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { gitTreeSha, isIgnored, parseIgnore } from './git-tree.js';
 
 // Project-level Make state: the team-mode marker, solo/team mode, the write
@@ -7,8 +10,8 @@ import { gitTreeSha, isIgnored, parseIgnore } from './git-tree.js';
 export const PROJECT_MARKER = '.figma-cli/project.json';
 // Always excluded from the project inventory, besides `.git` itself and the
 // sandbox's .git/info/exclude: Make's registry config (secret-bearing, never
-// read), Figma's design context, and installed or built output.
-export const PROJECT_EXCLUDES = Object.freeze(['/.npmrc', '/.figma/design-context/', 'node_modules/', '/dist/']);
+// read) and Figma's design context. Tracked paths never override these.
+export const PROJECT_EXCLUDES = Object.freeze(['/.npmrc', '/.figma/design-context/']);
 export const MAKE_BOT = 'figma[bot]';
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SHA = /^[a-f0-9]{40}$/;
@@ -43,30 +46,63 @@ export function parseMarker(bytes, fileKey) {
   return { state: 'valid', repo, trunk, fileKey };
 }
 
+// Make exposes no readable GitHub link, so `make status --repo` records the
+// file → repo link locally, under ~/.figma-cli, for the write gate to read.
+export const linkStorePath = (home = homedir()) => join(home, '.figma-cli', 'make-repos.json');
+
+function readLinks(home) {
+  const path = linkStorePath(home);
+  if (!existsSync(path)) return {};
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8'));
+    if (value && typeof value.files === 'object' && !Array.isArray(value.files)) return value.files;
+  } catch { /* reported below */ }
+  throw new Error(`${path} is unreadable; fix or delete it.`);
+}
+
+export function linkedRepo(fileKey, { home } = {}) {
+  const repo = readLinks(home)[fileKey]?.repo;
+  return repo == null ? null : repoName(repo);
+}
+
+export function recordLinkedRepo(fileKey, repo, { home } = {}) {
+  repoName(repo);
+  const path = linkStorePath(home);
+  const files = { ...readLinks(home), [fileKey]: { repo, recordedAt: new Date().toISOString() } };
+  mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 });
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify({ schema: 'figma-cli/make-repos@1', files }, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temp, path);
+}
+
 // team: a valid marker for this file. ambiguous: no marker, but a repo is
-// known (Make exposes no readable GitHub link, so only the caller can say).
+// known, from --repo or a link recorded by `make status --repo`.
 // invalid: a marker that cannot be trusted. solo: neither.
-export function detectMode(marker, { repo } = {}) {
+export function detectMode(marker, { repo, linked } = {}) {
   if (marker.state === 'valid') {
     return { mode: 'team', repo: marker.repo, trunk: marker.trunk, source: 'marker',
       ...(repo && repo !== marker.repo ? { repoConflict: `--repo ${repo} differs from the marker's ${marker.repo}` } : {}) };
   }
   if (marker.state === 'invalid' || marker.state === 'mismatch') return { mode: 'invalid', source: 'marker', reason: marker.reason };
-  if (repo) return { mode: 'ambiguous', repo, trunk: 'main', source: '--repo',
-    reason: `${repo} exists but Make holds no ${PROJECT_MARKER}` };
+  if (repo || linked) return { mode: 'ambiguous', repo: repo || linked, trunk: 'main', source: repo ? '--repo' : 'linked',
+    reason: `${repo || linked} exists but Make holds no ${PROJECT_MARKER}` };
   return { mode: 'solo', source: 'no-marker' };
 }
 
 export const MODE_CODES = Object.freeze(['MAKE_TEAM_MODE', 'MAKE_MARKER_INVALID', 'MAKE_MODE_AMBIGUOUS']);
 
+export const SOLO_NOTE = `team mode is detected only through ${PROJECT_MARKER} or a prior make status --repo`;
+
 // The write gate as the commands run it: read the marker from Make's client
-// VFS, then refuse team, invalid and (without --solo) ambiguous mode.
-export async function checkWriteMode(client, { repo, solo } = {}) {
-  const mode = detectMode(parseMarker(await client.projectMarker(), client.fileKey), { repo });
-  return { mode, ...requireWritableMode(mode, { solo }) };
+// VFS and the recorded repo link, then refuse team, invalid and (without
+// --solo) ambiguous mode.
+export async function checkWriteMode(client, { repo, solo, home } = {}) {
+  const linked = repo ? null : linkedRepo(client.fileKey, { home });
+  const mode = detectMode(parseMarker(await client.projectMarker(), client.fileKey), { repo, linked });
+  return { mode, ...requireWritableMode(mode, { solo }), ...(mode.mode === 'solo' ? { note: SOLO_NOTE } : {}) };
 }
 
-// Gate for make write, delete, save-version and sync.
+// Gate for every Make write command, session-only ones included.
 export function requireWritableMode(mode, { solo = false } = {}) {
   const fail = (message, code) => { const error = new Error(message); error.code = code; throw error; };
   if (mode.mode === 'team') {
@@ -211,8 +247,10 @@ export async function readGithub(repo, { gh = ghRunner(), trunk = 'main', maxCom
 const publicBase = base => base && Object.fromEntries(Object.entries(base).filter(([key]) => key !== 'flat'));
 
 // Combine Make and GitHub state into the status report. Pure: no I/O.
-export function buildStatus({ fileKey, make, marker, repo, github, githubError }) {
-  const mode = detectMode(marker, { repo });
+export function buildStatus({ fileKey, make, marker, repo, linked, github, githubError }) {
+  const mode = detectMode(marker, { repo, linked });
+  const makeLfs = new Set(make.lfsPaths);
+  const workingDiffers = !!make.makeFlat && treeOf(make.workingFlat, makeLfs) !== treeOf(make.makeFlat, makeLfs);
   const attention = [];
   const state = make.persistence;
   if (!state) attention.push('Make saving mode or pending state is unavailable');
@@ -226,7 +264,8 @@ export function buildStatus({ fileKey, make, marker, repo, github, githubError }
   if (make.history?.ambiguous) attention.push('Make version history is ambiguous');
   const aiBaseline = !!state?.savedVersion && make.history?.latest?.gitSha === state.savedVersion;
   if (mode.mode === 'team' && aiBaseline) attention.push('Make\'s saved version came from an AI turn, which team mode does not allow');
-  if (make.workingTree !== make.makeTree) attention.push('The Make working copy differs from its saved tree');
+  if (!make.makeFlat) attention.push('Make has no sandbox git repository to read a saved tree from');
+  else if (workingDiffers) attention.push('The Make working copy differs from its saved tree');
   if (mode.mode === 'ambiguous') attention.push(`Mode is ambiguous: ${mode.reason}`);
   if (mode.mode === 'invalid') attention.push(`Marker is unusable: ${mode.reason}`);
   if (mode.repoConflict) attention.push(mode.repoConflict);
@@ -248,7 +287,7 @@ export function buildStatus({ fileKey, make, marker, repo, github, githubError }
     result.github = { repo, error: githubError };
     attention.push(`GitHub state is unavailable: ${githubError}`);
   } else if (github) {
-    const lfs = new Set(make.lfsPaths);
+    const lfs = new Set(makeLfs);
     for (const flat of [github.main.flat, github.base?.flat].filter(Boolean)) {
       for (const path of flat.keys()) if (make.isLfs(path)) lfs.add(path);
     }
@@ -262,13 +301,13 @@ export function buildStatus({ fileKey, make, marker, repo, github, githubError }
     const unreviewed = github.commits.filter(commit => !commit.reviewed);
     const nonMake = github.commits.filter(commit => !commit.fromMake);
     // Push sends the working copy, unsaved edits included, to the default branch.
-    const workingMatchesMain = treeOf(make.workingFlat) === github.main.tree;
+    const workingMatchesMain = treeOf(make.workingFlat, lfs) === mainCompared;
     let mirror;
     if (workingMatchesMain) mirror = { state: 'safe', reason: 'Push would change nothing: the Make working copy equals main' };
     else if (github.truncated) mirror = { state: 'unknown', reason: 'too many commits on main to check' };
     else if (nonMake.length) mirror = { state: 'unsafe', reason: `Push would overwrite ${nonMake.length} commit(s) on main not made by Make${github.base ? ` since ${github.base.tag}` : ''}` };
     else mirror = { state: 'safe', reason: 'Push would replace only Make\'s own mirror commits' };
-    if (mirror.state === 'safe' && make.workingTree !== make.makeTree) mirror.reason += '; unsaved Make changes would be pushed';
+    if (mirror.state === 'safe' && workingDiffers) mirror.reason += '; unsaved Make changes would be pushed';
 
     // Push targets the default branch; the mirror check assumes that is the trunk.
     if (github.defaultBranch && github.defaultBranch !== github.trunk) {

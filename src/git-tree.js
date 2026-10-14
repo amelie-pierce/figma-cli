@@ -35,7 +35,7 @@ export function gitTreeSha(files) {
   const root = new Map();
   for (const { path, blob, mode = '100644' } of files) {
     if (!/^[a-f0-9]{40}$/.test(blob || '')) throw new Error(`Invalid git blob SHA for ${path}.`);
-    if (!['100644', '100755', '120000'].includes(mode)) throw new Error(`Unsupported git file mode for ${path}.`);
+    if (!['100644', '100755', '120000', '160000'].includes(mode)) throw new Error(`Unsupported git file mode for ${path}.`);
     const parts = path.split('/');
     let node = root;
     for (const part of parts.slice(0, -1)) {

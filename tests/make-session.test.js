@@ -48,6 +48,14 @@ test('--session-only passes the gate and reaches the connection guards', t => {
   }
 });
 
+test('session-only writes take the mode gate flags and reach the connection guards', t => {
+  for (const [name, args] of Object.entries(writes)) {
+    const { status, error } = run(t, [...args, '--session-only', '--solo', '--repo', 'owner/proto']);
+    assert.equal(status, 1, name);
+    assert.equal(error.code, 'CDP_DISCOVERY_FAILED', name);
+  }
+});
+
 test('reads need no opt-in flag', t => {
   const { error } = run(t, ['read', 'src/App.tsx']);
   assert.equal(error.code, 'CDP_DISCOVERY_FAILED');

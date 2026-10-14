@@ -183,20 +183,26 @@ GitHub. It reports:
   - The working tree re-hashes every file under the project root, hidden ones
     included. A file whose blob equals the saved tree keeps that mode; any
     other file takes `100644`.
-  - Excluded, never read: `.git`, `.npmrc`, `.figma/design-context/`,
-    `node_modules/`, `dist/`, the sandbox's `.git/info/exclude` (read at run
-    time) and each folder's `.gitignore`.
+  - Excluded, never read: `.git`, `.npmrc`, `.figma/design-context/`, and
+    what the sandbox's `.git/info/exclude` (read at run time) and each folder's
+    `.gitignore` ignore. As in git, a path in the saved tree is kept even when
+    an ignore rule matches it (a committed `dist/` is hashed); an untracked
+    `node_modules/` is skipped.
   - Without a saved version, the sandbox HEAD's tree is used (`treeSource:
-    "sandbox-head"`).
+    "sandbox-head"`). Without a sandbox `.git`, there is no saved tree
+    (`treeSource: "none"`), which is an attention item.
   - The newest AI-turn version, since an AI turn saves every pending edit.
 - **Mode**, from the committed `.figma-cli/project.json` in Make's working copy
   (`{"fileKey", "repo", "trunk"?}`):
   - `team`: the marker names this file;
-  - `ambiguous`: no marker, but `--repo` names a repository (Make exposes no
-    readable GitHub link);
+  - `ambiguous`: no marker, but a repository is known: from `--repo`, or from
+    the link a prior `make status --repo` recorded (Make exposes no readable
+    GitHub link);
   - `solo`: neither;
   - `invalid`: the marker is unreadable or names another file.
-- **With `--repo`**, through your own `gh` login (GET requests only):
+- **With `--repo`**, through your own `gh` login (GET requests only). When the
+  repo reads, the file key → repo link is recorded locally in
+  `~/.figma-cli/make-repos.json` (never in the repo or in Make):
   - `main`'s commit and tree, and the latest `make-deploy/<n>` tag with its
     receipt base (`mainTree` from the tag's JSON receipt, else the tagged
     commit's tree);
@@ -217,17 +223,19 @@ Make or GitHub could not be read, `2` when the read completed with `attention`
 items (pending changes, no baseline, ambiguous mode, any relation other than
 `in-sync`, unreviewed commits, an unsafe mirror, and so on).
 
-**Write gate.** `make write`, `delete`, `save-version` and `sync` read the
-marker through Make's client VFS before doing anything:
+**Write gate.** Every Make write (`write`, `delete`, `save-version`, `sync`, and
+the session-only `replace`, `create`, `import`, `remove`, which still require
+`--session-only`) reads the marker through Make's client VFS, and the recorded
+repo link, before doing anything:
 
 - team mode refuses with `code: "MAKE_TEAM_MODE"` ("this file deploys from
   <repo>; say start a task"), even with `--solo`;
 - an unreadable or mismatched marker refuses with `MAKE_MARKER_INVALID`;
-- `--repo OWNER/REPO` without a marker makes the mode ambiguous, which refuses
-  with `MAKE_MODE_AMBIGUOUS` unless `--solo` is passed (then it warns);
-- solo mode writes as before.
-
-The session-only commands (`replace`, `create`, `import`, `remove`) are not gated.
+- a repo without a marker (`--repo OWNER/REPO`, or a link recorded by
+  `make status --repo`) makes the mode ambiguous, which refuses with
+  `MAKE_MODE_AMBIGUOUS` unless `--solo` is passed (then it warns);
+- solo mode writes as before, with a one-line stderr note that team mode is
+  detected only through the marker or a prior `make status --repo`.
 
 ### Make delta and sync
 

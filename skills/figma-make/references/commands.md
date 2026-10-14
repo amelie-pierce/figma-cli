@@ -48,10 +48,12 @@ creates a Make version and confirms a clean pending state. Root `AGENTS.md` and
 the result's `unlistedFiles` records their post-save hashes. Snapshot mode is
 refused. After an uncertain result, inspect state before retrying. Reload the
 exact Make tab and compare hashes plus `make drift` to prove persistence.
-`write`, `delete`, `save-version` and `sync` first read `.figma-cli/project.json`.
-In team mode they refuse (`MAKE_TEAM_MODE`): the file deploys from its repo, so
-tell the user to start a task there instead of editing Make. With `--repo` and
-no marker the mode is ambiguous and they refuse unless the user confirms `--solo`.
+Every write, the session-only `replace`, `create`, `import` and `remove`
+included, first reads `.figma-cli/project.json`. In team mode it refuses
+(`MAKE_TEAM_MODE`): the file deploys from its repo, so tell the user to start a
+task there instead of editing Make. When a repo is known (`--repo`, or a link
+recorded locally by a prior `make status --repo`) and there is no marker, the
+mode is ambiguous and writes refuse unless the user confirms `--solo`.
 Run `make status` (exit 0 clean, 1 unreadable, 2 attention) to see the mode first.
 `make sync` enforces this sequence for explicitly scoped workspace changes;
 its plan and receipt stay outside the Make source tree. See the

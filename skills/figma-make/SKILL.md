@@ -113,7 +113,8 @@ For exact commands and safe in-memory examples, read
 ## Apply and verify
 
 1. Check the mode first with `make status --file KEY` (add `--repo OWNER/REPO`
-   when the user names the file's GitHub repo). In **team** mode the file
+   when the user names the file's GitHub repo; this also records the link
+   locally so later writes see it). In **team** mode the file
    deploys from GitHub `main`: do not write to Make; tell the user to start a
    task in the repo. **Ambiguous** mode (a repo but no `.figma-cli/project.json`)
    needs the user's explicit go-ahead before passing `--solo`. **Solo** files are
