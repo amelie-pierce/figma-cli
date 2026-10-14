@@ -293,10 +293,25 @@ test('a file with an editor is still compared through that editor', async () => 
   client._bridgeRead = async () => ({ content: 'new' });
   client._sourceTree = async () => [{ kind: 'file', path: 'src/a.ts' }];
   client._read = async (_path, _deadline, options) => {
-    assert.ok(options.editorWaitMs > 0);
+    assert.equal(options.editorWaitMs, undefined);
     return { content: 'new' };
   };
   assert.equal(await client._durableAgreement('src/a.ts', 'new', Date.now() + 1000), 'editor-tree-vfs-sandbox-matched');
+});
+
+test('a slow editor on a non-Markdown file fails instead of falling back to VFS, sandbox and tree', async () => {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 5000 });
+  client.fileKey = 'ScratchKey';
+  client._durable = async () => ({ exists: true, content: 'export default 1;\n' });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._bridgeRead = async () => ({ content: 'export default 1;\n' });
+  client._sourceTree = async () => [{ kind: 'file', path: 'src/App.tsx' }];
+  client._select = async () => ({ name: 'App.tsx' });
+  // The editor has not mounted after the Markdown preview window.
+  client._editor = async action => { assert.equal(action.type, 'inspect'); return { editorCount: 0 }; };
+  const error = await client._durableAgreement('src/App.tsx', 'export default 1;\n', Date.now() + 3500).catch(cause => cause);
+  assert.ok(error instanceof Error, 'a missing editor must not verify a non-Markdown write');
+  assert.match(error.message, /src\/App\.tsx timed out before every view agreed \(vfs matched, sandbox matched, tree present, editor unavailable\)/);
 });
 
 test('read-back mismatch fails at the deadline and names each view', async () => {

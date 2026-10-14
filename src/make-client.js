@@ -15,8 +15,8 @@ import { compareVendor, digest, externalReceipt, sourcePath, vendorManifest, ver
 import { makeDurablePageAction, requireGitMode, requireExactPending } from './make-durable.js';
 
 const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
-// How long a selected file may show no source editor before it is treated as
-// preview-only. Make renders Markdown this way.
+// How long a selected Markdown file may show no source editor before it is
+// treated as preview-only, which is how Make renders Markdown.
 const EDITOR_WAIT_MS = 3000;
 
 // Serialized into the Make page, with no dependency on private application stores.
@@ -516,14 +516,16 @@ export class MakeClient {
             // Make's rendered tree deliberately omits dotfiles. VFS and sandbox
             // agreement is the available independent proof for those paths.
             if (hidden) return 'vfs-sandbox-matched';
+            // Make shows Markdown as a preview with no editor to read. The client
+            // VFS, sandbox and rendered tree are the proof for those files only;
+            // every other file must still match through its editor.
+            const preview = path.endsWith('.md');
             try {
-              const editor = await this._read(path, deadline, { editorWaitMs: EDITOR_WAIT_MS });
+              const editor = await this._read(path, deadline, preview ? { editorWaitMs: EDITOR_WAIT_MS } : {});
               observed.editor = editor.content === expectedContent ? 'matched' : 'different';
               if (observed.editor === 'matched') return 'editor-tree-vfs-sandbox-matched';
             } catch (error) {
-              // Markdown and other preview-only files have no editor to read.
-              // The client VFS, sandbox and rendered tree are the proof for them.
-              if (error.code === 'MAKE_NO_EDITOR') return 'tree-vfs-sandbox-matched';
+              if (preview && error.code === 'MAKE_NO_EDITOR') return 'tree-vfs-sandbox-matched';
               observed.editor = 'unavailable';
             }
           }
