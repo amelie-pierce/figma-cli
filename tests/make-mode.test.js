@@ -74,7 +74,8 @@ test('team mode writes only the marker, saves it as its own version, verifies af
   assert.equal(result.verification, 'reloaded; clean-baseline; saved-tree-and-marker-matched');
   assert.equal(linkedRepo('ExactKey', { home }), repo);
   const receipt = JSON.parse(readFileSync(result.receiptPath, 'utf8'));
-  assert.equal(statSync(result.receiptPath).mode & 0o777, 0o600);
+  // Windows access control uses ACLs; POSIX permission bits are not equivalent.
+  if (process.platform !== 'win32') assert.equal(statSync(result.receiptPath).mode & 0o777, 0o600);
   assert.equal(result.receiptPath.startsWith(receiptDir(home)), true);
   assert.deepEqual({ who: receipt.who, action: receipt.action, fileKey: receipt.fileKey, repo: receipt.repo, version: receipt.version,
     tree: receipt.tree, markerSha256: receipt.markerSha256, verification: receipt.verification }, {
