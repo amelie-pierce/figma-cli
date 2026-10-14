@@ -466,8 +466,8 @@ export class MakeClient {
     });
   }
 
-  // Absence is proven by listing an existing ancestor folder, and the bridge
-  // cannot list the project root. Refuse before changing anything when the
+  // Absence is proven by listing an existing ancestor folder, never the project
+  // root (only make status lists it). Refuse before changing anything when the
   // nearest listable ancestor would be the root.
   async _requireListableAncestor(path, deadline) {
     const [top, ...rest] = path.split('/');

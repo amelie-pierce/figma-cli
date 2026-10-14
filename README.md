@@ -302,7 +302,7 @@ own git objects), solo or team mode from a committed `.figma-cli/project.json`
 and, with `--repo`, how Make compares with GitHub `main`: the latest
 `make-deploy/<n>` base, commits that did not come from a merged PR, your repo
 permission, and whether Make's Push would overwrite other commits. In team mode
-`make write`, `delete`, `save-version` and `sync` refuse. See
+every Make write, session-only ones included, refuses. See
 [status and modes](REFERENCE.md#make-project-status-and-soloteam-mode).
 
 `make export-delta` writes an explicit saved-version Make delta for workspace

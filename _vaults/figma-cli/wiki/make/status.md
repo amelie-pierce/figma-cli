@@ -10,14 +10,14 @@ date: 2026-10-14
 
 ## Tree SHAs
 
-- **Saved tree.** Read from the saved version's own commit in the sandbox `.git` (`src/make-client.js:842`, reader `src/sandbox-git.js:71`). Loose and packed objects (with deltas) are supported; every object is hash-checked. Without a saved baseline, the sandbox HEAD (loose ref or `packed-refs`) is used.
+- **Saved tree.** Read from the saved version's own commit in the sandbox `.git` (`src/make-client.js:839`, reader `src/sandbox-git.js:71`). Loose and packed objects (with deltas) are supported; every object is hash-checked. Without a saved baseline, the sandbox HEAD (loose ref or `packed-refs`) is used.
 - **Why not re-hash bytes:** Make commits template files as `100755` and files written or edited later as `100644`, and Push mirrors the modes. Bytes hashed with default modes give a different tree (scratch test T6, 2026-10-14). The bridge listing exposes no mode: its `permissions` field was `4` on a `100755` file.
-- **Working tree.** Every file under the project root is re-hashed. A blob equal to the saved tree keeps that mode; anything else takes `100644` (`src/make-project.js:101`). Live, both scratch and Hinge working trees equalled their saved/head trees.
+- **Working tree.** Every file under the project root is re-hashed. A blob equal to the saved tree keeps that mode; anything else takes `100644` (`src/make-project.js:137`). Live, both scratch and Hinge working trees equalled their saved/head trees.
 - **Hashing** matches `git hash-object` and `git write-tree`, including git's tree order where a folder sorts as `name/` (`src/git-tree.js:34`, tests `tests/make-git-tree.test.js`).
 
 ## Project-root inventory
 
-`inventoryProject` lists the `code` root through the bridge (`src/make-client.js:743`). The bridge allows `code` for `fs/dir/list` only (`src/make-rpc.js:113`).
+`inventoryProject` lists the `code` root through the bridge (`src/make-client.js:745`). The bridge allows `code` for `fs/dir/list` only (`src/make-rpc.js:113`).
 - The root listing **omits `.git`** even with `includeHidden`, so `.git` is listed directly.
 - **Make never answers a listing of a missing folder**; the request times out. The root listing omits `.git`, so its absence cannot be proven: `projectStatus` lists `.git` once and any failed listing fails the status ("Make sandbox git is unavailable", exit 1). Sandbox git folders are listed only after their parent shows them.
 - The saved tree is read first; its paths count as tracked. Always excluded and never read: `.git` and `PROJECT_EXCLUDES` (`.npmrc`, `.figma/design-context/`; `src/make-project.js`). The runtime `.git/info/exclude` and each folder's `.gitignore` are applied as git does (`src/git-tree.js`), except that tracked paths are kept (a committed, ignored `dist/` is hashed). An untracked `node_modules/` is skipped. Symbolic links are refused.
@@ -26,7 +26,7 @@ date: 2026-10-14
 
 ## Mode
 
-The committed marker `.figma-cli/project.json` (`{fileKey, repo, trunk?}`) in Make's working copy decides the mode (`src/make-project.js:26`, `src/make-project.js:49`):
+The committed marker `.figma-cli/project.json` (`{fileKey, repo, trunk?}`) in Make's working copy decides the mode (`src/make-project.js:29`, `src/make-project.js:81`):
 
 | Mode | When | Writes (all, session-only ones included) |
 |---|---|---|
@@ -39,12 +39,12 @@ The Make page exposes no readable GitHub link: a read-only prop scan of Hinge fo
 
 ## GitHub side
 
-`readGithub` uses the caller's `gh` login with GET requests only (`src/make-project.js:153`):
+`readGithub` uses the caller's `gh` login with GET requests only (`src/make-project.js:189`):
 - `main`'s commit and tree, and the latest `make-deploy/<n>` tag. The base is the `mainTree` of the tag's JSON receipt, or the tagged commit's tree.
 - Commits since the base (all history without one, up to 100). Each is checked against `commits/<sha>/pulls` for a merged PR into the trunk.
 - The caller's permission from `repos/<repo>` (`admin` may deploy).
 
-`buildStatus` (`src/make-project.js:214`) derives:
+`buildStatus` (`src/make-project.js:250`) derives:
 - the relation from the saved tree;
 - `mirror` from the **working** tree, because Push sends unsaved edits too;
 - LFS paths (root `.gitattributes`), compared outside the tree join, since Make stores the pointer and Push the raw bytes (T7).
