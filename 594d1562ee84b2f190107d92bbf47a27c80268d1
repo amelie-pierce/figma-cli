@@ -1,0 +1,24 @@
+src/make-local.js
+  s_0086621a2c7a67::t_867a6485562aea 89,196-198,201,203-209
+_vaults/figma-cli/wiki/make/local.md
+  s_0086621a2c7a67::t_14c7e075ab901d 17,21,29,33
+tests/make-local.test.js
+  s_0086621a2c7a67::t_867a6485562aea 122-123,189-200
+  s_0086621a2c7a67::t_73e335749fdcf2 201
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "594d1562ee84b2f190107d92bbf47a27c80268d1",
+  "prompts": {},
+  "sessions": {
+    "s_0086621a2c7a67": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bb49b719-8962-4b81-9c89-47d154a29cc0",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
