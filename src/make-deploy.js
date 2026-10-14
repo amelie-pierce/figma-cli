@@ -375,7 +375,8 @@ export async function requireTeamMode(client, status) {
 
 async function prepare(client, { dir, reviewed }, deps) {
   const { run, gh, home, readBlob, install, build } = deps;
-  const mode = await requireTeamMode(client);
+  // Compare with the sandbox from the start: a stale client VFS must not read as solo.
+  const mode = await requireTeamMode(client, await client.projectStatus());
   const repo = repoName(mode.repo);
   const ctx = teamContext({ dir: resolve(dir || '.'), run, warn: deps.warn });
   const main = localMain(ctx, repo);
