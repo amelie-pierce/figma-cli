@@ -123,7 +123,7 @@ bytes receive a private backup. The CLI checks the client VFS, file tree, editor
 (for existing or newly written files), and session sandbox before reporting a
 pending write. Make shows Markdown as a preview without an editor; when a `.md`
 file shows no editor within a few seconds, the client VFS, sandbox and tree
-must agree instead. Every other file still needs its editor to match (`verification: "tree-vfs-sandbox-matched"`).
+must agree instead (`verification: "tree-vfs-sandbox-matched"`). Every other file still needs its editor to match.
 If the views still disagree at the timeout, the error names each view's state.
 A new file must sit below an existing top-level folder: the filesystem bridge
 cannot list the project root, so absence there cannot be proven and the write is
