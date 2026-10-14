@@ -242,6 +242,13 @@ describe('make deploy guards', () => {
     assert.deepEqual(s.make.writes, []);
   });
 
+  it('reports a stale client VFS without the marker as a Make-state problem, not solo', async t => {
+    const s = setup(t);
+    s.make.projectMarker = async () => null;
+    await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_MAKE_STATE', /disagree/);
+    assert.deepEqual(s.make.writes, []);
+  });
+
   it('refuses a marker for another file', async t => {
     const s = setup(t);
     s.make.working.set(PROJECT_MARKER, Buffer.from(markerContent('OtherKey', REPO)));
