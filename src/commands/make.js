@@ -6,6 +6,8 @@ import { MakeClient } from '../make-client.js';
 import { decodeMakeSource } from '../make-source.js';
 import { requireSessionOnly } from '../make-session.js';
 import { driftExitCode, digest } from '../make-drift.js';
+import { buildStatus, checkWriteMode, linkedRepo, MODE_CODES, parseMarker, readGithub, recordLinkedRepo, repoName,
+  statusExitCode } from '../make-project.js';
 import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, planSync, validatePlanDigest, VENDOR_ROOT,
   writeApplyOutputs } from '../make-sync.js';
 
@@ -14,6 +16,7 @@ const make = program.command('make')
   .addHelpText('after', '\nAll Make commands accept --port PORT (global option). Use connection --save-port PORT to persist it.' +
     '\n\nReads (read, files, verify) see the open session\'s working copy. The original writes' +
     '\n(replace, create, import, remove) are session-only and require --session-only.' +
+    '\nEvery write refuses in team mode, and in ambiguous mode without --solo.' +
     '\nGit-mode write/delete use Make client VFS; save-version records a saved version.');
 
 function report(value) { console.log(JSON.stringify(value, null, 2)); }
@@ -23,7 +26,7 @@ function failure(error) {
     ...(error.backupPath ? { backupPath: error.backupPath } : {}),
     ...(error.version ? { version: error.version } : {}),
     ...(error.completedWrites ? { completedWrites: error.completedWrites } : {}),
-    ...(error.code === 'MAKE_SESSION_ONLY_REQUIRED' ? { code: error.code } : {}),
+    ...(error.code === 'MAKE_SESSION_ONLY_REQUIRED' || MODE_CODES.includes(error.code) ? { code: error.code } : {}),
     ...(error.sessionWrites ? { sessionWrites: error.sessionWrites, requestedPaths: error.requestedPaths, observedWrites: error.observedWrites } : {}) }));
   process.exitCode = 1;
 }
@@ -43,17 +46,27 @@ function target(command, timeoutDefault = 15000) {
   return command.requiredOption('--file <key-or-url>', 'Exact open Make file key or URL')
     .option('--timeout <ms>', 'Maximum operation time', timeout, timeoutDefault);
 }
+// Every Make write honours solo/team mode.
+function modeGated(command) {
+  return command.option('--solo', 'Write although a repo is known but Make holds no team marker (ambiguous mode)')
+    .option('--repo <owner/repo>', 'GitHub repo this Make file pushes to, if any; without a marker this makes the mode ambiguous', repoName);
+}
 // Make writes reach only the open session's working copy; refuse before
 // connecting unless the caller accepted that with --session-only.
 function sessionWrite(command) {
-  return target(command).option('--session-only', 'Accept that the write is lost when the file is reopened unless saved in Make');
+  return modeGated(target(command).option('--session-only', 'Accept that the write is lost when the file is reopened unless saved in Make'));
 }
 async function withClient(options, fn, write) {
   let client;
   try {
-    if (write) requireSessionOnly(write, options);
+    if (write && write !== 'mode') requireSessionOnly(write, options);
     client = new MakeClient({ timeoutMs: options.timeout });
     await client.connect(options.file);
+    if (write) {
+      const { warning, note } = await checkWriteMode(client, options);
+      if (warning) console.error(`warning: ${warning}`);
+      if (note) console.error(`note: ${note}`);
+    }
     await fn(client);
   } catch (error) { failure(error); }
   finally { client?.close(); }
@@ -159,22 +172,62 @@ target(make.command('drift').description('Read-only vendor inventory, manifest c
     process.exitCode = driftExitCode(result);
   }));
 
-target(make.command('write <path>').description('Write one git-mode Make file through Make client VFS; save-version is required to persist it'), 120000)
+target(make.command('status').description('Read-only project status: Make saved and working tree SHAs, solo/team mode and, with --repo, GitHub main'), 120000)
+  .option('--repo <owner/repo>', 'Compare with this GitHub repo through your gh login (GET requests only); records the link in ~/.figma-cli for the write gate', repoName)
+  .option('--json', 'Print the complete machine-readable result')
+  .addHelpText('after', '\nExit codes: 0 all read and nothing needs attention; 1 the status could not be read' +
+    '\n(Make or GitHub error); 2 read completely, with attention items listed.')
+  .action(options => withClient(options, async client => {
+    const make = await client.projectStatus();
+    const marker = parseMarker(make.markerBytes, client.fileKey);
+    let github;
+    let githubError;
+    if (options.repo) {
+      const trunk = marker.state === 'valid' && marker.repo === options.repo ? marker.trunk : 'main';
+      try { github = await readGithub(options.repo, { trunk }); }
+      catch (error) { githubError = error.message; }
+      if (github) recordLinkedRepo(client.fileKey, options.repo);
+    }
+    const linked = options.repo ? null : linkedRepo(client.fileKey);
+    const result = buildStatus({ fileKey: client.fileKey, make, marker, repo: options.repo, linked, github, githubError });
+    if (options.json) report(result);
+    else {
+      const m = result.make;
+      console.log(`Make ${result.fileKey}: ${m.mode || 'unknown'} mode, saved ${m.savedVersion || 'none'}, pending ${m.pendingCount ?? 'unknown'}`);
+      console.log(`Tree ${m.tree} (${m.treeSource}), working copy ${m.workingTree}, ${m.files} files, ${m.excluded.length} excluded (${m.excludeSource})`);
+      if (m.latestAiVersion) console.log(`Latest AI-turn version ${m.latestAiVersion.versionNumber} (${m.latestAiVersion.gitSha})${m.baselineFromAiTurn ? ', the saved baseline' : ''}`);
+      console.log(`Mode: ${result.mode.mode}${result.mode.repo ? ` (${result.mode.repo})` : ''}${result.mode.reason ? `: ${result.mode.reason}` : ''}`);
+      const g = result.github;
+      if (g?.error) console.log(`GitHub ${g.repo}: ${g.error}`);
+      else if (g) {
+        console.log(`GitHub ${g.repo} ${g.trunk} ${g.main.commit} tree ${g.main.tree}; default branch ${g.defaultBranch}`);
+        console.log(`Base: ${g.base ? `${g.base.tag} ${g.base.commit} tree ${g.base.tree}` : 'none (no make-deploy tag)'}`);
+        console.log(`Make vs ${g.trunk}: ${g.relation}${g.differingPaths?.length ? ` (${g.differingPaths.length} paths differ)` : ''}`);
+        console.log(`Unreviewed commits: ${g.unreviewed.length} of ${g.commitsChecked} checked${g.truncated ? ' (truncated)' : ''}`);
+        console.log(`Your permission: ${g.permission}${g.mayDeploy ? ' (may deploy)' : ''}`);
+        console.log(`Mirror: ${g.mirror.state}: ${g.mirror.reason}`);
+      }
+      for (const item of result.attention) console.log(`attention: ${item}`);
+    }
+    process.exitCode = statusExitCode(result);
+  }));
+
+modeGated(target(make.command('write <path>').description('Write one git-mode Make file through Make client VFS; save-version is required to persist it'), 120000)
   .requiredOption('--from <source>', 'Existing UTF-8 file, or - for stdin')
   .option('--expected-sha256 <hash>', 'Required for an existing file; omit for a new file')
   .option('--backup-dir <directory>', 'Private backup directory for replaced content')
   .action((path, options) => withClient(options, async client => report(await client.writeDurable(path, decodeMakeSource(sourceBytes(options.from)), {
     expectedSha256: options.expectedSha256, backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
-  }))));
+  })), 'mode')));
 
-target(make.command('delete <path>').description('Delete one git-mode Make file through Make client VFS after backup; save-version is required'), 120000)
+modeGated(target(make.command('delete <path>').description('Delete one git-mode Make file through Make client VFS after backup; save-version is required'), 120000)
   .requiredOption('--expected-sha256 <hash>', 'Current SHA-256 of the file to remove')
   .option('--backup-dir <directory>', 'Private backup directory')
   .action((path, options) => withClient(options, async client => report(await client.deleteDurable(path, {
     expectedSha256: options.expectedSha256, backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
-  }))));
+  })), 'mode')));
 
-target(make.command('save-version').description('Save only the exact expected pending git-mode paths using Make createVersion'), 120000)
+modeGated(target(make.command('save-version').description('Save only the exact expected pending git-mode paths using Make createVersion'), 120000)
   .requiredOption('--title <title>', 'Make version title')
   .requiredOption('--expected-path <path>', 'One pending path; repeat for every expected path', (path, paths = []) => [...paths, path])
   .option('--receipt-out <path>', 'Write version ID, git SHA and changed-file set to a new private JSON file')
@@ -201,7 +254,7 @@ target(make.command('save-version').description('Save only the exact expected pe
       throw new Error(`Make version was saved but the local receipt failed: ${error.message}`);
     }
     report(result);
-  }));
+  }, 'mode')));
 
 target(make.command('export-delta').description('Export a clean saved Make delta for atomic-cli intake-make-delta'), 120000)
   .requiredOption('--manifest <source>', 'Trusted VENDOR.json baseline')
@@ -221,7 +274,7 @@ target(make.command('export-delta').description('Export a clean saved Make delta
       files: delta.files.map(({ path, status, before, after, workspace, conflict }) => ({ path, status, before, after, workspace, conflict })) });
   }));
 
-target(make.command('sync').description('Plan or apply an explicit package-bound workspace-to-Make sync'), 120000)
+modeGated(target(make.command('sync').description('Plan or apply an explicit package-bound workspace-to-Make sync'), 120000)
   .requiredOption('--package <dir>', 'atomic-cli package-make-kit output directory')
   .requiredOption('--manifest <file>', 'Trusted VENDOR.json baseline')
   .requiredOption('--request <file>', 'Explicit sync request JSON')
@@ -282,4 +335,4 @@ target(make.command('sync').description('Plan or apply an explicit package-bound
       verification: 'saved-clean-drift-matched; fresh-sandbox-reload-pending' };
     const manifestPath = writeApplyOutputs(output, receipt, vendorBytes);
     report({ receiptPath: output, afterManifestPath: manifestPath, makeVersion: version, drift: { ok: drift.ok, counts: drift.counts, batches: drift.batches } });
-  }));
+  }, 'mode')));

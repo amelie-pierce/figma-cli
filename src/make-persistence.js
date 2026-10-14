@@ -50,3 +50,44 @@ export function makePersistenceState() {
   const unique = [...new Set(snapshots.map(state => JSON.stringify(state)))];
   return { state: unique.length === 1 ? snapshots[0] : { ambiguous: true, count: unique.length } };
 }
+
+// Serialized into the exact Make page. An AI turn saves a version that takes
+// every pending edit, so status reports the newest AI-turn version. Only the
+// version number and git SHA are read from each turn's metadata, never text.
+export function makeVersionHistory() {
+  let root;
+  for (const element of document.querySelectorAll('*')) {
+    const key = Object.keys(element).find(name => name.startsWith('__reactFiber$'));
+    if (!key) continue;
+    root = element[key];
+    while (root.return) root = root.return;
+    break;
+  }
+  if (!root) return null;
+  const fibers = [root];
+  const histories = new Set();
+  let generating = false;
+  let count = 0;
+  while (fibers.length) {
+    if (count++ >= 100000) return null;
+    const fiber = fibers.pop();
+    const props = fiber?.memoizedProps;
+    if (props && typeof props === 'object' && Object.hasOwn(props, 'messagesForVersionHistory')) {
+      if (Array.isArray(props.messagesForVersionHistory)) histories.add(props.messagesForVersionHistory);
+      if (props.generationInProgress === true) generating = true;
+    }
+    if (fiber?.sibling) fibers.push(fiber.sibling);
+    if (fiber?.child) fibers.push(fiber.child);
+  }
+  if (histories.size !== 1) return { ambiguous: histories.size > 1, generationInProgress: generating, aiTurns: null, latest: null };
+  let latest = null;
+  let aiTurns = 0;
+  for (const turn of [...histories][0]) {
+    const version = turn?.messagesMetadata?.makeVersion;
+    if (!version) continue;
+    if (!Number.isSafeInteger(version.versionNumber) || !/^[a-f0-9]{40}$/.test(version.gitSha || '')) continue;
+    aiTurns++;
+    if (!latest || version.versionNumber > latest.versionNumber) latest = { versionNumber: version.versionNumber, gitSha: version.gitSha };
+  }
+  return { ambiguous: false, generationInProgress: generating, aiTurns, latest };
+}

@@ -4,6 +4,7 @@ description: Why editor-based Make commands refuse deep files, and how read/repl
 date: 2026-10-13
 ---
 
+Updated 2026-10-14: the project root `code` may be listed (only listed) for [status.md](status.md); Make never answers a listing of a missing folder.
 Updated 2026-10-13: the bridge reaches the session's sandbox working copy, while the new git-mode durable path uses Make's client VFS; see [persistence.md](persistence.md).
 
 # Make file selection limits and the filesystem bridge

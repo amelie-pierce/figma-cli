@@ -112,7 +112,14 @@ For exact commands and safe in-memory examples, read
 
 ## Apply and verify
 
-1. Separate new paths from existing paths. For git-mode durable work, use
+1. Check the mode first with `make status --file KEY` (add `--repo OWNER/REPO`
+   when the user names the file's GitHub repo; this also records the link
+   locally so later writes see it). In **team** mode the file
+   deploys from GitHub `main`: do not write to Make; tell the user to start a
+   task in the repo. **Ambiguous** mode (a repo but no `.figma-cli/project.json`)
+   needs the user's explicit go-ahead before passing `--solo`. **Solo** files are
+   edited directly.
+   Separate new paths from existing paths. For git-mode durable work, use
    `write` with the prior SHA-256 for an existing file, omit it for a new file,
    and use `delete` with the prior SHA-256 for removals. Keep backup paths.
    Markdown files have no Make editor; their write is verified through the

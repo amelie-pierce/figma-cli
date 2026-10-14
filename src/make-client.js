@@ -10,9 +10,12 @@ import { captureMakeFileSocket } from './make-rpc.js';
 import { sessionOnly } from './make-session.js';
 import { makeWorkspace, openMakeFilesTab } from './make-workspace.js';
 import { makeUiSnapshot } from './make-ui.js';
-import { makePersistenceState } from './make-persistence.js';
+import { makePersistenceState, makeVersionHistory } from './make-persistence.js';
 import { compareVendor, digest, externalReceipt, sourcePath, vendorManifest, verifyGeneratedManifest } from './make-drift.js';
 import { makeDurablePageAction, requireGitMode, requireExactPending } from './make-durable.js';
+import { gitBlobSha, isIgnored, parseIgnore } from './git-tree.js';
+import { lfsMatcher, PROJECT_EXCLUDES, PROJECT_MARKER, treeOf, workingFlat } from './make-project.js';
+import { SandboxGit } from './sandbox-git.js';
 
 const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
 // How long a selected Markdown file may show no source editor before it is
@@ -463,8 +466,8 @@ export class MakeClient {
     });
   }
 
-  // Absence is proven by listing an existing ancestor folder, and the bridge
-  // cannot list the project root. Refuse before changing anything when the
+  // Absence is proven by listing an existing ancestor folder, never the project
+  // root (only make status lists it). Refuse before changing anything when the
   // nearest listable ancestor would be the root.
   async _requireListableAncestor(path, deadline) {
     const [top, ...rest] = path.split('/');
@@ -730,6 +733,175 @@ export class MakeClient {
       });
     }
     return { inventory, contents, state: baseline, batches: Math.ceil((seenDirectories.size + inventory.size) / batchSize) };
+  }
+
+  // Project-root inventory for the git tree hash. It lists every file under
+  // the Make project root, hidden ones included, minus what Make's sandbox git
+  // excludes: .git, the PROJECT_EXCLUDES baseline, .git/info/exclude (passed
+  // in as `exclude`) and each folder's .gitignore. As in git, a tracked path is
+  // kept even when an ignore rule matches it; the baseline always wins. An
+  // untracked node_modules folder is skipped. Excluded files are never read.
+  // Version/pending state is bracketed per batch, as for inventoryVendor.
+  async inventoryProject({ includeBytes = false, batchSize = 24, tracked = [], exclude = null } = {}) {
+    const keep = typeof includeBytes === 'function' ? includeBytes : () => includeBytes === true;
+    if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 64) throw new Error('Inventory batch size must be 1–64.');
+    const list = async (bridge, directory) => {
+      const remotePath = directory ? `code/${directory}` : 'code';
+      const reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
+        'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
+      ]);
+      if (reply?.success !== true || reply.data?.path !== remotePath || !Array.isArray(reply.data.files)) {
+        throw new Error(`Make directory listing is unavailable: ${directory || '(project root)'}`);
+      }
+      const names = new Set();
+      return reply.data.files.map(entry => {
+        const name = sourcePath(entry?.name);
+        if (name.includes('/') || entry.path !== name || names.has(name) ||
+            (entry.isFile === true) === (entry.isDirectory === true)) {
+          throw new Error(`Make directory listing is ambiguous: ${directory || '(project root)'}`);
+        }
+        // VS Code FileType.SymbolicLink; Make reports no link target to hash.
+        if (Number.isInteger(entry.type) && (entry.type & 64)) throw new Error(`Make symbolic links are unsupported: ${directory ? `${directory}/` : ''}${name}`);
+        names.add(name);
+        return { name, isDirectory: entry.isDirectory === true, size: entry.size };
+      });
+    };
+    const hard = parseIgnore(PROJECT_EXCLUDES.join('\n'));
+    const trackedFiles = new Set(tracked);
+    const trackedFolders = new Set([...trackedFiles].flatMap(path => path.split('/').slice(0, -1)
+      .map((_, i, parts) => parts.slice(0, i + 1).join('/'))));
+    const directories = [{ path: '', rules: exclude ? parseIgnore(exclude.toString('utf8')) : [], ignored: false }];
+    const files = [];
+    const seenDirectories = new Set();
+    const inventory = new Map();
+    const contents = new Map();
+    const excluded = [];
+    let baseline;
+    while (directories.length || files.length) {
+      await this._operation(async deadline => {
+        const state = (await this._driftState(deadline)).state;
+        if (baseline !== undefined && JSON.stringify(state) !== JSON.stringify(baseline)) throw new Error('Make state changed during inventory.');
+        if (baseline === undefined) baseline = state;
+        const bridge = await this._fileBridge(deadline);
+        try {
+          let count = 0;
+          while (count < batchSize && (directories.length || files.length)) {
+            if (directories.length) {
+              const { path: directory, rules: inherited, ignored: inIgnored } = directories.shift();
+              if (seenDirectories.has(directory)) throw new Error(`Make directory was listed twice: ${directory}`);
+              seenDirectories.add(directory);
+              const entries = await list(bridge, directory);
+              let rules = inherited;
+              const join = name => directory ? `${directory}/${name}` : name;
+              const ignoreFile = entries.find(entry => entry.name === '.gitignore' && !entry.isDirectory);
+              if (ignoreFile && !isIgnored(rules, join('.gitignore'), false)) {
+                rules = [...rules, ...parseIgnore((await this._bridgeReadBytes(bridge, join('.gitignore'))).toString('utf8'), directory)];
+              }
+              for (const entry of entries) {
+                const path = join(entry.name);
+                const ignored = inIgnored || isIgnored(rules, path, entry.isDirectory);
+                const untrackedModules = entry.isDirectory && entry.name === 'node_modules';
+                const keepTracked = entry.isDirectory ? trackedFolders.has(path) : trackedFiles.has(path);
+                if ((!directory && entry.name === '.git') || isIgnored(hard, path, entry.isDirectory) ||
+                    ((ignored || untrackedModules) && !keepTracked)) {
+                  excluded.push(entry.isDirectory ? `${path}/` : path);
+                  continue;
+                }
+                if (entry.isDirectory) directories.push({ path, rules, ignored });
+                else files.push({ path, size: entry.size });
+              }
+            } else {
+              const { path, size } = files.shift();
+              if (inventory.has(path)) throw new Error(`Duplicate Make file: ${path}`);
+              const bytes = await this._bridgeReadBytes(bridge, path);
+              if (Number.isSafeInteger(size) && bytes.length !== size) throw new Error(`Make file changed during inventory: ${path}`);
+              inventory.set(path, { path, bytes: bytes.length, sha256: digest(bytes), blob: gitBlobSha(bytes) });
+              if (keep(path)) contents.set(path, bytes);
+            }
+            if (seenDirectories.size + inventory.size + directories.length + files.length > this.maxEntries) {
+              throw new Error('Make project inventory exceeds the entry limit.');
+            }
+            count++;
+          }
+        } finally { await bridge.dispose(); }
+        const after = (await this._driftState(deadline)).state;
+        if (JSON.stringify(after) !== JSON.stringify(baseline)) throw new Error('Make state changed during inventory.');
+      });
+    }
+    return { inventory, contents, state: baseline, excluded: excluded.sort(), excludeSource: exclude ? '.git/info/exclude' : 'baseline-only',
+      batches: Math.ceil((seenDirectories.size + inventory.size) / batchSize) };
+  }
+
+  // Read-only inputs for `make status`: the saved version's own tree from the
+  // sandbox git objects (exact file modes), the project inventory with that
+  // tree's paths kept as tracked, the working-copy tree, the marker and the
+  // AI-turn version history.
+  async projectStatus() {
+    const git = await this._operation(async deadline => {
+      const state = (await this._driftState(deadline)).state;
+      const history = await this._evaluate(`(${makeVersionHistory.toString()})()`, deadline);
+      const bridge = await this._fileBridge(deadline);
+      try {
+        // Make never answers a listing of a missing folder, so each folder is
+        // listed only after its parent shows it. '' is .git itself, which the
+        // root listing omits, so its absence cannot be proven: any failed
+        // listing fails the status.
+        const listings = new Map();
+        const listDir = async path => {
+          if (!listings.has(path)) {
+            let names = null;
+            const slash = path.lastIndexOf('/');
+            if (!path || (await listDir(slash < 0 ? '' : path.slice(0, slash)))?.includes(path.slice(slash + 1))) {
+              const remotePath = path ? `code/.git/${path}` : 'code/.git';
+              let reply;
+              try {
+                reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
+                  'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
+                ]);
+              } catch (error) { throw new Error(`Make sandbox git is unavailable: ${remotePath}: ${error.message}`); }
+              if (reply?.success !== true || reply.data?.path !== remotePath || !Array.isArray(reply.data.files)) {
+                throw new Error(`Make sandbox git is unavailable: ${remotePath} could not be listed.`);
+              }
+              names = reply.data.files.map(entry => entry.name);
+            }
+            listings.set(path, names);
+          }
+          return listings.get(path);
+        };
+        const readFile = async path => {
+          const slash = path.lastIndexOf('/');
+          const names = await listDir(slash < 0 ? '' : path.slice(0, slash));
+          return names?.includes(path.slice(slash + 1)) ? this._bridgeReadBytes(bridge, `.git/${path}`) : null;
+        };
+        const reader = new SandboxGit({ readFile, listDir });
+        const head = await reader.head();
+        const saved = state?.hasBaseline && /^[a-f0-9]{40}$/.test(state.savedVersion || '') ? state.savedVersion : null;
+        const tree = await reader.commitTree(saved || head);
+        const flat = await reader.flatten(tree);
+        const exclude = await readFile('info/exclude');
+        const after = (await this._driftState(deadline)).state;
+        if (JSON.stringify(after) !== JSON.stringify(state)) throw new Error('Make state changed while reading its git objects.');
+        return { state, history, head, tree, flat, treeSource: saved ? 'saved-version' : 'sandbox-head', exclude };
+      } finally { await bridge.dispose(); }
+    });
+    const scan = await this.inventoryProject({ includeBytes: path => path === PROJECT_MARKER || path === '.gitattributes',
+      tracked: [...git.flat.keys()], exclude: git.exclude });
+    if (JSON.stringify(scan.state) !== JSON.stringify(git.state)) throw new Error('Make state changed during inventory.');
+    const isLfs = lfsMatcher(scan.contents.get('.gitattributes')?.toString('utf8'));
+    const working = workingFlat(scan.inventory, git.flat);
+    const lfsPaths = [...new Set([...scan.inventory.keys(), ...git.flat.keys()])].filter(isLfs).sort();
+    return { persistence: scan.state, history: git.history, head: git.head, makeTree: git.tree, treeSource: git.treeSource,
+      makeFlat: git.flat, workingFlat: working, workingTree: treeOf(working), fileCount: scan.inventory.size,
+      excluded: scan.excluded, excludeSource: scan.excludeSource, lfsPaths, isLfs,
+      markerBytes: scan.contents.get(PROJECT_MARKER) ?? null, batches: scan.batches };
+  }
+
+  // The team-mode marker as Make's client VFS holds it, for the write gate.
+  projectMarker() {
+    return this._operation(async deadline => {
+      const entry = await this._durable({ type: 'read', path: PROJECT_MARKER }, deadline);
+      return entry.exists ? Buffer.from(entry.content, 'utf8') : null;
+    });
   }
 
   async drift(manifestBytes, { root = 'src/vendor/atomic-aui', receiptBytes } = {}) {

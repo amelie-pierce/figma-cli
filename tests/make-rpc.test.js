@@ -48,6 +48,19 @@ test('rejects uncaptured sockets, unsafe paths, unsupported methods and project 
   } finally { bridge.dispose(); }
 });
 
+test('the project root may be listed but never read, written or deleted', () => {
+  const { bridge, socket } = setup();
+  try {
+    socket.send(JSON.stringify({ type: 'fs/file/read', data: { path: 'code/package.json', workspaceId: 'workspace' } }));
+    for (const type of ['fs/file/read', 'fs/file/write', 'fs/file/delete']) {
+      assert.throws(() => bridge.request(type, { path: 'code' }, 'a'), /Invalid/, type);
+    }
+    assert.throws(() => bridge.request('fs/dir/list', { path: 'code/' }, 'a'), /Invalid/);
+    bridge.request('fs/dir/list', { path: 'code', includeHidden: true }, 'root').catch(() => {});
+    assert.equal(socket.sent.at(-1).data.path, 'code');
+  } finally { bridge.dispose(); }
+});
+
 test('disposal restores the hook and rejects pending work instead of retrying', async () => {
   const { bridge, socket, Socket } = setup();
   socket.send(JSON.stringify({ type: 'fs/file/read', data: { path: 'code/package.json', workspaceId: 'workspace' } }));

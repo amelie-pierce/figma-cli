@@ -20,6 +20,7 @@ These examples are templates; choose paths/content for the actual requested work
 | Delete source through Make VFS (git mode) | `figma-cli make delete src/Old.ts --file KEY --expected-sha256 HASH` |
 | Save exact pending files as a Make version (git mode) | `figma-cli make save-version --file KEY --title "Reviewed edit" --expected-path src/App.tsx --expected-path src/New.ts --receipt-out receipt.json` |
 | Verify expected session content | `figma-cli make verify --file KEY --manifest - --timeout 120000` |
+| Read project status: tree SHAs, solo/team mode, GitHub main, unreviewed commits, Push safety | `figma-cli make status --file KEY [--repo OWNER/REPO] --json` |
 | Check vendor drift and saved state, including hidden files | `figma-cli make drift --file KEY --manifest VENDOR.json --json` |
 | Export a clean Make component delta for workspace intake | `figma-cli make export-delta --file KEY --manifest VENDOR.json --who NAME --candidate-dir candidates --out delta.json [--dependency PATH]` |
 | Review an explicit workspace package sync | `figma-cli make sync --file KEY --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --plan-out plan.json` |
@@ -47,6 +48,13 @@ creates a Make version and confirms a clean pending state. Root `AGENTS.md` and
 the result's `unlistedFiles` records their post-save hashes. Snapshot mode is
 refused. After an uncertain result, inspect state before retrying. Reload the
 exact Make tab and compare hashes plus `make drift` to prove persistence.
+Every write, the session-only `replace`, `create`, `import` and `remove`
+included, first reads `.figma-cli/project.json`. In team mode it refuses
+(`MAKE_TEAM_MODE`): the file deploys from its repo, so tell the user to start a
+task there instead of editing Make. When a repo is known (`--repo`, or a link
+recorded locally by a prior `make status --repo`) and there is no marker, the
+mode is ambiguous and writes refuse unless the user confirms `--solo`.
+Run `make status` (exit 0 clean, 1 unreadable, 2 attention) to see the mode first.
 `make sync` enforces this sequence for explicitly scoped workspace changes;
 its plan and receipt stay outside the Make source tree. See the
 [sync contract](../../../REFERENCE.md#make-delta-and-sync) for request
