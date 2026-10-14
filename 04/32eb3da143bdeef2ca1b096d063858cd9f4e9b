@@ -1,0 +1,23 @@
+README.md
+  s_33e7ed4c03c606::t_c0ae0c6cf2c44c 305
+src/make-client.js
+  s_33e7ed4c03c606::t_56157de4d19b29 469-470
+_vaults/figma-cli/wiki/make/status.md
+  s_33e7ed4c03c606::t_82f54041df4237 13,15,20,29,42,47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0432eb3da143bdeef2ca1b096d063858cd9f4e9b",
+  "prompts": {},
+  "sessions": {
+    "s_33e7ed4c03c606": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec2c9681-2e16-4991-9d9e-8953cee91134",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
