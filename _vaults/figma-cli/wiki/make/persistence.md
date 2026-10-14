@@ -27,7 +27,7 @@ The 2026-10-13 scratch test saved version 3. After the exact scratch tab reprovi
 
 Make shows Markdown as a preview, with no source editor (`editorCount` stays 0). The read-back used to wait for an editor read that never came, so `make write` on a `.md` path stalled until its timeout. `_read` now takes `editorWaitMs` and throws `MAKE_NO_EDITOR` when no editor appears in that window (`src/make-client.js:300`, window `EDITOR_WAIT_MS` at `src/make-client.js:20`). For `.md` paths only, `_durableAgreement` then accepts client VFS, sandbox and rendered-tree agreement as the proof, `tree-vfs-sandbox-matched`. Every other path waits for its editor until the deadline and must match through it; a slow or missing editor is a failure, never this fallback (`src/make-client.js:522`). At the deadline the error names the last state of each view instead of a bare timeout.
 
-New-file absence is proven by listing the nearest existing ancestor through the bridge, and the bridge guard refuses `code` itself (`src/make-rpc.js:113`). A new file directly under the root or in a new top-level folder is therefore refused before any change (`src/make-client.js:469`). Hidden top-level folders are not in the rendered tree and are still attempted.
+New-file absence is proven by listing the nearest existing ancestor through the bridge. The bridge lets `code` itself only be listed, for [status.md](status.md) (`src/make-rpc.js:113`), and the write path never lists it. A new file directly under the root or in a new top-level folder is therefore refused before any change (`src/make-client.js:469`). Hidden top-level folders are not in the rendered tree and are still attempted.
 
 ## Root files Make does not list as pending
 

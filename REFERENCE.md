@@ -84,6 +84,7 @@ figma-cli make create src/Component.tsx --file <make-file-key> --from - --sessio
 figma-cli make import --file <make-file-key> --manifest - --timeout 120000 --session-only
 figma-cli make verify --file <make-file-key> --manifest - --timeout 120000
 figma-cli make drift --file <make-file-key> --manifest VENDOR.json --timeout 120000 --json
+figma-cli make status --file <make-file-key> --repo <owner/repo> --json
 figma-cli make export-delta --file <make-file-key> --manifest VENDOR.json --who engineer --candidate-dir candidates --out delta.json
 figma-cli make sync --file <make-file-key> --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --plan-out plan.json
 figma-cli make sync --file <make-file-key> --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --apply plan.json --receipt-out receipt.json
@@ -125,9 +126,9 @@ pending write. Make shows Markdown as a preview without an editor; when a `.md`
 file shows no editor within a few seconds, the client VFS, sandbox and tree
 must agree instead (`verification: "tree-vfs-sandbox-matched"`). Every other file still needs its editor to match.
 If the views still disagree at the timeout, the error names each view's state.
-A new file must sit below an existing top-level folder: the filesystem bridge
-cannot list the project root, so absence there cannot be proven and the write is
-refused before anything changes. Snapshot-mode files are refused. A pending
+A new file must sit below an existing top-level folder: the write proves
+absence by listing an existing ancestor folder, never the project root, so a
+root-level write is refused before anything changes. Snapshot-mode files are refused. A pending
 write is not saved.
 
 `make save-version --title TITLE --expected-path PATH ...` calls Make's own
@@ -168,6 +169,65 @@ Each renderer inventory batch is bounded to 24 directory/file calls; the saved
 version and pending set are checked across batches. When present,
 `tokens/generated.manifest.json` is parsed and checked against the exact
 generated tree, including `.generated` and `splash-bootstrap.js`.
+
+### Make project status and solo/team mode
+
+`make status --file KEY [--repo OWNER/REPO] [--json]` is read-only for Figma and
+GitHub. It reports:
+
+- **Make:** saving mode, saved version, pending count and paths, the git **tree
+  SHA** of the saved version, and the tree SHA of the working copy.
+  - The saved tree is read from the version's own commit in the sandbox's
+    `.git` objects (loose or packed), so file modes are exact. Make commits
+    template files as `100755` and later edits as `100644`.
+  - The working tree re-hashes every file under the project root, hidden ones
+    included. A file whose blob equals the saved tree keeps that mode; any
+    other file takes `100644`.
+  - Excluded, never read: `.git`, `.npmrc`, `.figma/design-context/`,
+    `node_modules/`, `dist/`, the sandbox's `.git/info/exclude` (read at run
+    time) and each folder's `.gitignore`.
+  - Without a saved version, the sandbox HEAD's tree is used (`treeSource:
+    "sandbox-head"`).
+  - The newest AI-turn version, since an AI turn saves every pending edit.
+- **Mode**, from the committed `.figma-cli/project.json` in Make's working copy
+  (`{"fileKey", "repo", "trunk"?}`):
+  - `team`: the marker names this file;
+  - `ambiguous`: no marker, but `--repo` names a repository (Make exposes no
+    readable GitHub link);
+  - `solo`: neither;
+  - `invalid`: the marker is unreadable or names another file.
+- **With `--repo`**, through your own `gh` login (GET requests only):
+  - `main`'s commit and tree, and the latest `make-deploy/<n>` tag with its
+    receipt base (`mainTree` from the tag's JSON receipt, else the tagged
+    commit's tree);
+  - `relation`: `in-sync`, `make-ahead`, `git-ahead`, `diverged`, or `no-base`
+    when there is no tag, plus the differing paths;
+  - `unreviewed`: commits on `main` since the base (all history without one, up
+    to 100) that did not come from a merged PR into `main`; `fromMake` marks
+    `figma[bot]` Push commits;
+  - `permission` (`admin` … `none`); only `admin` may deploy;
+  - `mirror`: whether Make's Push, which sends the working copy, would overwrite
+    commits not made by Make (`safe`, `unsafe` or `unknown`). A default branch
+    other than `main` is flagged.
+  - Paths that root `.gitattributes` routes through LFS are compared outside the
+    tree join: Make stores the pointer, Push sends the raw bytes.
+
+Exit status: `0` when everything was read and nothing needs attention, `1` when
+Make or GitHub could not be read, `2` when the read completed with `attention`
+items (pending changes, no baseline, ambiguous mode, any relation other than
+`in-sync`, unreviewed commits, an unsafe mirror, and so on).
+
+**Write gate.** `make write`, `delete`, `save-version` and `sync` read the
+marker through Make's client VFS before doing anything:
+
+- team mode refuses with `code: "MAKE_TEAM_MODE"` ("this file deploys from
+  <repo>; say start a task"), even with `--solo`;
+- an unreadable or mismatched marker refuses with `MAKE_MARKER_INVALID`;
+- `--repo OWNER/REPO` without a marker makes the mode ambiguous, which refuses
+  with `MAKE_MODE_AMBIGUOUS` unless `--solo` is passed (then it warns);
+- solo mode writes as before.
+
+The session-only commands (`replace`, `create`, `import`, `remove`) are not gated.
 
 ### Make delta and sync
 

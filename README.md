@@ -296,6 +296,15 @@ are not traversed. Large trees are read in bounded renderer batches, with the
 saved version checked at every boundary. When present, `tokens/generated.manifest.json`
 must describe the exact generated tree, including hidden files.
 
+`make status --file KEY [--repo OWNER/REPO]` is read-only. It reports Make's
+saved and working-copy git tree SHAs (exact file modes, read from the sandbox's
+own git objects), solo or team mode from a committed `.figma-cli/project.json`
+and, with `--repo`, how Make compares with GitHub `main`: the latest
+`make-deploy/<n>` base, commits that did not come from a merged PR, your repo
+permission, and whether Make's Push would overwrite other commits. In team mode
+`make write`, `delete`, `save-version` and `sync` refuse. See
+[status and modes](REFERENCE.md#make-project-status-and-soloteam-mode).
+
 `make export-delta` writes an explicit saved-version Make delta for workspace
 `atomic-cli intake-make-delta --from`. `make sync` accepts a committed
 `package-make-kit` artifact, a trusted VENDOR.json baseline and a recorded
