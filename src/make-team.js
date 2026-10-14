@@ -205,7 +205,7 @@ export function pushBranch(ctx, branch, { lease, setUpstream = false, deleteRemo
     if (refused) {
       const reason = text.split('\n').map(line => line.trim()).find(line => /^remote:\s*error:/i.test(line))?.replace(/^remote:\s*/i, '') || refused[0];
       fail(`GitHub refused the push to ${branch}: ${reason}. Nothing was pushed. This is a rule on GitHub (for example secret scanning ` +
-        'or a repository rule), not newer work; fix what it names, then save again.', 'TEAM_PUSH_BLOCKED');
+        'or a repository rule), not newer work.', 'TEAM_PUSH_BLOCKED', { reason });
     }
     if (/stale info|non-fast-forward|fetch first/.test(text)) {
       fail(`GitHub has newer changes on ${branch} than this computer (another computer of yours, or someone else, saved to it), so nothing was pushed. ` +
@@ -419,6 +419,25 @@ function commitLocal(ctx, { message } = {}) {
   return { branch, changes, commit, ran, warnings };
 }
 
+// A push GitHub refuses by rule would be refused again while the flagged
+// content sits in an unsent commit, so the caller's unsent commits are undone
+// with reset --soft (back to GitHub's copy of the branch, or to where it left
+// main when that is newer), keeping every change in the files. Nothing GitHub has is rewritten.
+function pushSaves(ctx, branch, options) {
+  try { pushBranch(ctx, branch, options); }
+  catch (error) {
+    if (error.code !== 'TEAM_PUSH_BLOCKED') throw error;
+    const remote = remoteBranchSha(ctx, branch);
+    const fromMain = ctx.tryGit(['merge-base', 'HEAD', ORIGIN_TRUNK]).stdout.trim();
+    const isAncestor = (a, b) => ctx.tryGit(['merge-base', '--is-ancestor', a, b]).status === 0;
+    const base = remote && isAncestor(remote, 'HEAD') && (!fromMain || isAncestor(fromMain, remote)) ? remote : fromMain;
+    if (base && base !== revOf(ctx, 'HEAD')) ctx.git(['reset', '--soft', '--quiet', base], 'Undoing the saves GitHub refused');
+    error.message = `GitHub flagged something in your changes and refused them: ${error.reason}. Nothing was sent, and your unsent saves ` +
+      `on ${branch} were undone so the flagged content is in no save; every change is still in your files. Remove what GitHub flagged, then save again.`;
+    throw error;
+  }
+}
+
 // Save: commit, then a plain push. Newer work on GitHub is never overwritten;
 // sync is the way to bring it in.
 export function save(ctx, { message } = {}) {
@@ -427,7 +446,7 @@ export function save(ctx, { message } = {}) {
   const head = revOf(ctx, 'HEAD');
   let pushed = false;
   if (remote !== head) {
-    pushBranch(ctx, branch, { setUpstream: true });
+    pushSaves(ctx, branch, { setUpstream: true });
     pushed = true;
   }
   const summary = commit
@@ -475,7 +494,8 @@ export function start(ctx, name, { saveFirst = false } = {}) {
   if (carry) {
     try { saved = save(ctx); }
     catch (error) {
-      error.message = `Started ${branch} and sent it to GitHub, but your changes are still unsaved on it. ${error.message}`;
+      const where = listChanges(ctx).length ? 'your changes are still unsaved on it' : 'your changes are saved on this computer only, not yet on GitHub';
+      error.message = `Started ${branch} and sent it to GitHub, but ${where}. ${error.message}`;
       throw error;
     }
   }
@@ -631,7 +651,7 @@ export function sync(ctx, { message } = {}) {
   const result = rebaseOnto(ctx, remoteMain, TRUNK);
   const head = revOf(ctx, 'HEAD');
   let pushed = false;
-  if (head !== own.lease) { pushBranch(ctx, branch, { lease: own.lease || undefined, setUpstream: true }); pushed = true; }
+  if (head !== own.lease) { pushSaves(ctx, branch, { lease: own.lease || undefined, setUpstream: true }); pushed = true; }
   const notes = [...own.autoResolved, ...result.autoResolved].map(r => `${r.path}: ${r.how}`);
   const brought = [own.rebased ? 'your newer saves from GitHub' : null, result.rebased ? `the latest ${TRUNK}` : null].filter(Boolean);
   return { verb: 'sync', branch, [TRUNK]: remoteMain, saved: !!local.commit, broughtInOwn: own.rebased, broughtIn: result.rebased, pushed,

@@ -421,20 +421,51 @@ describe('team sync and conflicts', () => {
     assert.equal(sh(p.clone, 'rev-list', '--count', `${mainSha}..HEAD`), '2');
     assert.equal(p.originSha('main'), mainSha);
   });
-  it('reports a push GitHub refuses by rule with GitHub\'s own reason', t => {
+  function protect(p) {
+    const hook = join(p.origin, 'hooks', 'pre-receive');
+    writeFileSync(hook, '#!/bin/sh\nwhile read old new ref; do\n  if [ "$old" = 0000000000000000000000000000000000000000 ]; then range="$new --not --all"; else range="$old..$new"; fi\n' +
+      '  if git log --format= --name-only $range | grep -qx leak.txt; then echo "error: GH013: Push cannot contain secrets (leak.txt)" >&2; exit 1; fi\ndone\n');
+    chmodSync(hook, 0o755);
+  }
+  it('undoes unsent saves GitHub refuses by rule, so removing the flagged file and saving again works', t => {
     const p = project(t);
     const f = fakes(p);
     start(f.ctx(), 'x');
-    const hook = join(p.origin, 'hooks', 'pre-receive');
-    writeFileSync(hook, '#!/bin/sh\necho "error: GH013: Repository rule violations found for refs/heads/alice/x." >&2\nexit 1\n');
-    chmodSync(hook, 0o755);
-    write(p.clone, { 'a.txt': 'a' });
+    const pushed = p.originSha('refs/heads/alice/x');
+    protect(p);
+    write(p.clone, { 'a.txt': 'a', 'leak.txt': 'sk_live_x' });
     assert.throws(() => save(f.ctx()), error => {
       assert.equal(error.code, 'TEAM_PUSH_BLOCKED');
-      assert.match(error.message, /GitHub refused the push to alice\/x: error: GH013: Repository rule violations found/);
+      assert.match(error.message, /GH013: Push cannot contain secrets \(leak\.txt\)/);
+      assert.match(error.message, /Remove what GitHub flagged, then save again/);
       assert.doesNotMatch(error.message, /get the latest/);
       return true;
     });
+    assert.equal(sh(p.clone, 'rev-parse', 'HEAD'), pushed);
+    assert.equal(p.originSha('refs/heads/alice/x'), pushed);
+    assert.deepEqual(sh(p.clone, 'status', '--porcelain').split('\n').map(l => l.slice(3)).sort(), ['a.txt', 'leak.txt']);
+    write(p.clone, { 'leak.txt': null });
+    save(f.ctx());
+    assert.equal(p.originSha('refs/heads/alice/x'), sh(p.clone, 'rev-parse', 'HEAD'));
+    assert.equal(sh(p.clone, 'show', 'origin/alice/x:a.txt'), 'a');
+  });
+  it('undoes only the caller\'s own unsent commits when a sync push is refused by rule', t => {
+    const p = project(t);
+    const f = fakes(p);
+    start(f.ctx(), 'x');
+    const pushed = p.originSha('refs/heads/alice/x');
+    protect(p);
+    write(p.clone, { 'a.txt': 'a', 'leak.txt': 'sk_live_x' });
+    const mainSha = p.land({ 'src/B.tsx': 'b\n' });
+    code(() => sync(f.ctx()), 'TEAM_PUSH_BLOCKED');
+    assert.equal(sh(p.clone, 'rev-parse', 'HEAD'), mainSha, 'back to main, not to the old branch tip');
+    assert.equal(p.originSha('refs/heads/alice/x'), pushed);
+    assert.equal(p.originSha('main'), mainSha);
+    assert.deepEqual(sh(p.clone, 'status', '--porcelain').split('\n').map(l => l.slice(3)).sort(), ['a.txt', 'leak.txt']);
+    write(p.clone, { 'leak.txt': null });
+    sync(f.ctx());
+    assert.equal(p.originSha('refs/heads/alice/x'), sh(p.clone, 'rev-parse', 'HEAD'));
+    assert.equal(sh(p.clone, 'rev-parse', 'HEAD^'), mainSha);
   });
   it('stops on a real conflict, leaves the branch untouched and names the other PR and author', t => {
     const p = project(t);

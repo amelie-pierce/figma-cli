@@ -387,7 +387,8 @@ convention, not a server-side guarantee.
   saves your own branch first, or carries changes made on `main` onto the new
   branch, running the secret, large-file, format and build checks before
   anything is created; if the save still fails after the branch exists, the
-  error says the branch was started and the changes are unsaved on it), fetches `main`, refuses local commits on `main` (`TEAM_MAIN_AHEAD`)
+  error says the branch was started and whether the changes are still unsaved
+  or saved on this computer only), fetches `main`, refuses local commits on `main` (`TEAM_MAIN_AHEAD`)
   and an existing branch (`TEAM_BRANCH_EXISTS`), creates `<login>/<slug>` from
   `origin/main`, fast-forwards the local `main` ref and pushes the branch with
   upstream. It lists the `areas` owners.
@@ -404,7 +405,12 @@ convention, not a server-side guarantee.
   `non-fast-forward` and `fetch first`; the commit stays local and `team sync`
   brings that work in). A push GitHub's server refuses (`[remote rejected]`:
   push protection, pre-receive hooks, rulesets) is `TEAM_PUSH_BLOCKED` with
-  GitHub's own `remote: error:` line.
+  GitHub's own `remote: error:` line. Because the flagged content would stay in
+  an unsent commit, `save` and `sync` then undo your unsent commits with
+  `git reset --soft` (back to GitHub's copy of your branch, or to where the
+  branch left `main` when that is newer, as after a sync), keeping every change in
+  the files; nothing GitHub already has, `main` or anyone else's branch is
+  touched. Remove what GitHub flagged and save again.
 - `team sync` commits locally (the same checks as `save`, no push), fetches
   your branch from GitHub and rebases local commits onto any newer saves there
   (commits already present in rewritten form, after an earlier sync whose push
