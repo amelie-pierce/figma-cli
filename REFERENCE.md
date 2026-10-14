@@ -92,6 +92,8 @@ figma-cli make write src/App.tsx --file <make-file-key> --from - --expected-sha2
 figma-cli make write src/New.ts --file <make-file-key> --from -
 figma-cli make delete src/Old.ts --file <make-file-key> --expected-sha256 <hash-from-read>
 figma-cli make save-version --file <make-file-key> --title "Reviewed edit" --expected-path src/App.tsx --expected-path src/New.ts --receipt-out receipt.json
+figma-cli make write src/New.ts --file <make-file-key> --from - --first-version
+figma-cli make save-version --file <make-file-key> --first-version --since <head-from-status> --title "First version" --expected-path src/New.ts --receipt-out receipt.json
 figma-cli make preview --file <make-file-key>
 ```
 
@@ -143,6 +145,28 @@ without being listed: their client VFS and sandbox bytes must agree before the
 save and read back unchanged after it, and the result lists them under
 `unlistedFiles` with SHA-256. Any other expected path must be pending, and an
 unexpected pending path is still refused.
+
+**First version.** A git-mode file that has never been saved (`make status`
+reports `hasBaseline: false`) has nothing to diff against. Make lists no pending
+files without a baseline, and its sandbox commits every write to its own git
+`main`, so the sandbox HEAD does not show the change either. `write`, `delete`
+and `save-version` refuse such a file unless `--first-version` is passed, and
+refuse the flag once the file has a saved version. To create the first version:
+
+1. Run `make status` and note `make.head`, the sandbox commit before your writes.
+2. Write with `make write … --first-version` (or `make delete … --first-version`).
+3. Run `make save-version --first-version --since <that head> --expected-path …`.
+
+The CLI checks that `--since` is in the sandbox HEAD's history and that the
+expected paths equal exactly the paths that differ between that commit's tree
+and the working copy. It rechecks Make's state and the sandbox HEAD, then calls
+`createVersion`. Finally it waits until Make reports the new baseline with no
+pending changes, and checks that the saved version's tree equals the working
+tree it checked. The result has `firstVersion: true`, `previousGitSha: null`,
+`since`, `tree` and `verification: "first-version-clean-baseline; saved-tree-matched"`.
+Root `AGENTS.md` and `CLAUDE.md` get no exception here: they appear in that
+difference like any other path. After the first version, use the commands
+without the flag.
 If the version is created but the clean baseline is not observed, the error
 reports the version ID, number and git SHA, and `--receipt-out` is still
 written; do not retry the save.

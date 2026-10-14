@@ -132,7 +132,12 @@ For exact commands and safe in-memory examples, read
 3. For durable work, call `save-version` with the exact pending path set and
    record its version ID and git SHA. Include root `AGENTS.md` or `CLAUDE.md`
    when you changed them: Make does not list them as pending, so the result
-   reports them under `unlistedFiles` after a post-save read. Verify the expected final source with
+   reports them under `unlistedFiles` after a post-save read. A git-mode file
+   that has never been saved (`make status`: `hasBaseline: false`) needs
+   `--first-version`: note `make.head` from `make status` before writing, pass
+   `--first-version` to `write`, then `save-version --first-version --since HEAD`
+   with every path that changed since that commit. The flag is refused once the
+   file has a version. Verify the expected final source with
    `make verify --manifest -`. Compare only
    files in scope; retain genuine vendor files byte-for-byte when unmodified.
    This verifies the working copy. For a saved version, reload the exact Make

@@ -167,6 +167,25 @@ export class SandboxGit {
     return out;
   }
 
+  // Whether ancestor is head itself or reachable through its parents. A missing
+  // object fails closed through object().
+  async reaches(head, ancestor, limit = 5000) {
+    const queue = [head];
+    const seen = new Set();
+    while (queue.length) {
+      const sha = queue.shift();
+      if (sha === ancestor) return true;
+      if (seen.has(sha)) continue;
+      seen.add(sha);
+      if (seen.size > limit) throw new Error('Make sandbox history exceeds the ancestry limit.');
+      const { type, content } = await this.object(sha);
+      if (type !== 'commit') throw new Error(`Make sandbox object ${sha} is not a commit.`);
+      const header = content.toString('utf8').split('\n\n')[0];
+      for (const match of header.matchAll(/^parent ([a-f0-9]{40})$/gm)) queue.push(match[1]);
+    }
+    return false;
+  }
+
   // HEAD's commit SHA, through a loose ref or packed-refs.
   async head() {
     const head = (await this.readFile('HEAD'))?.toString('utf8').trim();

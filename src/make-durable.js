@@ -1,3 +1,5 @@
+import { differingPaths } from './make-project.js';
+
 // Serialized into the selected Make page. Only Make's own client VFS and
 // createVersion are called; no service endpoint or page-global credential is used.
 export async function makeDurablePageAction(action) {
@@ -39,9 +41,13 @@ export async function makeDurablePageAction(action) {
   if (action.type === 'save') {
     const unique = [...new Set(pendingStates.map(state => JSON.stringify(state)))];
     const current = pendingStates[0];
-    if (unique.length !== 1 || !current?.git || !current.hasBaseline || current.loading || current.error ||
-        current.baseline !== action.expectedGitSha || !Array.isArray(current.paths) ||
-        JSON.stringify(current.paths) !== JSON.stringify([...action.expectedPaths].sort())) {
+    // Without a baseline Make lists no pending files; the caller compared the
+    // working copy with the sandbox HEAD instead.
+    const expected = action.firstVersion
+      ? !current?.hasBaseline && current?.baseline == null && Array.isArray(current?.paths) && current.paths.length === 0
+      : current?.hasBaseline && current.baseline === action.expectedGitSha && Array.isArray(current.paths) &&
+        JSON.stringify(current.paths) === JSON.stringify([...action.expectedPaths].sort());
+    if (unique.length !== 1 || !current?.git || current.loading || current.error || !expected) {
       return { refused: 'Make version or pending file set changed before createVersion.' };
     }
     if (sandboxSet.size !== 1 || threads.size !== 1) throw new Error('Make version function or thread is absent or ambiguous.');
@@ -72,13 +78,39 @@ export async function makeDurablePageAction(action) {
   throw new Error('Unknown Make durable action.');
 }
 
-export function requireGitMode(state) {
+// firstVersion accepts only a git-mode file that has never been saved, the
+// state --first-version works on; it refuses a file that has a baseline.
+export function requireGitMode(state, { firstVersion = false } = {}) {
   if (!state) throw new Error('Make saving mode is unavailable; durable operation refused.');
   if (state.mode !== 'git') throw new Error('Snapshot-mode Make files are unsupported by durable writes; use the Save card workflow.');
+  if (firstVersion) {
+    if (state.hasBaseline || state.savedVersion != null) {
+      throw new Error('Make file already has a saved version; --first-version refused. Run the command without it.');
+    }
+    if (state.isLoading || state.error || !Array.isArray(state.pendingPaths) || state.pendingPaths.length) {
+      throw new Error('Make no-baseline state is unverified; first-version operation refused.');
+    }
+    return state;
+  }
   if (!state.hasBaseline || !/^[a-f0-9]{40}$/.test(state.savedVersion || '') || state.isLoading || state.error || !Array.isArray(state.pendingPaths)) {
-    throw new Error('Make git baseline or pending state is unverified; durable operation refused.');
+    const hint = !state.hasBaseline && state.savedVersion == null && !state.isLoading && !state.error
+      ? ' This file has no saved version; pass --first-version to write and save its first one.' : '';
+    throw new Error(`Make git baseline or pending state is unverified; durable operation refused.${hint}`);
   }
   return state;
+}
+
+// Make lists no pending files before its first version, and its sandbox commits
+// every write, so HEAD is no base either. The pending set is the difference
+// between a caller-named earlier sandbox commit and the working copy. It must
+// equal the expected paths exactly; unlisted root paths get no exception here.
+export function requireFirstVersionPending(sinceFlat, working, expectedPaths) {
+  const actual = differingPaths(sinceFlat, working);
+  const expected = [...new Set(expectedPaths)].sort();
+  if (expected.length !== expectedPaths.length || JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`Make working copy differs from the --since commit in unrelated or missing paths; expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual)}.`);
+  }
+  return actual;
 }
 
 // Root paths Make's client hides from codeFileChanges.changedFiles, although

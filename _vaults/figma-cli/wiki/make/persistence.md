@@ -1,6 +1,6 @@
 ---
 title: Make saving modes and durable git writes
-description: How git and snapshot Make files save source, and how figma-cli verifies each path.
+description: How git and snapshot Make files save source, how figma-cli verifies each path, and how it creates a first version.
 date: 2026-10-14
 ---
 
@@ -8,6 +8,7 @@ date: 2026-10-14
 
 Updated 2026-10-13: git-mode client-VFS writes and version creation are implemented and proven in the scratch Make file. Snapshot mode remains separate.
 Updated 2026-10-14: preview-only files (Markdown) and Make's unlisted root files; see the two sections below.
+Updated 2026-10-14: first version of a never-saved git-mode file (`--first-version`); see "First version" below.
 
 ## Saving modes
 
@@ -40,6 +41,21 @@ Live proof, scratch file `EtRNzbPHj8k07PiTgqnY7N`, 2026-10-14:
 - Version 15 (`0119c5d1…def9`) saved with `changedFiles` = 1 path and `unlistedFiles` = 2 paths. After a `Page.reload` of only that tab, all three hashes read back and pending was 0 at `0119c5d1…`.
 - Version 16 (`7a16a3c6…48fa`) saved with 0 listed paths and only `AGENTS.md` expected, restoring `b39f6ead…6b77`. That hash read back after another reload.
 - `docs/probe.md` (new top-level folder) was refused before writing.
+
+## First version
+
+A git-mode file that was never saved has `hasBaseline: false`. Make computes `hasBaseline` and `changedFiles` from the git SHA of the newest server-side Make version (a `fileMakeVersions` query, first page of 1). With no version it sets `changedFiles` to `[]`, so Make lists no pending files at all. Its manual-edit Save card appears only when `hasBaseline` is true. Make's AI-turn commit calls `createMakeVersion` with no baseline check, which is how a file normally gets its first version. Evidence: Make's public client bundle (minified, read 2026-10-14).
+
+The sandbox commits every write to its git `main` ("fs write: …") and `origin/main` follows, so the sandbox HEAD is no base either. `requireGitMode(state, { firstVersion: true })` accepts only a clean no-baseline git state and refuses a baselined one (`src/make-durable.js:83`). `make write` and `make delete` take the same flag. `saveFirstVersion` requires `--since`, a sandbox commit the caller read from `make status` before writing. It checks that commit is in HEAD's history (`src/sandbox-git.js:172`, `src/make-client.js:693`). It requires the expected paths to equal exactly the difference between that commit's tree and the working copy (`src/make-durable.js:107`). It rechecks Make's state and HEAD, then calls `createVersion` through the page action's `firstVersion` branch (`src/make-durable.js:46`). Afterwards it waits for the clean baseline and checks that the saved tree equals the working tree it checked (`src/make-client.js:681`). The AGENTS.md/CLAUDE.md allowance does not apply, because the project inventory lists those files.
+
+Live proof, scratch file `mhuFL1utXbtUonfO5uKA8e`, 2026-10-14:
+- Before: git, no baseline, 0 pending, sandbox HEAD `af344d81…` (bootstrap → template "fs write"), tree `f937e7e1…`, 24 files.
+- `make write src/first-version-probe.ts --first-version` (sha256 `3ba3ae47…1e20e`) matched in the editor, tree, VFS and sandbox. Make still listed 0 pending; HEAD moved to `fa94633b…`, tree `f4bf6828…`.
+- A wrong expected set and a foreign `--since` were refused before `createVersion`.
+- Version 1 (`fa94633b…`, the sandbox HEAD itself) saved with 1 changed path; its tree `f4bf6828…` equalled the checked working tree. After a `Page.reload` of only that tab, the sandbox provider changed, `hasBaseline` was true at `fa94633b…`, 0 were pending, the saved tree equalled the working tree, and the probe hash read back.
+- With a baseline, `--first-version` was refused on both `write` and `save-version`. An ordinary write (sha256 `1ffc2c06…2127`) and `save-version` made version 2 (`ce12e79a…`), which read back after another reload.
+
+Hinge (`ydPjoL41RjmufNbv93gPnq`), read-only on 2026-10-14: git mode, no baseline, 0 pending, one chat thread. Its sandbox stayed `REPROVISIONING` in a background tab, so its file list could not be read. Its GitHub mirror holds 24 files from its last Push.
 
 ## Boundary
 

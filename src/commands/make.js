@@ -216,22 +216,27 @@ modeGated(target(make.command('write <path>').description('Write one git-mode Ma
   .requiredOption('--from <source>', 'Existing UTF-8 file, or - for stdin')
   .option('--expected-sha256 <hash>', 'Required for an existing file; omit for a new file')
   .option('--backup-dir <directory>', 'Private backup directory for replaced content')
+  .option('--first-version', 'Only for a git-mode file with no saved version yet; refused once it has one')
   .action((path, options) => withClient(options, async client => report(await client.writeDurable(path, decodeMakeSource(sourceBytes(options.from)), {
-    expectedSha256: options.expectedSha256, backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
+    expectedSha256: options.expectedSha256, firstVersion: options.firstVersion === true, backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
   })), 'mode')));
 
 modeGated(target(make.command('delete <path>').description('Delete one git-mode Make file through Make client VFS after backup; save-version is required'), 120000)
   .requiredOption('--expected-sha256 <hash>', 'Current SHA-256 of the file to remove')
   .option('--backup-dir <directory>', 'Private backup directory')
+  .option('--first-version', 'Only for a git-mode file with no saved version yet; refused once it has one')
   .action((path, options) => withClient(options, async client => report(await client.deleteDurable(path, {
-    expectedSha256: options.expectedSha256, backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
+    expectedSha256: options.expectedSha256, firstVersion: options.firstVersion === true, backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
   })), 'mode')));
 
 modeGated(target(make.command('save-version').description('Save only the exact expected pending git-mode paths using Make createVersion'), 120000)
   .requiredOption('--title <title>', 'Make version title')
   .requiredOption('--expected-path <path>', 'One pending path; repeat for every expected path', (path, paths = []) => [...paths, path])
   .option('--receipt-out <path>', 'Write version ID, git SHA and changed-file set to a new private JSON file')
+  .option('--first-version', 'Create the first version of a git-mode file that has none; needs --since')
+  .option('--since <commit>', 'With --first-version: the sandbox head make status reported before the writes; the expected paths must equal the working copy\'s difference from it')
   .action(options => withClient(options, async client => {
+    if (options.since && !options.firstVersion) throw new Error('--since applies only with --first-version; no Make version was requested.');
     const outputPath = options.receiptOut ? resolve(options.receiptOut) : null;
     if (outputPath && existsSync(outputPath)) throw new Error('Receipt path already exists; no Make version was requested.');
     const writeReceipt = version => {
@@ -240,7 +245,10 @@ modeGated(target(make.command('save-version').description('Save only the exact e
       version.receiptPath = outputPath;
     };
     let result;
-    try { result = await client.saveVersion(options.title, options.expectedPath); }
+    try {
+      result = options.firstVersion ? await client.saveFirstVersion(options.title, options.expectedPath, { since: options.since })
+        : await client.saveVersion(options.title, options.expectedPath);
+    }
     catch (error) {
       if (error.version) {
         try { writeReceipt(error.version); }

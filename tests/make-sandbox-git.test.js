@@ -70,6 +70,18 @@ describe('sandbox git object reader', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('finds an ancestor through commit parents and rejects a foreign commit', async () => {
+    const dir = repository();
+    try {
+      const reader = new SandboxGit(io(dir));
+      const head = git(dir, 'rev-parse', 'HEAD');
+      assert.equal(await reader.reaches(head, head), true);
+      assert.equal(await reader.reaches(head, git(dir, 'rev-list', '--max-parents=0', 'HEAD')), true);
+      assert.equal(await reader.reaches(git(dir, 'rev-parse', 'HEAD~2'), head), false);
+      await assert.rejects(reader.reaches(head, '0'.repeat(40), 2), /ancestry limit/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('fails closed on missing or corrupted objects', async () => {
     const dir = repository();
     try {

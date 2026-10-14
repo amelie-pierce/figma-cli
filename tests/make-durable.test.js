@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { MakeClient } from '../src/make-client.js';
-import { makeDurablePageAction, requireExactPending, requireGitMode } from '../src/make-durable.js';
+import { makeDurablePageAction, requireExactPending, requireFirstVersionPending, requireGitMode } from '../src/make-durable.js';
 
 const hash = text => createHash('sha256').update(text).digest('hex');
 const base = 'a'.repeat(40);
@@ -378,4 +378,119 @@ test('save-version reports the version when an unlisted file differs after the s
   const error = await client.saveVersion('Saved', ['src/probe.md', 'AGENTS.md']).catch(cause => cause);
   assert.match(error.message, /version 15 .* was created .* unlisted files changed across the save: AGENTS\.md\. Do not retry/);
   assert.equal(error.version.versionId, 'version-id');
+});
+
+// --first-version: a git-mode file that Make has never saved.
+const head = 'c'.repeat(40);
+const blank = () => ({ mode: 'git', hasBaseline: false, savedVersion: null,
+  pendingCount: 0, pendingPaths: [], isLoading: false, error: false });
+const flat = entries => new Map(Object.entries(entries).map(([path, blob]) => [path, { mode: '100644', blob }]));
+const since = 'f'.repeat(40);
+const sinceFlat = flat({ 'src/App.tsx': '1'.repeat(40), 'package.json': '2'.repeat(40) });
+
+test('first-version gate accepts only a clean no-baseline git file', () => {
+  assert.equal(requireGitMode(blank(), { firstVersion: true }).hasBaseline, false);
+  assert.throws(() => requireGitMode(state(), { firstVersion: true }), /already has a saved version; --first-version refused/);
+  assert.throws(() => requireGitMode({ ...state(), hasBaseline: false }, { firstVersion: true }), /already has a saved version/);
+  assert.throws(() => requireGitMode({ ...blank(), isLoading: true }, { firstVersion: true }), /no-baseline state is unverified/);
+  assert.throws(() => requireGitMode({ ...blank(), pendingPaths: ['src/a.ts'] }, { firstVersion: true }), /no-baseline state is unverified/);
+  assert.throws(() => requireGitMode({ ...blank(), mode: 'snapshot' }, { firstVersion: true }), /Snapshot-mode/);
+  assert.throws(() => requireGitMode(blank()), /no saved version; pass --first-version/);
+});
+
+test('first-version pending set is the exact working-copy difference from the --since commit', () => {
+  const working = flat({ 'src/App.tsx': '1'.repeat(40), 'package.json': '2'.repeat(40), 'src/probe.ts': '3'.repeat(40) });
+  assert.deepEqual(requireFirstVersionPending(sinceFlat, working, ['src/probe.ts']), ['src/probe.ts']);
+  assert.throws(() => requireFirstVersionPending(sinceFlat, working, ['src/other.ts']), /unrelated or missing/);
+  assert.throws(() => requireFirstVersionPending(sinceFlat, working, ['src/probe.ts', 'src/probe.ts']), /unrelated or missing/);
+  const edited = flat({ 'src/App.tsx': '4'.repeat(40), 'src/probe.ts': '3'.repeat(40) });
+  assert.throws(() => requireFirstVersionPending(sinceFlat, edited, ['src/probe.ts']),
+    /found \["package.json","src\/App.tsx","src\/probe.ts"\]/);
+  assert.throws(() => requireFirstVersionPending(sinceFlat, sinceFlat, ['src/probe.ts']), /found \[\]/);
+});
+
+function firstVersionClient({ statuses, version = { id: 'version-id', versionNumber: 1, gitSha: next }, drift } = {}) {
+  const { client, calls } = fakeClient({ post: blank(), version });
+  const queue = [...statuses];
+  client.projectStatus = async () => { calls.push(['status']); return queue.length > 1 ? queue.shift() : queue[0]; };
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._sandboxGit = () => ({ head: async () => head, reaches: async (from, to) => from === head && to === since,
+    commitTree: async sha => { assert.equal(sha, since); return 'tree'; }, flatten: async () => sinceFlat });
+  const durable = client._durable;
+  client._durable = async action => { if (action.type === 'save') calls.push(['first', action.firstVersion, action.expectedPaths]); return durable(action); };
+  const states = drift ?? [blank(), { ...state(), savedVersion: next }];
+  client._driftState = async () => ({ state: states.length > 1 ? states.shift() : states[0] });
+  return { client, calls };
+}
+const working = flat({ 'src/App.tsx': '1'.repeat(40), 'package.json': '2'.repeat(40), 'src/probe.ts': '3'.repeat(40) });
+const beforeStatus = (overrides = {}) => ({ persistence: blank(), head, treeSource: 'sandbox-head', makeFlat: working,
+  workingFlat: working, workingTree: 'd'.repeat(40), makeTree: 'e'.repeat(40), ...overrides });
+const afterStatus = (tree = 'd'.repeat(40)) => ({ persistence: { ...state(), savedVersion: next }, head: next,
+  treeSource: 'saved-version', makeFlat: working, workingFlat: working, makeTree: tree, workingTree: tree });
+
+test('first version saves the checked working tree and verifies the new baseline and tree', async () => {
+  const { client, calls } = firstVersionClient({ statuses: [beforeStatus(), afterStatus()] });
+  const result = await client.saveFirstVersion('First', ['src/probe.ts'], { since });
+  assert.deepEqual(calls.filter(call => call[0] === 'first'), [['first', true, []]]);
+  assert.deepEqual({ first: result.firstVersion, sha: result.gitSha, previous: result.previousGitSha, since: result.since,
+    head: result.sandboxHead, files: result.changedFiles, tree: result.tree, verification: result.verification },
+  { first: true, sha: next, previous: null, since, head, files: ['src/probe.ts'], tree: 'd'.repeat(40),
+    verification: 'first-version-clean-baseline; saved-tree-matched' });
+});
+
+test('first version refuses a file that already has a baseline before createVersion', async () => {
+  const { client, calls } = firstVersionClient({ statuses: [beforeStatus({ persistence: state(), treeSource: 'saved-version' })] });
+  await assert.rejects(client.saveFirstVersion('First', ['src/probe.ts'], { since }), /already has a saved version; --first-version refused/);
+  assert.equal(calls.some(call => call[0] === 'first'), false);
+});
+
+test('first version refuses a bad --since, an unexpected pending set or a moved HEAD before createVersion', async () => {
+  const unrelated = firstVersionClient({ statuses: [beforeStatus()] });
+  await assert.rejects(unrelated.client.saveFirstVersion('First', ['src/App.tsx'], { since }), /unrelated or missing/);
+  await assert.rejects(unrelated.client.saveFirstVersion('First', ['src/probe.ts']), /requires --since/);
+  await assert.rejects(unrelated.client.saveFirstVersion('First', ['src/probe.ts'], { since: base }), /not in the sandbox history/);
+  await assert.rejects(unrelated.client.saveFirstVersion('First', [], { since }), /exact expected changed-file set/);
+  assert.equal(unrelated.calls.some(call => call[0] === 'first'), false);
+  const moved = firstVersionClient({ statuses: [beforeStatus()] });
+  const reader = moved.client._sandboxGit();
+  moved.client._sandboxGit = () => ({ ...reader, head: async () => base });
+  await assert.rejects(moved.client.saveFirstVersion('First', ['src/probe.ts'], { since }), /HEAD changed/);
+  assert.equal(moved.calls.some(call => call[0] === 'first'), false);
+});
+
+test('first version reports the created version when the saved tree differs', async () => {
+  const { client } = firstVersionClient({ statuses: [beforeStatus(), afterStatus('f'.repeat(40))] });
+  const error = await client.saveFirstVersion('First', ['src/probe.ts'], { since }).catch(cause => cause);
+  assert.match(error.message, /version 1 .* was created .* saved tree f{40} differs .*Do not retry/);
+  assert.equal(error.version.versionId, 'version-id');
+  assert.equal(error.version.firstVersion, true);
+});
+
+test('durable write honours --first-version in both directions', async () => {
+  const blankFile = fakeClient({ post: blank() });
+  await assert.rejects(blankFile.client.writeDurable('src/new.ts', 'hello'), /--first-version/);
+  const written = await blankFile.client.writeDurable('src/new.ts', 'hello', { firstVersion: true });
+  assert.equal(written.persistence, 'pending-version');
+  const saved = fakeClient();
+  await assert.rejects(saved.client.writeDurable('src/new.ts', 'hello', { firstVersion: true }), /already has a saved version/);
+  await assert.rejects(saved.client.deleteDurable('src/old.ts', { expectedSha256: hash('old'), firstVersion: true }), /already has a saved version/);
+  assert.equal(saved.calls.some(call => call[0] === 'write' || call[0] === 'delete'), false);
+});
+
+test('page-side first-version save requires Make to report no baseline', async () => {
+  const prior = globalThis.document;
+  let saved = 0;
+  const changes = { isGitSourceOfTruth: true, hasBaseline: false, changedFiles: [], isLoading: false, error: null };
+  const props = { codeFileChanges: changes,
+    state: { sandbox: { createVersion: async () => { saved++; return { id: 'v', versionNumber: 1, gitSha: next }; } } },
+    chatController: { chatSdkState: { threadId: 'thread' } } };
+  globalThis.document = { querySelectorAll: () => [{ '__reactFiber$test': { memoizedProps: props } }] };
+  const action = { type: 'save', firstVersion: true, title: 'First', expectedPaths: [], expectedGitSha: null };
+  try {
+    assert.deepEqual(await makeDurablePageAction(action), { id: 'v', versionNumber: 1, gitSha: next });
+    Object.assign(changes, { hasBaseline: true, baselineMakeVersionGitSha: next });
+    assert.match((await makeDurablePageAction(action)).refused, /pending file set/);
+    assert.match((await makeDurablePageAction({ ...action, firstVersion: false })).refused, /pending file set/);
+    assert.equal(saved, 1);
+  } finally { globalThis.document = prior; }
 });
