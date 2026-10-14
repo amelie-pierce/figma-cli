@@ -63,7 +63,7 @@ function world(t) {
       if (command === 'node') return { status: 0, stdout: 'v22.0.0\n', stderr: '' };
       if (command === 'pnpm' && args[0] === '--version') return { status: 0, stdout: '10.0.0\n', stderr: '' };
       if (command === 'pnpm' && args[0] === 'install') {
-        assert.deepEqual(args, ['install', '--frozen-lockfile', '--ignore-scripts']);
+        assert.deepEqual(args, ['install', '--frozen-lockfile', '--ignore-scripts', '--ignore-pnpmfile']);
         mkdirSync(join(options.cwd, 'node_modules'), { recursive: true });
         return { status: 0, stdout: '', stderr: '' };
       }
@@ -201,7 +201,9 @@ describe('team reviews and review', () => {
     const mine = reviews(bob.ctx());
     assert.deepEqual(mine.needsReview.map(n => [n.url, n.author, n.requested]), [[pull.url, '@alice', false]]);
     assert.match(mine.summary, /needs your review/);
-    assert.deepEqual(reviews(w.person('alice').ctx()).needsReview, [], 'my own pull request never needs my review');
+    const alices = reviews(w.person('alice').ctx());
+    assert.deepEqual(alices.needsReview, [], 'my own pull request never needs my review');
+    assert.deepEqual(alices.yours.map(y => [y.url, y.approvedBy]), [[pull.url, []]]);
     pull.reviewRequests.push({ login: 'bob' });
     assert.equal(reviews(bob.ctx()).needsReview[0].why, 'you were asked to review');
     review(bob.ctx(), pull.number, { install: false });
@@ -245,10 +247,12 @@ describe('team reviews and review', () => {
     assert.ok(!existsSync(first.dir));
     assert.equal(review(bob.ctx(), pull.number, { install: false }).refreshed, false);
   });
-  it('refuses my own pull request, closed ones, unknown ones and ambiguous logins', t => {
+  it('lets me look at my own pull request, and refuses closed, unknown and ambiguous ones', t => {
     const w = world(t);
     const { alice, pull } = alicePr(w);
-    code(() => review(alice.ctx(), pull.number, { install: false }), 'TEAM_SELF_REVIEW');
+    const own = review(alice.ctx(), pull.number, { install: false });
+    assert.equal(own.own, true);
+    assert.match(own.warnings[0], /someone else has to approve/);
     const bob = w.person('bob');
     code(() => review(bob.ctx(), 99, { install: false }), 'TEAM_PR_NOT_FOUND');
     code(() => review(bob.ctx(), 'carol', { install: false }), 'TEAM_PR_NOT_FOUND');
@@ -267,11 +271,14 @@ describe('team reviews and review', () => {
     assert.equal(result.installed, false);
     assert.match(result.warnings[0], /kit dependency/);
   });
-  it('opens the change page and an inlined app build in Lavish', t => {
+  it('opens the change page in Lavish, and an inlined app build only when asked', t => {
     const w = world(t);
     const { pull } = alicePr(w);
     const bob = w.person('bob');
-    const result = review(bob.ctx(), pull.number, { lavish: true });
+    const plain = review(bob.ctx(), pull.number, { lavish: true });
+    assert.equal(plain.lavish.pages.length, 1);
+    assert.ok(!w.github.calls.some(c => c.command === 'pnpm' && c.args[0] === 'exec'), 'the pull request\'s build code does not run unasked');
+    const result = review(bob.ctx(), pull.number, { app: true });
     const [change, app] = result.lavish.pages.map(p => p.page);
     assert.equal(result.lavish.opened, 2);
     assert.equal(change, join(result.dir, '.lavish/review/index.html'));
@@ -285,7 +292,7 @@ describe('team reviews and review', () => {
     const w = world(t);
     const { pull } = alicePr(w);
     const broken = w.person('bob', { vite: 1, lavish: 1 });
-    const result = review(broken.ctx(), pull.number, { lavish: true });
+    const result = review(broken.ctx(), pull.number, { app: true });
     assert.deepEqual([result.lavish.pages.length, result.lavish.opened], [1, 0]);
     assert.ok(broken.warnings.some(m => /could not be built/.test(m)) && broken.warnings.some(m => /lavish-axi is not installed/.test(m)));
     write(result.dir, { '.lavish/prototype/index.html': '<html></html>' });

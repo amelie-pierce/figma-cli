@@ -239,12 +239,15 @@ function hasVite(dir) {
   } catch { return false; }
 }
 
-// The app page: the make start design build when the review copy has one,
-// otherwise a relative-base Vite build with its entry inlined.
-function appPage(ctx, dir) {
+// The app page: the make start design build when the review copy has one
+// (static HTML; Lavish runs it sandboxed). Only when asked (--app), a
+// relative-base Vite build with its entry inlined: that runs the pull
+// request's own build config on this computer, like make dev does.
+function appPage(ctx, dir, { build = false } = {}) {
   const design = join(dir, DESIGN_PAGE);
   if (existsSync(design)) return { page: design, how: 'the make start design build' };
-  if (!hasVite(dir) || !existsSync(join(dir, 'node_modules'))) return null;
+  if (!build) return null;
+  if (!hasVite(dir) || !existsSync(join(dir, 'node_modules'))) { ctx.warn('The app was not built for Lavish: it needs Vite and an install.'); return null; }
   const out = join(dir, LAVISH_DIR, 'app');
   const built = ctx.run('pnpm', ['exec', 'vite', 'build', '--base', './', '--outDir', out, '--emptyOutDir'], { cwd: dir });
   if (built.status !== 0) { ctx.warn(`The app could not be built for Lavish, so only the change page opens: ${(built.stderr || built.stdout).trim().split('\n').pop()}`); return null; }
@@ -266,12 +269,20 @@ function openLavish(ctx, page) {
 
 // What needs my review: open pull requests into main by someone else, not
 // drafts, where I am asked to review or have not reviewed the latest version.
+// My own open pull requests are listed apart, with who they wait on.
 export function reviews(ctx) {
   const login = ctx.login();
   const needs = [];
   const done = [];
+  const yours = [];
   for (const pull of openPrs(ctx)) {
-    if (same(pull.author?.login, login) || pull.isDraft) continue;
+    if (same(pull.author?.login, login)) {
+      const state = reviewState({ author: login, head: pull.headRefOid, reviews: readReviews(ctx, pull.number), requests: pull.reviewRequests || [] });
+      yours.push({ url: pull.url, title: pull.title, draft: !!pull.isDraft, approvedBy: state.approvedBy.map(r => at(r.who)),
+        changesRequestedBy: state.changesRequestedBy.map(r => at(r.who)), waitingOn: state.waitingOn.map(at) });
+      continue;
+    }
+    if (pull.isDraft) continue;
     const mine = readReviews(ctx, pull.number).filter(r => same(r.login, login));
     const last = mine[mine.length - 1] || null;
     const requested = (pull.reviewRequests || []).some(r => same(r.login, login));
@@ -284,14 +295,15 @@ export function reviews(ctx) {
     }
   }
   needs.sort((a, b) => Number(b.requested) - Number(a.requested));
-  return { verb: 'reviews', login: at(login), needsReview: needs, reviewed: done,
-    summary: needs.length ? `${plural(needs.length, 'pull request')} ${needs.length === 1 ? 'needs' : 'need'} your review: ` +
-      `${needs.map(n => `${n.author}'s "${n.title}" (${n.url})`).join('; ')}.` : 'Nothing needs your review right now.' };
+  return { verb: 'reviews', login: at(login), needsReview: needs, reviewed: done, yours,
+    summary: (needs.length ? `${plural(needs.length, 'pull request')} ${needs.length === 1 ? 'needs' : 'need'} your review: ` +
+      `${needs.map(n => `${n.author}'s "${n.title}" (${n.url})`).join('; ')}.` : 'Nothing needs your review right now.') +
+      (yours.length ? ` Your own open pull request${yours.length === 1 ? '' : 's'}, which someone else must review: ${yours.map(y => y.url).join(', ')}.` : '') };
 }
 
 // Review: fetch the pull request's head into a detached review copy under
 // the clone, install without running scripts, and describe the change.
-export function review(ctx, ref, { install: doInstall = true, lavish = false, remove = false, installFn = install } = {}) {
+export function review(ctx, ref, { install: doInstall = true, lavish = false, app = false, remove = false, installFn = install } = {}) {
   const root = mainRoot(ctx);
   const pull = resolvePr(ctx, ref);
   const dir = reviewCopyPath(root, pull.number);
@@ -301,7 +313,7 @@ export function review(ctx, ref, { install: doInstall = true, lavish = false, re
     return { verb: 'review', url: pull.url, removed: true, dir, summary: `Removed the review copy of ${pull.url}.` };
   }
   requireReviewable(ctx, pull);
-  requireNotAuthor(ctx, pull, 'review');
+  const own = same(pull.author?.login, ctx.login());
   const base = fetchMain(ctx);
   const head = fetchHead(ctx, pull);
   excludeReviews(ctx, root);
@@ -330,21 +342,22 @@ export function review(ctx, ref, { install: doInstall = true, lavish = false, re
   const warnings = [];
   let installed = null;
   if (doInstall && existsSync(join(dir, 'package.json'))) {
-    try { installFn(dir, { run: ctx.run, warn: message => { warnings.push(message); ctx.warn(message); } }); installed = true; }
+    try { installFn(dir, { run: ctx.run, ignorePnpmfile: true, warn: message => { warnings.push(message); ctx.warn(message); } }); installed = true; }
     catch (error) { installed = false; warnings.push(`Not installed, so the app cannot run yet: ${error.message}`); ctx.warn(warnings[warnings.length - 1]); }
   }
-  const result = { verb: 'review', url: pull.url, title: pull.title, author: at(pull.author?.login), head, dir, refreshed,
+  if (own) warnings.push('This is your own pull request: you can look at it here, but someone else has to approve it.');
+  const result = { verb: 'review', url: pull.url, title: pull.title, author: at(pull.author?.login), ...(own ? { own: true } : {}), head, dir, refreshed,
     files: files.map(describeFile), saves: commits.map(c => c.subject), ...(installed == null ? {} : { installed }),
     run: `figma-cli make dev --dir ${JSON.stringify(dir)}` };
-  if (lavish) {
+  if (lavish || app) {
     const { html, map } = reviewPage({ pull, files, commits, summary });
     const pageDir = join(dir, LAVISH_DIR);
     mkdirSync(pageDir, { recursive: true });
     const page = join(pageDir, 'index.html');
     writeFileSync(page, html);
     writeFileSync(join(pageDir, 'source-map.json'), `${JSON.stringify({ url: pull.url, head, lines: map }, null, 2)}\n`);
-    const app = appPage(ctx, dir);
-    const pages = [{ page, shows: 'the change, line by line' }, ...(app ? [{ page: app.page, shows: `the app (${app.how})` }] : [])];
+    const built = appPage(ctx, dir, { build: app });
+    const pages = [{ page, shows: 'the change, line by line' }, ...(built ? [{ page: built.page, shows: `the app (${built.how})` }] : [])];
     const opened = pages.filter(p => openLavish(ctx, p.page));
     result.lavish = { pages, opened: opened.length, poll: pages.map(p => `lavish-axi poll ${JSON.stringify(p.page)}`) };
   }

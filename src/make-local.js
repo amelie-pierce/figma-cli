@@ -195,7 +195,9 @@ function git(run, dir, args, what) {
 
 // Committed credentials are reported first, so every later refusal
 // (package.json, lockfile, toolchain, kits) still shows them.
-export function install(dir, { run = defaultRun, warn = () => {} } = {}) {
+// ignorePnpmfile: a review copy holds someone else's unmerged code, and pnpm
+// runs a .pnpmfile.cjs even with --ignore-scripts.
+export function install(dir, { run = defaultRun, warn = () => {}, ignorePnpmfile = false } = {}) {
   const tracked = run('git', ['ls-files', '-z'], { cwd: dir });
   const files = tracked.status === 0 ? tracked.stdout.split('\0').filter(Boolean) : ['.npmrc'];
   const warnings = npmrcTokenWarnings(dir, files);
@@ -208,7 +210,8 @@ export function install(dir, { run = defaultRun, warn = () => {} } = {}) {
   toolWarnings.forEach(warn);
   warnings.push(...toolWarnings);
   requireNoKitDependencies(pkg);
-  const [command, args] = INSTALL;
+  const [command, base] = INSTALL;
+  const args = ignorePnpmfile ? [...base, '--ignore-pnpmfile'] : base;
   const result = run(command, args, { cwd: dir, stream: true });
   if (result.status !== 0) fail(`${command} ${args.join(' ')} failed (exit ${result.status}); see its output above.`, 'MAKE_INSTALL_FAILED');
   return { packageManager: pm.name, lockfile: pm.lockfile, command: [command, ...args].join(' '), toolchain, warnings };

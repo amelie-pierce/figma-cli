@@ -68,10 +68,12 @@ verb(team.command('reviews').description('What needs my review: open pull reques
   ctx => reviews(ctx));
 
 verb(team.command('review <pr>').description('Review a teammate\'s change: a detached review copy under .figma-cli/reviews/, installed without scripts, with a plain summary')
-  .option('--lavish', 'Open the change (and the app, when it builds) in Lavish for line and element notes')
+  .option('--lavish', 'Open the change, line by line, in Lavish for notes (and the make start design build, when there is one)')
+  .option('--app', 'Also build the app with its own Vite config for Lavish (runs the pull request\'s build code here, like make dev)')
   .option('--no-install', 'Do not install the review copy\'s dependencies')
   .option('--remove', 'Delete the review copy (and any edits in it)'),
-(ctx, ref, options) => review(ctx, ref, { lavish: options.lavish === true, install: options.install !== false, remove: options.remove === true }));
+(ctx, ref, options) => review(ctx, ref, { lavish: options.lavish === true, app: options.app === true, install: options.install !== false,
+  remove: options.remove === true }));
 
 verb(team.command('comment <pr>').description('Comment on a pull request: on a changed line, or a general comment that quotes the target')
   .requiredOption('-m, --message <text>', 'What the comment says')

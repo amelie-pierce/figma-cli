@@ -52,9 +52,10 @@ A `<pr>` is the pull request's number or link, or the author's GitHub login.
 
 | The person says | Run | Then tell them |
 |---|---|---|
-| "What needs my review?" | `figma-cli team reviews` | Each pull request (full URL), whose it is and why it is listed |
+| "What needs my review?" | `figma-cli team reviews` | Each pull request (full URL), whose it is and why it is listed; their own open ones (`yours`) wait on someone else |
 | "Review Bob's change" / "review #12" | `figma-cli team review bob` | The plain summary and files; offer to run it (`figma-cli make dev --dir <dir>` from the result, in the background) or open it in Lavish |
-| "Open it so I can mark it up" | `figma-cli team review <pr> --lavish` | Lavish opened the change (and the app when it builds); notes they send become comments |
+| "Open it so I can mark it up" | `figma-cli team review <pr> --lavish` | Lavish opened the change line by line; notes they send become comments |
+| … "show me the app in Lavish" | `figma-cli team review <pr> --app` | Same, plus the built app. It runs the teammate's build code on their computer, like running it locally; ask first |
 | "Comment: the padding is too tight" | `figma-cli team comment <pr> -m "<their words>"` | Posted, and where (a line or the whole pull request) |
 | … on a file line | `figma-cli team comment <pr> -m "…" --file src/App.tsx --line 12` | Same; if it was not a changed line it became a general comment |
 | "Approve it" / "looks good" | `figma-cli team approve <pr> [-m "<note>"]` | Approved as them; the author can now merge |

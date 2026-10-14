@@ -100,7 +100,7 @@ figma-cli team pr [--title "<title>"]
 figma-cli team merge [--no-build-check]
 figma-cli team status [--no-fetch]
 figma-cli team reviews
-figma-cli team review <pr|login> [--lavish] [--no-install] [--remove]
+figma-cli team review <pr|login> [--lavish] [--app] [--no-install] [--remove]
 figma-cli team comment <pr> -m "<text>" [--file <path> --line <n> [--old]] [--selector "<css>"] [--source <file:line>] [--text "<element text>"]
 figma-cli team approve <pr> [-m "<note>"]
 figma-cli team request-changes <pr> -m "<what should change>"
@@ -472,24 +472,29 @@ into `main` are reviewed (`TEAM_PR_NOT_READY`).
 
 - `team reviews` lists open, non-draft pull requests into `main` by someone
   else where you are a requested reviewer or your latest review is not of the
-  current head (`needsReview`, requested first), and the rest you reviewed.
-- `team review <pr>` refuses your own pull request (`TEAM_SELF_REVIEW`),
-  fetches its head (it must equal GitHub's `headRefOid`), and checks it out
+  current head (`needsReview`, requested first), the rest you reviewed, and
+  your own open pull requests with their approvals and pending reviewers
+  (`yours`).
+- `team review <pr>` (your own pull request too, with a warning that someone
+  else has to approve it) fetches its head (it must equal GitHub's `headRefOid`), and checks it out
   **detached** in a git worktree at `.figma-cli/reviews/pr-<n>` under the main
   clone, adding `/.figma-cli/reviews/` to the clone's `info/exclude`. It then
-  installs with `make install` (`pnpm install --frozen-lockfile
-  --ignore-scripts`; a failure only warns) and reports the files with +/- line
+  installs with `make install` plus `--ignore-pnpmfile` (`pnpm install
+  --frozen-lockfile --ignore-scripts --ignore-pnpmfile`, so none of the pull
+  request's code runs; a failure only warns) and reports the files with +/- line
   counts, the saves and the `make dev` command. A rerun moves the copy to the
   newer head, refusing when it has edits outside `.lavish/`
   (`TEAM_REVIEW_DIRTY`); `--remove` deletes it with `git worktree remove
   --force`. `--lavish` writes `.lavish/review/index.html` in the copy (every
   diff line an element with an `id` and `data-source="<file>:<line>"`) and
-  `source-map.json` (id → file, line, side), plus an app page: the copy's
-  `make start` design build at `.lavish/prototype/index.html` when present,
-  otherwise `pnpm exec vite build --base ./` into `.lavish/review/app/` with its
-  entry script and stylesheets inlined (Lavish's sandboxed frame blocks module
-  loads); then `lavish-axi <page>` for each (a missing `lavish-axi` or a failed
-  build only warns).
+  `source-map.json` (id → file, line, side), plus the copy's `make start`
+  design build at `.lavish/prototype/index.html` when present; then
+  `lavish-axi <page>` for each (a missing `lavish-axi` only warns). `--app`
+  (implies `--lavish`) also runs `pnpm exec vite build --base ./` into
+  `.lavish/review/app/` and inlines its entry script and stylesheets (Lavish's
+  sandboxed frame blocks module loads). That runs the pull request's own build
+  config on your computer, as `make dev` does, so it is never automatic; a
+  failed build only warns.
 - `team comment <pr> -m` posts a line comment (`gh api POST
   repos/<repo>/pulls/<n>/comments`, on the reviewed commit) when the target is
   a line inside the pull request's diff: `--file`/`--line` (`--old` for a
