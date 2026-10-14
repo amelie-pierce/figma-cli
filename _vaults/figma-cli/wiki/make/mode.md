@@ -10,7 +10,7 @@ date: 2026-10-14
 
 ## Gate exemption scope
 
-- `make mode` skips `checkWriteMode` and runs `runModeChange` (`src/make-mode.js:141`), which only ever names the marker: `requireModeTogglePaths` (`src/make-mode.js:24`) refuses any path set other than exactly `[PROJECT_MARKER]` before the save.
+- `make mode` skips `checkWriteMode` and runs `runModeChange` (`src/make-mode.js:144`), which only ever names the marker: `requireModeTogglePaths` (`src/make-mode.js:24`) refuses any path set other than exactly `[PROJECT_MARKER]` before the save.
 - Every other write command refuses the marker path in every mode with `MAKE_MARKER_RESERVED` (`refuseMarkerPaths`, `src/make-project.js:110`), checked in `withClient` before connecting (`src/commands/make.js:65`) and on `import` manifests (`src/commands/make.js:138`). The check folds case and a leading `./`.
 - Ordinary paths still meet the full team-mode refusal. Tests: `tests/make-mode.test.js`.
 
@@ -29,8 +29,8 @@ Make does not list paths under a dot folder such as `.figma-cli/` in `codeFileCh
 - `planModeChange` (`src/make-mode.js:37`) is pure. It requires the client VFS and sandbox copies of the marker to agree and refuses other listed or unsaved paths, a marker for another file or repo, an unusable marker on `team`, and no-ops. A marker written or removed but never saved is saved rather than refused. With `--first-version` and no pending marker, the base is the sandbox head read before the write (no `--since`); a marker already pending on a never-saved file was written outside `make mode`, so it needs `--since` (`MAKE_MODE_SINCE_REQUIRED`).
 - Marker bytes are `{fileKey, repo, trunk: "main"}` (`src/make-mode.js:19`).
 - `solo` warns, then requires `admin` on the marker's repo through `gh` GET requests, failing closed when `gh` cannot read it, and requires `--yes-turn-off-team-mode`. An unusable marker's raw `repo` is still used for the admin check, else the local link. The link is recorded before the delete, so saving a removal an earlier run left unsaved takes the repo from it, and refuses without one.
-- After the save, `reloadPage` (`src/make-client.js:767`) sends `Page.reload` to that tab only and waits for a new document with Make state. `verifyModeAfterReload` (`src/make-mode.js:120`) then requires a clean baseline at the new version, the planned saved tree, and the marker present (or absent) in the saved tree, sandbox and client VFS.
-- Receipts go to `~/.figma-cli/mode-receipts/` (mode 0600, `src/make-mode.js:109`). `team` records the local repo link; `solo` removes it (`forgetLinkedRepo`, `src/make-project.js:80`) so later writes are solo rather than ambiguous.
+- After the save, `reloadPage` (`src/make-client.js:767`) sends `Page.reload` to that tab only and waits for a new document with Make state. `verifyModeAfterReload` (`src/make-mode.js:123`) then requires a clean baseline at the new version, the planned saved tree, and the marker present (or absent) in the saved tree, sandbox and client VFS.
+- Receipts go to `~/.figma-cli/mode-receipts/` (mode 0600, `src/make-mode.js:110`). `team` records the local repo link; `solo` removes it (`forgetLinkedRepo`, `src/make-project.js:80`) so later writes are solo rather than ambiguous.
 
 ## Live proof (2026-10-14)
 
