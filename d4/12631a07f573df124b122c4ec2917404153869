@@ -1,0 +1,19 @@
+_vaults/figma-cli/wiki/make/persistence.md
+  s_e207152d1dbcd4::t_0fa08d0b7b754e 21,23,37,62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d412631a07f573df124b122c4ec2917404153869",
+  "prompts": {},
+  "sessions": {
+    "s_e207152d1dbcd4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "637b382c-de14-4ed1-b1a9-e7679d80fe60",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
