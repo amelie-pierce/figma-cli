@@ -116,7 +116,9 @@ For exact commands and safe in-memory examples, read
    when the user names the file's GitHub repo; this also records the link
    locally so later writes see it). In **team** mode the file
    deploys from GitHub `main`: do not write to Make; tell the user to start a
-   task in the repo. To run that repo locally use `make clone OWNER/REPO` (or
+   task in the repo. All branching, saving, syncing, pull requests and merges
+   in that clone go through `figma-cli team <verb>`; follow the
+   `figma-make-team` skill and never improvise git. To run that repo locally use `make clone OWNER/REPO` (or
    `make clone --file KEY`), `make pull` and `make dev`; start `make dev` as a
    background job and poll the URL it prints, never wait on it. On a
    `MAKE_KIT_DEPENDENCY` refusal, explain the printed fix (vendor the kit by

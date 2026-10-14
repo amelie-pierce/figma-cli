@@ -28,6 +28,11 @@ These examples are templates; choose paths/content for the actual requested work
 | Install a clone again after its checks | `figma-cli make install [dir]` |
 | Fast-forward `main` only; reinstall when the lockfile changed | `figma-cli make pull [dir]` |
 | Start the dev server and print its local URL (agents: background job, then poll the URL) | `figma-cli make dev [dir]` |
+| Start a task branch `<login>/<slug>` from the latest `main` (see the figma-make-team skill) | `figma-cli team start "task name" [--save-first]` |
+| Save (format, build, secret check), commit and push your task branch | `figma-cli team save [-m "message"]` |
+| Bring in the latest `main`; finish or undo a conflicted one | `figma-cli team sync` / `figma-cli team conflicts` |
+| Open the pull request into `main`; merge it after a non-author approval | `figma-cli team pr` / `figma-cli team merge` |
+| Branch, unsaved files, review state, distance from `main` | `figma-cli team status` |
 | Check vendor drift and saved state, including hidden files | `figma-cli make drift --file KEY --manifest VENDOR.json --json` |
 | Export a clean Make component delta for workspace intake | `figma-cli make export-delta --file KEY --manifest VENDOR.json --who NAME --candidate-dir candidates --out delta.json [--dependency PATH]` |
 | Review an explicit workspace package sync | `figma-cli make sync --file KEY --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --plan-out plan.json` |
