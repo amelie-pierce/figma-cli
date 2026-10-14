@@ -678,15 +678,32 @@ export class MakeClient {
   // so the expected set is checked against the working copy's difference from
   // `since`, a sandbox commit the caller read before writing. The saved tree
   // must equal the working tree that check read.
-  async saveFirstVersion(title, expectedPaths, { since } = {}) {
+  saveFirstVersion(title, expectedPaths, { since } = {}) {
+    return this.saveCheckedVersion(title, expectedPaths, { firstVersion: true, since });
+  }
+
+  // Save a version whose content is checked as a tree, not through Make's
+  // pending list. Make lists no pending files before its first version, and it
+  // never lists paths under a dot folder such as .figma-cli/ (scratch probe,
+  // 2026-10-14). The expected set must equal the working copy's difference
+  // from the base: the saved version's tree, or with firstVersion the `since`
+  // sandbox commit. Make must list nothing pending, and the saved tree must
+  // equal the working tree this check read.
+  async saveCheckedVersion(title, expectedPaths, { firstVersion = false, since } = {}) {
     saveRequest(title, expectedPaths);
-    if (!/^[a-f0-9]{40}$/.test(since || '')) {
+    if (firstVersion && !/^[a-f0-9]{40}$/.test(since || '')) {
       throw new Error('--first-version requires --since <commit>: the sandbox head make status reported before the writes.');
     }
     const before = await this.projectStatus();
-    const state = requireGitMode(before.persistence, { firstVersion: true });
-    if (before.treeSource !== 'sandbox-head') throw new Error('Make sandbox HEAD was not the comparison base; first version refused.');
-    const sinceFlat = await this._operation(async deadline => {
+    const state = requireGitMode(before.persistence, { firstVersion });
+    if (firstVersion && before.treeSource !== 'sandbox-head') throw new Error('Make sandbox HEAD was not the comparison base; first version refused.');
+    if (!firstVersion) {
+      if (before.treeSource !== 'saved-version') throw new Error('Make saved version was not the comparison base; version refused.');
+      if (state.pendingPaths.length) {
+        throw new Error(`Make lists other pending changes; expected none, found ${JSON.stringify(state.pendingPaths)}.`);
+      }
+    }
+    const baseFlat = !firstVersion ? before.makeFlat : await this._operation(async deadline => {
       const bridge = await this._fileBridge(deadline);
       try {
         const reader = this._sandboxGit(bridge);
@@ -696,26 +713,30 @@ export class MakeClient {
         return await reader.flatten(await reader.commitTree(since));
       } finally { await bridge.dispose(); }
     });
-    const changedFiles = requireFirstVersionPending(sinceFlat, before.workingFlat, expectedPaths);
+    const changedFiles = requireFirstVersionPending(baseFlat, before.workingFlat, expectedPaths);
     const version = await this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
       if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
-      const now = requireGitMode((await this._driftState(deadline)).state, { firstVersion: true });
-      if (JSON.stringify(now) !== JSON.stringify(state)) throw new Error('Make state changed before the first version.');
+      const now = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
+      if (JSON.stringify(now) !== JSON.stringify(state)) throw new Error(`Make state changed before the ${firstVersion ? 'first ' : ''}version.`);
       const bridge = await this._fileBridge(deadline);
       try {
-        if (await this._sandboxGit(bridge).head() !== before.head) throw new Error('Make sandbox HEAD changed before the first version.');
+        if (await this._sandboxGit(bridge).head() !== before.head) throw new Error(`Make sandbox HEAD changed before the ${firstVersion ? 'first ' : ''}version.`);
       } finally { await bridge.dispose(); }
       let created;
-      try { created = await this._durable({ type: 'save', firstVersion: true, title, expectedPaths: [], expectedGitSha: null }, deadline); }
+      try {
+        created = await this._durable({ type: 'save', ...(firstVersion ? { firstVersion: true } : {}), title, expectedPaths: [],
+          expectedGitSha: firstVersion ? null : state.savedVersion }, deadline);
+      }
       catch (cause) { throw new Error(`Make version outcome is uncertain: ${cause.message}. Inspect versions before retrying.`); }
       if (created?.refused) throw new Error(created.refused);
       if (typeof created?.id !== 'string' || !created.id || !Number.isSafeInteger(created.versionNumber) ||
           !/^[a-f0-9]{40}$/.test(created.gitSha || '')) throw new Error('Make version response is incomplete; inspect versions before retrying.');
       return created;
     });
-    const saved = { fileKey: this.fileKey, title, firstVersion: true, versionId: version.id, versionNumber: version.versionNumber,
-      gitSha: version.gitSha, previousGitSha: null, since, sandboxHead: before.head, changedFiles, workingTree: before.workingTree };
+    const saved = { fileKey: this.fileKey, title, ...(firstVersion ? { firstVersion: true } : {}), versionId: version.id,
+      versionNumber: version.versionNumber, gitSha: version.gitSha, previousGitSha: firstVersion ? null : state.savedVersion,
+      ...(firstVersion ? { since } : {}), sandboxHead: before.head, changedFiles, workingTree: before.workingTree };
     try {
       await this._operation(async deadline => {
         for (;;) {
@@ -732,12 +753,35 @@ export class MakeClient {
       if (after.makeTree !== before.workingTree || after.workingTree !== after.makeTree) {
         throw new Error(`saved tree ${after.makeTree} differs from the checked working tree ${before.workingTree}`);
       }
-      return { ...saved, tree: after.makeTree, verification: 'first-version-clean-baseline; saved-tree-matched' };
+      return { ...saved, tree: after.makeTree,
+        verification: `${firstVersion ? 'first-version' : 'saved-version'}-clean-baseline; saved-tree-matched` };
     } catch (cause) {
       const error = new Error(`Make version ${version.versionNumber} (${version.gitSha}) was created but its baseline or tree was not verified: ${cause.message}. Do not retry the save.`);
       error.version = saved;
       throw error;
     }
+  }
+
+  // Reload only this Make tab, then wait for the new document's Make state:
+  // what a later session sees, rather than this page's in-memory copy.
+  reloadPage() {
+    return this._operation(async deadline => {
+      const nonce = randomUUID();
+      await this._evaluate(`(() => { window.__figmaCliReload = ${JSON.stringify(nonce)}; return true; })()`, deadline);
+      await this._bounded(() => this.transport.send('Page.reload', {}, { timeoutMs: this._remaining(deadline) }), deadline);
+      for (;;) {
+        await this._bounded(() => new Promise(resolve => setTimeout(resolve, 250)), deadline);
+        let state = null;
+        try {
+          const fresh = await this._evaluate(`window.__figmaCliReload !== ${JSON.stringify(nonce)} && document.readyState === 'complete'`, deadline);
+          if (fresh === true) state = (await this._driftState(deadline)).state;
+        } catch (error) {
+          // The old document's context is destroyed while the page navigates.
+          if (error.message === 'Make operation timed out.') throw error;
+        }
+        if (state && !state.isLoading && !state.error) return { reloaded: true, persistence: state };
+      }
+    });
   }
 
   // Bound each renderer/socket batch independently. Large kits can take more

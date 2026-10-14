@@ -6,8 +6,9 @@ import { MakeClient } from '../make-client.js';
 import { decodeMakeSource } from '../make-source.js';
 import { requireSessionOnly } from '../make-session.js';
 import { driftExitCode, digest } from '../make-drift.js';
-import { buildStatus, checkWriteMode, linkedRepo, MODE_CODES, parseMarker, readGithub, recordLinkedRepo, repoName,
-  statusExitCode } from '../make-project.js';
+import { buildStatus, checkWriteMode, linkedRepo, MODE_CODES, parseMarker, readGithub, recordLinkedRepo, refuseMarkerPaths,
+  repoName, statusExitCode } from '../make-project.js';
+import { CONFIRM_FLAG, runModeChange } from '../make-mode.js';
 import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, planSync, validatePlanDigest, VENDOR_ROOT,
   writeApplyOutputs } from '../make-sync.js';
 
@@ -17,6 +18,7 @@ const make = program.command('make')
     '\n\nReads (read, files, verify) see the open session\'s working copy. The original writes' +
     '\n(replace, create, import, remove) are session-only and require --session-only.' +
     '\nEvery write refuses in team mode, and in ambiguous mode without --solo.' +
+    '\nOnly make mode team|solo adds or removes the .figma-cli/project.json team marker.' +
     '\nGit-mode write/delete use Make client VFS; save-version records a saved version.');
 
 function report(value) { console.log(JSON.stringify(value, null, 2)); }
@@ -24,6 +26,7 @@ function failure(error) {
   console.error(JSON.stringify({ error: error.message,
     ...(error.endpoint ? { code: error.code, port: error.port, endpoint: error.endpoint, reason: error.reason, recovery: error.recovery } : {}),
     ...(error.backupPath ? { backupPath: error.backupPath } : {}),
+    ...(error.receiptPath ? { receiptPath: error.receiptPath } : {}),
     ...(error.version ? { version: error.version } : {}),
     ...(error.completedWrites ? { completedWrites: error.completedWrites } : {}),
     ...(error.code === 'MAKE_SESSION_ONLY_REQUIRED' || MODE_CODES.includes(error.code) ? { code: error.code } : {}),
@@ -56,9 +59,10 @@ function modeGated(command) {
 function sessionWrite(command) {
   return modeGated(target(command).option('--session-only', 'Accept that the write is lost when the file is reopened unless saved in Make'));
 }
-async function withClient(options, fn, write) {
+async function withClient(options, fn, write, paths = []) {
   let client;
   try {
+    refuseMarkerPaths(paths);
     if (write && write !== 'mode') requireSessionOnly(write, options);
     client = new MakeClient({ timeoutMs: options.timeout });
     await client.connect(options.file);
@@ -117,13 +121,13 @@ sessionWrite(make.command('replace <path>').description('Session-only: back up a
       expectedSha256: options.expectedSha256,
       backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
     }));
-  }, 'replace'));
+  }, 'replace', [path]));
 
 sessionWrite(make.command('create <path>').description('Session-only: create one new UTF-8 source file in the open session\'s working copy; existing paths are rejected'))
   .requiredOption('--from <source>', 'Existing UTF-8 file, or - for stdin (no local copy required)')
   .action((path, options) => withClient(options, async client => {
     report(await client.importFiles([{ path, content: decodeMakeSource(sourceBytes(options.from)) }]));
-  }, 'create'));
+  }, 'create', [path]));
 
 sessionWrite(make.command('import').description('Session-only: import new source files from a JSON manifest into the open session\'s working copy; never overwrite existing paths'))
   .requiredOption('--manifest <source>', 'JSON {files:[{path,content}]} file, or - for stdin')
@@ -131,6 +135,7 @@ sessionWrite(make.command('import').description('Session-only: import new source
     const bytes = sourceBytes(options.manifest);
     if (bytes.length > 32 * 1024 * 1024) throw new Error('Make import manifest is limited to 32 MiB.');
     const manifest = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    refuseMarkerPaths(Array.isArray(manifest?.files) ? manifest.files.map(file => file?.path) : []);
     report(await client.importFiles(manifest.files));
   }, 'import'));
 
@@ -138,7 +143,7 @@ sessionWrite(make.command('remove <path>').description('Session-only: back up an
   .requiredOption('--expected-sha256 <hash>', 'Expected original source hash; changed files are refused')
   .action((path, options) => withClient(options, async client => {
     report(await client.remove(path, { expectedSha256: options.expectedSha256 }));
-  }, 'remove'));
+  }, 'remove', [path]));
 
 target(make.command('verify').description('Compare the open session\'s working copy against a manifest; this does not prove the files were saved'))
   .requiredOption('--manifest <source>', 'JSON {files:[{path,content}]} file, or - for stdin')
@@ -219,7 +224,7 @@ modeGated(target(make.command('write <path>').description('Write one git-mode Ma
   .option('--first-version', 'Only for a git-mode file with no saved version yet; refused once it has one')
   .action((path, options) => withClient(options, async client => report(await client.writeDurable(path, decodeMakeSource(sourceBytes(options.from)), {
     expectedSha256: options.expectedSha256, firstVersion: options.firstVersion === true, backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
-  })), 'mode')));
+  })), 'mode', [path])));
 
 modeGated(target(make.command('delete <path>').description('Delete one git-mode Make file through Make client VFS after backup; save-version is required'), 120000)
   .requiredOption('--expected-sha256 <hash>', 'Current SHA-256 of the file to remove')
@@ -227,7 +232,7 @@ modeGated(target(make.command('delete <path>').description('Delete one git-mode 
   .option('--first-version', 'Only for a git-mode file with no saved version yet; refused once it has one')
   .action((path, options) => withClient(options, async client => report(await client.deleteDurable(path, {
     expectedSha256: options.expectedSha256, firstVersion: options.firstVersion === true, backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
-  })), 'mode')));
+  })), 'mode', [path])));
 
 modeGated(target(make.command('save-version').description('Save only the exact expected pending git-mode paths using Make createVersion'), 120000)
   .requiredOption('--title <title>', 'Make version title')
@@ -262,7 +267,7 @@ modeGated(target(make.command('save-version').description('Save only the exact e
       throw new Error(`Make version was saved but the local receipt failed: ${error.message}`);
     }
     report(result);
-  }, 'mode')));
+  }, 'mode', options.expectedPath)));
 
 target(make.command('export-delta').description('Export a clean saved Make delta for atomic-cli intake-make-delta'), 120000)
   .requiredOption('--manifest <source>', 'Trusted VENDOR.json baseline')
@@ -344,3 +349,24 @@ modeGated(target(make.command('sync').description('Plan or apply an explicit pac
     const manifestPath = writeApplyOutputs(output, receipt, vendorBytes);
     report({ receiptPath: output, afterManifestPath: manifestPath, makeVersion: version, drift: { ok: drift.ok, counts: drift.counts, batches: drift.batches } });
   }, 'mode')));
+
+// The team-mode toggle. It is the only command that adds or removes the
+// marker, and it bypasses the team-mode write gate for that one path only.
+const mode = make.command('mode').description('Turn team mode on or off: add or remove the .figma-cli/project.json marker and save it as its own Make version');
+function modeCommand(command) {
+  return target(command, 120000)
+    .option('--first-version', 'Only for a git-mode file with no saved version yet: save the change as its first version')
+    .option('--since <commit>', 'With --first-version, when the marker change is already in the working copy: the sandbox head from before it')
+    .option('--dry-run', 'Report what would change without writing to Make');
+}
+modeCommand(mode.command('team').description('Write the team marker {fileKey, repo, trunk: "main"}, save it as a version and verify it after a reload'))
+  .requiredOption('--repo <owner/repo>', 'GitHub repo this Make file deploys from (read through your gh login, GET requests only)', repoName)
+  .action(options => withClient(options, async client => report(await runModeChange(client, {
+    action: 'team', repo: options.repo, firstVersion: options.firstVersion === true, since: options.since, dryRun: options.dryRun === true,
+  }))));
+modeCommand(mode.command('solo').description('Remove the team marker, save that as a version and verify it after a reload; a linked repo\'s admins only'))
+  .option(CONFIRM_FLAG, 'Confirm turning team mode off')
+  .action(options => withClient(options, async client => report(await runModeChange(client, {
+    action: 'solo', firstVersion: options.firstVersion === true, since: options.since, dryRun: options.dryRun === true,
+    confirm: options.yesTurnOffTeamMode === true,
+  }))));

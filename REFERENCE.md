@@ -85,6 +85,8 @@ figma-cli make import --file <make-file-key> --manifest - --timeout 120000 --ses
 figma-cli make verify --file <make-file-key> --manifest - --timeout 120000
 figma-cli make drift --file <make-file-key> --manifest VENDOR.json --timeout 120000 --json
 figma-cli make status --file <make-file-key> --repo <owner/repo> --json
+figma-cli make mode team --file <make-file-key> --repo <owner/repo> [--first-version] [--dry-run]
+figma-cli make mode solo --file <make-file-key> --yes-turn-off-team-mode [--first-version] [--dry-run]
 figma-cli make export-delta --file <make-file-key> --manifest VENDOR.json --who engineer --candidate-dir candidates --out delta.json
 figma-cli make sync --file <make-file-key> --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --plan-out plan.json
 figma-cli make sync --file <make-file-key> --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --apply plan.json --receipt-out receipt.json
@@ -259,6 +261,48 @@ repo link, before doing anything:
   `MAKE_MODE_AMBIGUOUS` unless `--solo` is passed (then it warns);
 - solo mode writes as before, with a one-line stderr note that team mode is
   detected only through the marker or a prior `make status --repo`.
+
+No write command may name `.figma-cli/project.json` itself, in any mode
+(`MAKE_MARKER_RESERVED`); `save-version --expected-path` included.
+
+**Mode toggle.** `make mode team|solo` is the only way to add or remove the
+marker, and it skips the write gate for that one path:
+
+- `make mode team --repo OWNER/REPO` writes `{fileKey, repo, trunk: "main"}`
+  through the durable write. `make mode solo` deletes the marker after a
+  SHA-256 check. Each saves the change as its own Make version
+  (`figma-cli: team mode on (<repo>)` / `figma-cli: team mode off`).
+- Make does not list paths under `.figma-cli/` as pending, so the save is checked
+  as a tree: the working copy may differ from the saved version only in the
+  marker, Make may list nothing pending, and the saved tree must equal the
+  working tree that check read. `--first-version` does the same for a
+  never-saved file against the sandbox head it reads itself before writing the
+  marker, so no `--since` is needed. Only a marker already in the working copy
+  but written outside `make mode` needs `--since <sha>`: the sandbox head
+  `make status` reported before that write (`MAKE_MODE_SINCE_REQUIRED`).
+  Example, a never-saved file's first save:
+  `figma-cli make mode team --first-version --file ydPjoL41RjmufNbv93gPnq --repo amelie-pierce/hcs-design-prototype`.
+- It then reloads only that Make tab and checks that Make reports the new
+  version as a clean baseline, and that the saved tree, the sandbox and the
+  client VFS all hold exactly the new marker (or none).
+- It refuses other pending or unsaved paths (`MAKE_MODE_OTHER_PENDING`), a
+  marker naming another file or repo (`MAKE_MODE_MISMATCH`), an unusable marker
+  on `team` (`MAKE_MARKER_INVALID`), and no-ops (`MAKE_MODE_UNCHANGED`). A marker
+  written or removed but never saved is saved rather than refused; an unsaved
+  removal needs the locally recorded repo link for its admin check.
+- `solo` checks admin rights on the marker's repo, or on the locally recorded
+  link when the marker names no readable repo. It records that link before it
+  deletes, so a removal whose save failed can be finished by re-running
+  `make mode solo --yes-turn-off-team-mode`.
+- `team` reads the repo through `gh` (GET only) and records the local link;
+  `solo` prints a warning, requires the caller to be an admin of the marker's
+  repo (`MAKE_MODE_NOT_ADMIN`, also when `gh` cannot read it), needs
+  `--yes-turn-off-team-mode` (`MAKE_MODE_CONFIRM_REQUIRED`) and drops the local
+  link so later writes are solo, not ambiguous. `--dry-run` reports the plan,
+  warning and permission without writing.
+- A receipt (`who`, file, repo, action, marker SHA-256, version id, number and git
+  SHA, tree, verification) is written to `~/.figma-cli/mode-receipts/` (mode
+  0600). A failed reload check writes a receipt with `verification: "failed"`.
 
 ### Make delta and sync
 
