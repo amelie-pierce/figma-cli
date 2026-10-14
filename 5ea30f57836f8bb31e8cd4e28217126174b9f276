@@ -1,0 +1,19 @@
+tests/node-install-smoke.mjs
+  s_72332e6c0a1123::t_e42456c0de4905 42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5ea30f57836f8bb31e8cd4e28217126174b9f276",
+  "prompts": {},
+  "sessions": {
+    "s_72332e6c0a1123": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5fcd0ebe-5b9b-4092-b45b-ebbf869e583c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
