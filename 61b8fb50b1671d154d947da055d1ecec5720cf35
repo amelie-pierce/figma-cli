@@ -1,0 +1,31 @@
+tests/make-write-gate.test.js
+  s_d0b9913a8e5a95::t_bf028af3cc1460 1-10,19-38,40-86
+  s_d0b9913a8e5a95::t_5f4fc6396b3a3d 11-18,39
+src/make-project.js
+  s_d0b9913a8e5a95::t_354b50d3c56b7a 253,267
+src/make-client.js
+  s_d0b9913a8e5a95::t_354b50d3c56b7a 802-803,805-806,847-848,856,861-865,888,892
+  s_d0b9913a8e5a95::t_8820a860f1c63f 838
+REFERENCE.md
+  s_d0b9913a8e5a95::t_354b50d3c56b7a 192
+tests/make-project-client.test.js
+  s_d0b9913a8e5a95::t_bf028af3cc1460 153-164,166-172,174-178
+_vaults/figma-cli/wiki/make/status.md
+  s_d0b9913a8e5a95::t_354b50d3c56b7a 22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "61b8fb50b1671d154d947da055d1ecec5720cf35",
+  "prompts": {},
+  "sessions": {
+    "s_d0b9913a8e5a95": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e28c39af-cb30-4d19-a660-773ab8111ea2",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
