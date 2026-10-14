@@ -328,6 +328,20 @@ describe('team comment', () => {
     code(() => comment(bob.ctx(), pull.number, { message: 'x', file: 'src/App.tsx' }), 'TEAM_BAD_COMMENT');
     code(() => comment(bob.ctx(), pull.number, { message: 'x', source: 'nope' }), 'TEAM_BAD_COMMENT');
   });
+  it('ignores a review page made for an older version, quoting the selector instead', t => {
+    const w = world(t);
+    const { alice, pull } = alicePr(w);
+    const bob = w.person('bob');
+    review(bob.ctx(), pull.number, { lavish: true, install: false });
+    write(alice.dir, { 'src/App.tsx': lines(20).replace('line 5\n', 'line 5 padding 12\n') });
+    save(alice.ctx());
+    assert.equal(review(bob.ctx(), pull.number, { install: false }).refreshed, true);
+    const stale = comment(bob.ctx(), pull.number, { message: 'Too tight', selector: 'section#file-0 > div#f0-R5 > code' });
+    assert.equal(stale.comment.kind, 'general');
+    assert.equal(w.github.comments.at(-1).body, '> On `section#file-0 > div#f0-R5 > code`:\n\nToo tight');
+    review(bob.ctx(), pull.number, { lavish: true, install: false });
+    assert.equal(comment(bob.ctx(), pull.number, { message: 'Too tight', selector: 'section#file-0 > div#f0-R5 > code' }).comment.kind, 'line');
+  });
 });
 
 describe('team approve and request-changes', () => {

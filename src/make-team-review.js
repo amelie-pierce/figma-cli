@@ -386,9 +386,14 @@ function reviewedCommit(ctx, pull) {
   return { sha: ctx.git(['-C', dir, 'rev-parse', 'HEAD'], 'Reading the review copy'), copy: true };
 }
 
-function reviewMap(ctx, pull) {
+// The review page's source map, only when it was made for the commit the
+// comment goes on: an older page's lines may point elsewhere now.
+function reviewMap(ctx, pull, sha) {
   const file = join(reviewCopyPath(mainRoot(ctx), pull.number), LAVISH_DIR, 'source-map.json');
-  try { return JSON.parse(readFileSync(file, 'utf8')).lines || {}; } catch { return {}; }
+  try {
+    const saved = JSON.parse(readFileSync(file, 'utf8'));
+    return saved.head === sha ? saved.lines || {} : {};
+  } catch { return {}; }
 }
 
 const quote = text => String(text).split('\n').map(line => `> ${line}`).join('\n');
@@ -401,11 +406,13 @@ export function comment(ctx, ref, { message, file, line, side = 'RIGHT', selecto
   const pull = resolvePr(ctx, ref);
   requireReviewable(ctx, pull, { what: 'comment on' });
   let target = null;
+  let commit = null;
   if (file || line != null) {
     if (!file || !Number.isInteger(Number(line)) || Number(line) < 1) fail('A line comment needs both --file and a --line number.', 'TEAM_BAD_COMMENT');
     target = { path: String(file).replace(/^\.?\//, ''), line: Number(line), side: side === 'LEFT' ? 'LEFT' : 'RIGHT', from: 'file and line' };
   } else if (selector) {
-    const mapped = sourceFromSelector(selector, reviewMap(ctx, pull));
+    commit = reviewedCommit(ctx, pull).sha;
+    const mapped = sourceFromSelector(selector, reviewMap(ctx, pull, commit));
     if (mapped) target = { ...mapped, from: 'the Lavish review page' };
   }
   if (!target && source) {
@@ -415,7 +422,7 @@ export function comment(ctx, ref, { message, file, line, side = 'RIGHT', selecto
   }
   const login = ctx.login();
   const body = message.trim();
-  const commit = target ? reviewedCommit(ctx, pull).sha : null;
+  if (target && !commit) commit = reviewedCommit(ctx, pull).sha;
   let posted = null;
   let fallback = null;
   if (target) {
