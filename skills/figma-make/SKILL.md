@@ -116,7 +116,12 @@ For exact commands and safe in-memory examples, read
    when the user names the file's GitHub repo; this also records the link
    locally so later writes see it). In **team** mode the file
    deploys from GitHub `main`: do not write to Make; tell the user to start a
-   task in the repo. **Ambiguous** mode (a repo but no `.figma-cli/project.json`)
+   task in the repo. To run that repo locally use `make clone OWNER/REPO` (or
+   `make clone --file KEY`), `make pull` and `make dev`; start `make dev` as a
+   background job and poll the URL it prints, never wait on it. On a
+   `MAKE_KIT_DEPENDENCY` refusal, explain the printed fix (vendor the kit by
+   pull request); never copy Make's `.npmrc` or add tokens to the repo.
+   **Ambiguous** mode (a repo but no `.figma-cli/project.json`)
    needs the user's explicit go-ahead before passing `--solo`. **Solo** files are
    edited directly. To switch modes, only when the user asks, use
    `make mode team --repo OWNER/REPO` (add `--first-version` on a never-saved

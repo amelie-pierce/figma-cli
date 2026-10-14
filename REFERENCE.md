@@ -87,6 +87,11 @@ figma-cli make drift --file <make-file-key> --manifest VENDOR.json --timeout 120
 figma-cli make status --file <make-file-key> --repo <owner/repo> --json
 figma-cli make mode team --file <make-file-key> --repo <owner/repo> [--first-version] [--dry-run]
 figma-cli make mode solo --file <make-file-key> --yes-turn-off-team-mode [--first-version] [--dry-run]
+figma-cli make clone <owner/repo> [dir]
+figma-cli make clone --file <make-file-key> [dir]
+figma-cli make install [dir]
+figma-cli make pull [dir]
+figma-cli make dev [dir]
 figma-cli make export-delta --file <make-file-key> --manifest VENDOR.json --who engineer --candidate-dir candidates --out delta.json
 figma-cli make sync --file <make-file-key> --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --plan-out plan.json
 figma-cli make sync --file <make-file-key> --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --apply plan.json --receipt-out receipt.json
@@ -303,6 +308,54 @@ marker, and it skips the write gate for that one path:
 - A receipt (`who`, file, repo, action, marker SHA-256, version id, number and git
   SHA, tree, verification) is written to `~/.figma-cli/mode-receipts/` (mode
   0600). A failed reload check writes a receipt with `verification: "failed"`.
+
+### Running a team-mode project locally
+
+In team mode GitHub `main` is the source of truth, so people run the app from a
+local clone. `make clone`, `make install`, `make pull` and `make dev` never write
+to Make or GitHub; they use your own `gh` and `git` logins, and figma-cli stores
+no tokens. They always target `main` explicitly, never the repo's default branch.
+Errors are JSON on stderr with a `code`; results are JSON on stdout.
+
+- `make clone OWNER/REPO [dir]` runs `gh repo clone OWNER/REPO dir -- --branch main`
+  (dir defaults to the repo name and must be new or empty,
+  `MAKE_CLONE_TARGET_EXISTS`), then installs as `make install` does. With
+  `--file KEY [dir]` the repo comes from the open Make file's team marker
+  `.figma-cli/project.json` (read-only, the same client VFS read as the write
+  gate). A file with no marker, a marker for another file, an invalid marker or a
+  non-`main` trunk refuses (`MAKE_CLONE_NO_REPO`). When the install step refuses,
+  the clone stays and the error carries its `dir`.
+- `make install [dir]` checks the toolchain against `.mise.toml` `[tools]`
+  (`node`, `pnpm`/`npm:pnpm`), `package.json` `engines` and `packageManager`,
+  each run in the clone so mise or corepack shims report its versions:
+  version mismatches only warn, a missing pnpm refuses
+  (`MAKE_TOOLCHAIN_MISSING`). It warns on any tracked `.npmrc` that holds
+  `_authToken`, `_auth` or `_password`, naming path and line only. It refuses
+  any `@make-kits/*` dependency or `figma.kitAttachments` entry
+  (`MAKE_KIT_DEPENDENCY`): a kit attached in Make's UI resolves only through
+  Make's Figma-managed registry, so a local install fails with a 404. The fix is
+  to vendor the kit's source by pull request (`src/vendor/<kit>/` pinned by
+  `VENDOR.json`) and drop the dependency, or get registry access into your own
+  `~/.npmrc`. Make's `.npmrc` is git-excluded and never copied. The install is
+  pnpm only, frozen and script-free: `pnpm install --frozen-lockfile
+  --ignore-scripts`. A repo without `pnpm-lock.yaml`, or whose `packageManager`
+  names anything other than pnpm, refuses (`MAKE_NO_LOCKFILE`).
+  Make's own install uses `--no-frozen-lockfile`; locally the lockfile changes
+  only in dependency pull requests.
+- `make pull [dir]` fetches `origin main` and fast-forwards local `main` only.
+  It refuses when local `main` has commits that are not on GitHub
+  (`MAKE_PULL_LOCAL_COMMITS`; that work belongs on a task branch, which the
+  planned `team sync` will handle) and when checked-out `main` has uncommitted
+  tracked changes (`MAKE_PULL_DIRTY`). On another branch only the local `main`
+  ref moves. It reinstalls only when `pnpm-lock.yaml` changed, with the same checks.
+- `make dev [dir]` runs `pnpm run dev` (the same command as Make's
+  `.figma/make/dev`) and refuses when `package.json` has no `scripts.dev`
+  (`MAKE_NO_DEV_SCRIPT`). It needs installed
+  dependencies (`MAKE_NOT_INSTALLED`), mirrors the server's output, prints
+  `figma-cli: local URL <url>` once on stderr, forwards Ctrl-C and exits with the
+  server's code. It runs until stopped: **agents start it as a background job
+  and poll the printed URL** (for example `curl -sf http://localhost:5173/`)
+  instead of waiting for it to return.
 
 ### Make delta and sync
 
