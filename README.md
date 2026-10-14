@@ -336,6 +336,15 @@ notes), `team comment`, `team approve` and `team request-changes` (as the
 reviewer's own GitHub login, never on their own pull request), and on the
 author's side `team feedback` and `team address`.
 
+A repo admin deploys merged `main` into the team-mode Make file with
+`make deploy --file KEY` in their clone. The default is a dry run that writes a
+reviewable plan; `--apply PLAN` re-plans, writes the planned files, saves one
+version `deploy <sha7>`, checks the whole project against `main`, writes a private
+receipt under `~/.figma-cli/deploys/` and pushes the annotated tag
+`make-deploy/<n>`. `--verify RECEIPT` confirms it after a fresh reload;
+`--resume` and `--abort` finish or undo an interrupted deploy. See
+[deploying main to Make](REFERENCE.md#deploying-main-to-make-make-deploy).
+
 `make export-delta` writes an explicit saved-version Make delta for workspace
 `atomic-cli intake-make-delta --from`. `make sync` accepts a committed
 `package-make-kit` artifact, a trusted VENDOR.json baseline and a recorded

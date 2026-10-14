@@ -316,16 +316,20 @@ export function buildStatus({ fileKey, make, marker, repo, linked, github, githu
       for (const path of flat.keys()) if (make.isLfs(path)) lfs.add(path);
     }
     // Compare trees without LFS paths when there are any; otherwise these are the raw tree SHAs.
-    const compared = flat => flat && treeOf(flat, lfs);
+    // Like make deploy, a team marker that main does not hold stays out of the relation.
+    const joined = new Set(lfs);
+    const markerOutsideMain = !github.main.flat.has(PROJECT_MARKER) && !!make.makeFlat?.has(PROJECT_MARKER);
+    if (markerOutsideMain) joined.add(PROJECT_MARKER);
+    const compared = flat => flat && treeOf(flat, joined);
     const makeCompared = compared(make.makeFlat);
     const mainCompared = compared(github.main.flat);
     const baseCompared = compared(github.base?.flat);
     const relation = relationOf({ make: makeCompared, main: mainCompared, base: baseCompared });
-    const differing = make.makeFlat ? differingPaths(make.makeFlat, github.main.flat, lfs) : null;
+    const differing = make.makeFlat ? differingPaths(make.makeFlat, github.main.flat, joined) : null;
     const unreviewed = github.commits.filter(commit => !commit.reviewed);
     const nonMake = github.commits.filter(commit => !commit.fromMake);
     // Push sends the working copy, unsaved edits included, to the default branch.
-    const workingMatchesMain = treeOf(make.workingFlat, lfs) === mainCompared;
+    const workingMatchesMain = treeOf(make.workingFlat, lfs) === treeOf(github.main.flat, lfs);
     let mirror;
     if (workingMatchesMain) mirror = { state: 'safe', reason: 'Push would change nothing: the Make working copy equals main' };
     else if (github.truncated) mirror = { state: 'unknown', reason: 'too many commits on main to check' };
@@ -350,6 +354,7 @@ export function buildStatus({ fileKey, make, marker, repo, linked, github, githu
       main: { commit: github.main.commit, tree: github.main.tree },
       base: publicBase(github.base), relation, differingPaths: differing,
       ...(lfs.size ? { comparedWithoutLfs: { make: makeCompared, main: mainCompared, base: baseCompared } } : {}),
+      ...(markerOutsideMain ? { markerOutsideMain: true } : {}),
       commitsChecked: github.commits.length, truncated: github.truncated,
       unreviewed: unreviewed.map(({ sha, author, fromMake }) => ({ sha, author, fromMake })),
       mirror,

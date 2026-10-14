@@ -123,6 +123,8 @@ For exact commands and safe in-memory examples, read
    background job and poll the URL it prints, never wait on it. On a
    `MAKE_KIT_DEPENDENCY` refusal, explain the printed fix (vendor the kit by
    pull request); never copy Make's `.npmrc` or add tokens to the repo.
+   Merged `main` reaches Make only through `make deploy`, which a repo admin
+   runs in the clone (dry run first; see the `figma-make-team` skill).
    **Ambiguous** mode (a repo but no `.figma-cli/project.json`)
    needs the user's explicit go-ahead before passing `--solo`. **Solo** files are
    edited directly. To switch modes, only when the user asks, use

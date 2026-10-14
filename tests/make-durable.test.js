@@ -166,6 +166,18 @@ test('hidden-file read-back uses VFS and sandbox when Make omits dotfiles from i
   await client._durableAgreement('src/vendor/atomic-aui/tokens/generated/.generated', 'sentinel', Date.now() + 1000);
 });
 
+test('a root lockfile, which Make leaves out of its tree, reads back through VFS and sandbox', async () => {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
+  client.fileKey = 'ScratchKey';
+  client._durable = async () => ({ exists: true, content: 'lock' });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._bridgeRead = async () => ({ content: 'lock' });
+  client._sourceTree = async () => [];
+  client._read = async () => { throw new Error('No editor for a file outside the tree'); };
+  assert.equal(await client._durableAgreement('pnpm-lock.yaml', 'lock', Date.now() + 1000), 'vfs-sandbox-matched');
+  await assert.rejects(client._durableAgreement('src/pnpm-lock.yaml', 'lock', Date.now() + 300), /tree absent/);
+});
+
 test('delete read-back requires a successful sandbox directory listing', async () => {
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
   client.fileKey = 'ScratchKey';
@@ -525,6 +537,40 @@ test('a checked version refuses listed pending files, other unsaved paths or a m
   const headBase = checkedClient({ before: savedStatus({ treeSource: 'sandbox-head' }) });
   await assert.rejects(headBase.client.saveCheckedVersion('Mode', ['.figma-cli/project.json']), /saved version was not the comparison base/);
   for (const { calls } of [listed, other, headBase]) assert.equal(calls.some(call => call[0] === 'action'), false);
+});
+
+test('a deploy save (listed) passes exactly Make\'s listed paths and still checks every path as a tree', async () => {
+  const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
+  const pending = state(['src/App.tsx']);
+  const { client, calls } = checkedClient({ before: savedStatus({ persistence: pending, workingFlat: edited }),
+    drift: [pending, { ...state(), savedVersion: next }] });
+  const queue = [savedStatus({ persistence: pending, workingFlat: edited }), { ...afterStatus(), makeFlat: edited, workingFlat: edited }];
+  client.projectStatus = async () => (queue.length > 1 ? queue.shift() : queue[0]);
+  const result = await client.saveCheckedVersion('deploy abc1234', ['src/App.tsx', '.figma-cli/project.json'], { listed: true });
+  const [, action] = calls.find(call => call[0] === 'action');
+  assert.deepEqual(action.expectedPaths, ['src/App.tsx']);
+  assert.deepEqual(result.changedFiles, ['.figma-cli/project.json', 'src/App.tsx']);
+  assert.equal(result.verification, 'saved-version-clean-baseline; saved-content-matched');
+  const stray = checkedClient({ before: savedStatus({ persistence: state(['src/App.tsx', 'src/x.ts']), workingFlat: edited }) });
+  await assert.rejects(stray.client.saveCheckedVersion('deploy', ['src/App.tsx', '.figma-cli/project.json'], { listed: true }), /other pending changes.*src\/x\.ts/);
+  assert.equal(stray.calls.some(call => call[0] === 'action'), false);
+});
+
+test('a deploy save accepts a saved file mode Make kept, but not different content', async () => {
+  const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
+  const pending = state(['src/App.tsx']);
+  const kept = new Map([...edited, ['src/App.tsx', { mode: '100755', blob: '5'.repeat(40) }]]);
+  const run = after => {
+    const { client } = checkedClient({ before: savedStatus({ persistence: pending, workingFlat: edited }), drift: [pending, { ...state(), savedVersion: next }] });
+    const queue = [savedStatus({ persistence: pending, workingFlat: edited }), after];
+    client.projectStatus = async () => (queue.length > 1 ? queue.shift() : queue[0]);
+    return client.saveCheckedVersion('deploy', ['src/App.tsx', '.figma-cli/project.json'], { listed: true });
+  };
+  const ok = await run({ ...afterStatus('f'.repeat(40)), makeFlat: kept, workingFlat: kept });
+  assert.deepEqual(ok.modeOnly, ['src/App.tsx']);
+  const wrong = new Map([...edited, ['src/App.tsx', { mode: '100644', blob: '6'.repeat(40) }]]);
+  const error = await run({ ...afterStatus('f'.repeat(40)), makeFlat: wrong, workingFlat: wrong }).catch(cause => cause);
+  assert.match(error.message, /version 9 .* differs from the checked working tree.*Do not retry/);
 });
 
 test('reload waits for a new document and its Make state', async () => {
