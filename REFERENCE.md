@@ -499,10 +499,12 @@ into `main` are reviewed (`TEAM_PR_NOT_READY`).
   repos/<repo>/pulls/<n>/comments`, on the reviewed commit) when the target is
   a line inside the pull request's diff: `--file`/`--line` (`--old` for a
   removed line), a `--selector` whose last `#id` is in the review page's source
-  map, or `--source file:line` read from an app element's `data-source` in
-  Lavish's DOM snapshot. Anything else, including a line GitHub rejects, is a
-  general comment (`issues/<n>/comments`) that quotes the target and any
-  `--text` (`TEAM_BAD_COMMENT` for an empty message or half a target).
+  map (only a map made for the commit being commented on; an older page's
+  note becomes a general comment), or `--source file:line` read from an app
+  element's `data-source` in Lavish's DOM snapshot. Anything else, including
+  a line GitHub rejects, is a general comment (`issues/<n>/comments`) that
+  quotes the target and any `--text` (`TEAM_BAD_COMMENT` for an empty message
+  or half a target).
 - `team approve <pr>` and `team request-changes <pr> -m` refuse your own pull
   request (`TEAM_SELF_REVIEW`) before calling GitHub, refuse approving a draft,
   and post a review (`gh api POST repos/<repo>/pulls/<n>/reviews`) as your own
