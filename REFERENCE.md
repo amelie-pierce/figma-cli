@@ -248,8 +248,8 @@ GitHub. It reports:
   repo reads, the file key → repo link is recorded locally in
   `~/.figma-cli/make-repos.json` (never in the repo or in Make):
   - `main`'s commit and tree, and the latest `make-deploy/<n>` tag with its
-    receipt base (`mainTree` from the tag's JSON receipt, else the tagged
-    commit's tree);
+    base, the tagged commit's tree (a tag receipt naming a different
+    `mainTree` is reported as `receiptMismatch`);
   - `relation`: `in-sync`, `make-ahead`, `git-ahead`, `diverged`, or `no-base`
     when there is no tag, plus the differing paths;
   - `unreviewed`: commits on `main` since the base (all history without one, up
@@ -401,9 +401,10 @@ Guards, each refusing with nothing written:
 - Make is idle, in git mode with a saved version, with nothing pending or unsaved
   and no AI generation running (`DEPLOY_MAKE_BUSY`, `DEPLOY_MAKE_STATE`,
   `DEPLOY_MAKE_AHEAD`);
-- Make's saved tree equals the newest `make-deploy/<n>` tag's `mainTree`
-  (`DEPLOY_MAKE_AHEAD`: Make was edited outside deploys; bring the edits into
-  `main` first with the coming `make rescue` step). The first deploy's base is
+- Make's saved tree equals the tree of the newest `make-deploy/<n>` tag's
+  commit (`DEPLOY_MAKE_AHEAD`: Make was edited outside deploys; bring the edits
+  into `main` first with the coming `make rescue` step). A tag receipt naming a
+  different `mainTree` is refused (`DEPLOY_MAKE_STATE`). The first deploy's base is
   Make's saved tree. No earlier deploy of the file may be unfinished
   (`DEPLOY_UNFINISHED` names the recovery command).
 
