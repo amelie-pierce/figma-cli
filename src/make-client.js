@@ -799,10 +799,11 @@ export class MakeClient {
               }
               for (const entry of entries) {
                 const path = join(entry.name);
-                const ignored = inIgnored || isIgnored(rules, path, entry.isDirectory) ||
-                  (entry.isDirectory && entry.name === 'node_modules');
+                const ignored = inIgnored || isIgnored(rules, path, entry.isDirectory);
+                const untrackedModules = entry.isDirectory && entry.name === 'node_modules';
                 const keepTracked = entry.isDirectory ? trackedFolders.has(path) : trackedFiles.has(path);
-                if ((!directory && entry.name === '.git') || isIgnored(hard, path, entry.isDirectory) || (ignored && !keepTracked)) {
+                if ((!directory && entry.name === '.git') || isIgnored(hard, path, entry.isDirectory) ||
+                    ((ignored || untrackedModules) && !keepTracked)) {
                   excluded.push(entry.isDirectory ? `${path}/` : path);
                   continue;
                 }
@@ -834,7 +835,7 @@ export class MakeClient {
   // Read-only inputs for `make status`: the saved version's own tree from the
   // sandbox git objects (exact file modes), the project inventory with that
   // tree's paths kept as tracked, the working-copy tree, the marker and the
-  // AI-turn version history. A sandbox without .git has no saved tree.
+  // AI-turn version history.
   async projectStatus() {
     const git = await this._operation(async deadline => {
       const state = (await this._driftState(deadline)).state;
@@ -843,7 +844,8 @@ export class MakeClient {
       try {
         // Make never answers a listing of a missing folder, so each folder is
         // listed only after its parent shows it. '' is .git itself, which the
-        // root listing omits: it is listed once, and a failure means no .git.
+        // root listing omits, so its absence cannot be proven: any failed
+        // listing fails the status.
         const listings = new Map();
         const listDir = async path => {
           if (!listings.has(path)) {
@@ -851,13 +853,16 @@ export class MakeClient {
             const slash = path.lastIndexOf('/');
             if (!path || (await listDir(slash < 0 ? '' : path.slice(0, slash)))?.includes(path.slice(slash + 1))) {
               const remotePath = path ? `code/.git/${path}` : 'code/.git';
-              let reply = null;
+              let reply;
               try {
                 reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
                   'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
                 ]);
-              } catch (error) { if (path) throw error; }
-              if (reply?.success === true && reply.data?.path === remotePath && Array.isArray(reply.data.files)) names = reply.data.files.map(entry => entry.name);
+              } catch (error) { throw new Error(`Make sandbox git is unavailable: ${remotePath}: ${error.message}`); }
+              if (reply?.success !== true || reply.data?.path !== remotePath || !Array.isArray(reply.data.files)) {
+                throw new Error(`Make sandbox git is unavailable: ${remotePath} could not be listed.`);
+              }
+              names = reply.data.files.map(entry => entry.name);
             }
             listings.set(path, names);
           }
@@ -868,7 +873,6 @@ export class MakeClient {
           const names = await listDir(slash < 0 ? '' : path.slice(0, slash));
           return names?.includes(path.slice(slash + 1)) ? this._bridgeReadBytes(bridge, `.git/${path}`) : null;
         };
-        if (!await listDir('')) return { state, history, head: null, tree: null, flat: null, treeSource: 'none', exclude: null };
         const reader = new SandboxGit({ readFile, listDir });
         const head = await reader.head();
         const saved = state?.hasBaseline && /^[a-f0-9]{40}$/.test(state.savedVersion || '') ? state.savedVersion : null;
@@ -881,11 +885,11 @@ export class MakeClient {
       } finally { await bridge.dispose(); }
     });
     const scan = await this.inventoryProject({ includeBytes: path => path === PROJECT_MARKER || path === '.gitattributes',
-      tracked: git.flat ? [...git.flat.keys()] : [], exclude: git.exclude });
+      tracked: [...git.flat.keys()], exclude: git.exclude });
     if (JSON.stringify(scan.state) !== JSON.stringify(git.state)) throw new Error('Make state changed during inventory.');
     const isLfs = lfsMatcher(scan.contents.get('.gitattributes')?.toString('utf8'));
     const working = workingFlat(scan.inventory, git.flat);
-    const lfsPaths = [...new Set([...scan.inventory.keys(), ...(git.flat?.keys() ?? [])])].filter(isLfs).sort();
+    const lfsPaths = [...new Set([...scan.inventory.keys(), ...git.flat.keys()])].filter(isLfs).sort();
     return { persistence: scan.state, history: git.history, head: git.head, makeTree: git.tree, treeSource: git.treeSource,
       makeFlat: git.flat, workingFlat: working, workingTree: treeOf(working), fileCount: scan.inventory.size,
       excluded: scan.excluded, excludeSource: scan.excludeSource, lfsPaths, isLfs,

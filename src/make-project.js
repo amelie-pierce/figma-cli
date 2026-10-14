@@ -250,7 +250,7 @@ const publicBase = base => base && Object.fromEntries(Object.entries(base).filte
 export function buildStatus({ fileKey, make, marker, repo, linked, github, githubError }) {
   const mode = detectMode(marker, { repo, linked });
   const makeLfs = new Set(make.lfsPaths);
-  const workingDiffers = !!make.makeFlat && treeOf(make.workingFlat, makeLfs) !== treeOf(make.makeFlat, makeLfs);
+  const workingDiffers = treeOf(make.workingFlat, makeLfs) !== treeOf(make.makeFlat, makeLfs);
   const attention = [];
   const state = make.persistence;
   if (!state) attention.push('Make saving mode or pending state is unavailable');
@@ -264,8 +264,7 @@ export function buildStatus({ fileKey, make, marker, repo, linked, github, githu
   if (make.history?.ambiguous) attention.push('Make version history is ambiguous');
   const aiBaseline = !!state?.savedVersion && make.history?.latest?.gitSha === state.savedVersion;
   if (mode.mode === 'team' && aiBaseline) attention.push('Make\'s saved version came from an AI turn, which team mode does not allow');
-  if (!make.makeFlat) attention.push('Make has no sandbox git repository to read a saved tree from');
-  else if (workingDiffers) attention.push('The Make working copy differs from its saved tree');
+  if (workingDiffers) attention.push('The Make working copy differs from its saved tree');
   if (mode.mode === 'ambiguous') attention.push(`Mode is ambiguous: ${mode.reason}`);
   if (mode.mode === 'invalid') attention.push(`Marker is unusable: ${mode.reason}`);
   if (mode.repoConflict) attention.push(mode.repoConflict);

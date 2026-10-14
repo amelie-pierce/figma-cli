@@ -150,17 +150,32 @@ test('an untracked node_modules without an ignore rule is skipped', async t => {
   assert.equal(result.workingTree, result.makeTree);
 });
 
-test('a sandbox without .git reports no saved tree after a single .git listing', async t => {
+test('an unreadable sandbox .git fails the status after one listing instead of hashing without it', async t => {
+  for (const hangOnMissing of [true, false]) {
+    const dir = sandbox(t);
+    rmSync(join(dir, '.git'), { recursive: true, force: true });
+    const { c, calls } = client(dir, { state: clean(null), hangOnMissing });
+    await assert.rejects(c.projectStatus(), /Make sandbox git is unavailable: code\/\.git/);
+    assert.equal(calls.filter(call => call.path === 'code/.git' || call.path.startsWith('code/.git/')).length, 1);
+    assert.ok(!calls.some(call => call.type === 'fs/file/read'), 'no inventory without the saved tree');
+  }
+});
+
+test('a node_modules folder with tracked paths is traversed with normal ignore rules', async t => {
   const dir = sandbox(t);
-  rmSync(join(dir, '.git'), { recursive: true, force: true });
-  const { c, calls } = client(dir, { state: { mode: 'snapshot', hasBaseline: false, savedVersion: null, pendingCount: 0 } });
+  writeFileSync(join(dir, '.gitignore'), 'dist\n*.log\nnode_modules/x/skip.js\n');
+  writeFileSync(join(dir, 'node_modules/x/skip.js'), 's');
+  git(dir, 'add', '-A');
+  git(dir, 'add', '-f', 'node_modules/x/index.js');
+  git(dir, 'commit', '-q', '-m', 'fs write: 2');
+  writeFileSync(join(dir, 'node_modules/x/untracked.js'), 'u');
+  const { c } = client(dir, { state: clean(git(dir, 'rev-parse', 'HEAD')) });
   const result = await c.projectStatus();
-  assert.equal(result.treeSource, 'none');
-  assert.equal(result.makeTree, null);
-  assert.equal(result.head, null);
-  assert.equal(result.excludeSource, 'baseline-only');
-  assert.equal(calls.filter(call => call.path === 'code/.git' || call.path.startsWith('code/.git/')).length, 1);
-  assert.ok(result.workingFlat.has('src/App.tsx'));
+  assert.ok(result.workingFlat.has('node_modules/x/index.js'));
+  assert.ok(result.workingFlat.has('node_modules/x/untracked.js'), 'untracked, unignored files under a tracked node_modules count');
+  assert.ok(result.excluded.includes('node_modules/x/skip.js'));
+  git(dir, 'add', 'node_modules/x/untracked.js');
+  assert.equal(result.workingTree, git(dir, 'write-tree'));
 });
 
 test('symbolic links are refused rather than hashed', async t => {

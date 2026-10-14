@@ -189,8 +189,7 @@ GitHub. It reports:
     an ignore rule matches it (a committed `dist/` is hashed); an untracked
     `node_modules/` is skipped.
   - Without a saved version, the sandbox HEAD's tree is used (`treeSource:
-    "sandbox-head"`). Without a sandbox `.git`, there is no saved tree
-    (`treeSource: "none"`), which is an attention item.
+    "sandbox-head"`). An unreadable sandbox `.git` fails the status (exit 1).
   - The newest AI-turn version, since an AI turn saves every pending edit.
 - **Mode**, from the committed `.figma-cli/project.json` in Make's working copy
   (`{"fileKey", "repo", "trunk"?}`):

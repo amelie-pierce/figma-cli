@@ -19,7 +19,7 @@ date: 2026-10-14
 
 `inventoryProject` lists the `code` root through the bridge (`src/make-client.js:743`). The bridge allows `code` for `fs/dir/list` only (`src/make-rpc.js:113`).
 - The root listing **omits `.git`** even with `includeHidden`, so `.git` is listed directly.
-- **Make never answers a listing of a missing folder**; the request times out. `projectStatus` lists `.git` once; a failed listing means no sandbox git, reported as `treeSource: "none"`. Sandbox git folders are listed only after their parent shows them.
+- **Make never answers a listing of a missing folder**; the request times out. The root listing omits `.git`, so its absence cannot be proven: `projectStatus` lists `.git` once and any failed listing fails the status ("Make sandbox git is unavailable", exit 1). Sandbox git folders are listed only after their parent shows them.
 - The saved tree is read first; its paths count as tracked. Always excluded and never read: `.git` and `PROJECT_EXCLUDES` (`.npmrc`, `.figma/design-context/`; `src/make-project.js`). The runtime `.git/info/exclude` and each folder's `.gitignore` are applied as git does (`src/git-tree.js`), except that tracked paths are kept (a committed, ignored `dist/` is hashed). An untracked `node_modules/` is skipped. Symbolic links are refused.
 - Version and pending state are compared around the git-object read and at every inventory batch boundary.
 - LFS paths are left out of every comparison: working vs saved, Make vs main, and the mirror check. Submodule gitlinks (`160000`) hash as git does.

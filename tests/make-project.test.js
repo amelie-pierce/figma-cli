@@ -277,14 +277,6 @@ describe('make status', () => {
     assert.equal(result.github.relation, 'in-sync');
   });
 
-  it('a sandbox without .git reports no saved tree instead of a working-copy difference', () => {
-    const make = { ...makeSide({ saved: A }), head: null, makeTree: null, makeFlat: null, treeSource: 'none' };
-    const result = buildStatus({ fileKey: KEY, make, marker: parseMarker(null, KEY) });
-    assert.ok(result.attention.includes('Make has no sandbox git repository to read a saved tree from'));
-    assert.ok(!result.attention.includes('The Make working copy differs from its saved tree'));
-    assert.equal(result.make.treeSource, 'none');
-  });
-
   it('status mode uses a recorded repo link when --repo is omitted', () => {
     const result = buildStatus({ fileKey: KEY, make: makeSide({ saved: A }), marker: parseMarker(null, KEY), linked: REPO });
     assert.equal(result.mode.mode, 'ambiguous');
