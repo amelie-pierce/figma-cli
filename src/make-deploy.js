@@ -148,7 +148,8 @@ const receiptJson = message => {
   try { return JSON.parse(message.slice(start)); } catch { return null; }
 };
 
-// The newest tag's base: the receipt's mainTree, or the tagged commit's tree.
+// The newest tag's base: the tagged commit's tree. A receipt naming another
+// tree is refused rather than trusted.
 export function tagBase(ctx, tag) {
   ctx.git(['fetch', '--quiet', '--no-tags', 'origin', `+refs/tags/${tag.name}:refs/tags/${tag.name}`], `Reading ${tag.name} from GitHub`);
   const commit = revOf(ctx, `refs/tags/${tag.name}`);
@@ -156,8 +157,10 @@ export function tagBase(ctx, tag) {
   const annotated = ctx.git(['cat-file', '-t', `refs/tags/${tag.name}`]) === 'tag';
   const receipt = annotated ? receiptJson(ctx.git(['cat-file', 'tag', `refs/tags/${tag.name}`])) : null;
   const commitTree = ctx.git(['rev-parse', `${commit}^{tree}`]);
-  const tree = SHA.test(receipt?.mainTree || '') ? receipt.mainTree : commitTree;
-  return { source: 'tag', tag: tag.name, commit, mainTree: tree, flat: lsTree(ctx, tree) };
+  if (receipt?.mainTree != null && receipt.mainTree !== commitTree) {
+    fail(`${tag.name}'s receipt names main tree ${receipt.mainTree}, but the tagged commit's tree is ${commitTree}. Nothing was deployed.`, 'DEPLOY_MAKE_STATE');
+  }
+  return { source: 'tag', tag: tag.name, commit, mainTree: commitTree, flat: lsTree(ctx, commitTree) };
 }
 
 async function ghCall(gh, args, what) {
@@ -421,11 +424,11 @@ const countText = c => `${c.add} new, ${c.modify} changed and ${c.delete} delete
 
 // --- dry run -----------------------------------------------------------------
 
-export async function deployPlan(client, { dir, planOut } = {}, deps = {}) {
+export async function deployPlan(client, { dir } = {}, deps = {}) {
   deps = defaults(deps);
   const { plan, access, pr, built } = await prepare(client, { dir }, deps);
   const c = counts(plan.files);
-  const planPath = resolve(planOut || join(deployDir(deps.home), 'plans', `${plan.fileKey}-${short(plan.mainCommit)}-${plan.digest.slice(0, 12)}.json`));
+  const planPath = join(deployDir(deps.home), 'plans', `${plan.fileKey}-${short(plan.mainCommit)}-${plan.digest.slice(0, 12)}.json`);
   if (plan.files.length) writeJson(planPath, plan);
   return { dryRun: true, fileKey: plan.fileKey, repo: plan.repo, who: access.login, mainCommit: plan.mainCommit, pr, build: built,
     base: plan.base, tag: plan.tag, counts: c, files: plan.files.map(({ path, op }) => ({ path, op })),
@@ -676,6 +679,7 @@ function backupContent(receipt, file, home) {
 export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
   deps = defaults(deps);
   const receipt = readReceipt(receiptPath);
+  await requireAdmin(receipt.repo, deps.gh);
   const { files } = await resumable(client, receipt, 'abort');
   const written = files.filter(file => file.state === 'after');
   const restore = written.map(file => ({ file, content: file.op === 'add' ? null : backupContent(receipt, file, deps.home) }));
@@ -733,7 +737,14 @@ export async function deployVerify(client, { dir, receiptPath } = {}, deps = {})
         { receiptPath: receipt.receiptPath });
     }
     const latest = status.history?.latest?.gitSha === state?.savedVersion ? status.history.latest.versionNumber : null;
-    receipt.makeAfter = { versionId: null, versionNumber: latest, versionGitSha: state?.savedVersion ?? null, tree: null };
+    const makeAfter = { versionId: null, versionNumber: latest, versionGitSha: state?.savedVersion ?? null, tree: null };
+    const problems = driftProblems(status, { ...receipt, makeAfter }, mainFlat);
+    if (problems.length) {
+      fail(`Make's saved version ${state?.savedVersion ?? 'none'} is not this deploy's: ${problems.join('; ')}. It may hold edits made in Make, ` +
+        `so the receipt stays at stage ${receipt.stage}. Inspect Make's versions by hand. Receipt: ${receipt.receiptPath}.`, 'DEPLOY_VERIFY_FAILED',
+        { receiptPath: receipt.receiptPath });
+    }
+    receipt.makeAfter = makeAfter;
   }
   const problems = driftProblems(status, receipt, mainFlat);
   if (problems.length && receipt.outcome === 'ok') {

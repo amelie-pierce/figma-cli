@@ -382,7 +382,6 @@ modeCommand(mode.command('solo').description('Remove the team marker, save that 
 // team mode allows, so it runs its own guards instead of the write gate.
 target(make.command('deploy').description('Deploy GitHub main from a local clone into a team-mode Make file (repo admins only). Dry run by default'), 120000)
   .option('--dir <path>', 'Local clone of the repo, on a clean main equal to GitHub\'s (default: current folder)')
-  .option('--plan-out <file>', 'Dry run: write the plan here instead of ~/.figma-cli/deploys/plans/')
   .option('--apply <plan>', 'Re-plan, check the reviewed plan still holds, then write, save one version, check drift, record the receipt and push the tag')
   .option('--verify <receipt>', 'Reload Make, confirm the deployed version and tree, and finalise an uncertain receipt (pushes a missing tag)')
   .option('--resume <receipt>', 'Finish an interrupted deploy that saved no version: write the remaining paths, then save')
@@ -394,14 +393,13 @@ target(make.command('deploy').description('Deploy GitHub main from a local clone
   .action(options => withClient(options, async client => {
     const chosen = ['apply', 'verify', 'resume', 'abort'].filter(name => options[name]);
     if (chosen.length > 1) throw new Error(`Choose one of --apply, --verify, --resume or --abort, not ${chosen.map(name => `--${name}`).join(' and ')}.`);
-    if (options.planOut && chosen.length) throw new Error('--plan-out applies only to a dry run.');
     const deps = { warn: message => console.error(`warning: ${message}`) };
     const dir = options.dir ? resolve(options.dir) : undefined;
     if (options.apply) return report(await deployApply(client, { dir, planPath: options.apply }, deps));
     if (options.verify) return report(await deployVerify(client, { dir, receiptPath: options.verify }, deps));
     if (options.resume) return report(await deployResume(client, { dir, receiptPath: options.resume }, deps));
     if (options.abort) return report(await deployAbort(client, { receiptPath: options.abort }, deps));
-    report(await deployPlan(client, { dir, planOut: options.planOut }, deps));
+    report(await deployPlan(client, { dir }, deps));
   }));
 
 // Local runs of a team-mode project. They read GitHub through the caller's

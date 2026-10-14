@@ -239,7 +239,7 @@ export async function readGithub(repo, { gh = ghRunner(), trunk = 'main', maxCom
     if (!SHA.test(commit || '')) throw new Error(`make-deploy/${n} does not point at a commit.`);
     const commitTree = (await gh([`repos/${repo}/git/commits/${commit}`]))?.tree?.sha;
     const receiptTree = SHA.test(receipt?.mainTree || '') ? receipt.mainTree : null;
-    const tree = receiptTree || commitTree;
+    const tree = commitTree;
     base = { tag: `make-deploy/${n}`, commit, tree, receipt: receipt ? 'parsed' : 'none',
       ...(receiptTree && receiptTree !== commitTree ? { receiptMismatch: `receipt mainTree ${receiptTree} differs from the tagged commit's tree ${commitTree}` } : {}) };
     base.flat = flatFromGithub(await gh([`repos/${repo}/git/trees/${tree}?recursive=1`]));

@@ -379,7 +379,7 @@ errors are JSON on stderr with a `DEPLOY_*` `code` and, once anything was
 written, the `receiptPath`.
 
 ```bash
-figma-cli make deploy --file KEY [--dir CLONE] [--plan-out FILE]   # dry run (default)
+figma-cli make deploy --file KEY [--dir CLONE]   # dry run (default)
 figma-cli make deploy --file KEY [--dir CLONE] --apply PLAN
 figma-cli make deploy --file KEY [--dir CLONE] --verify RECEIPT
 figma-cli make deploy --file KEY [--dir CLONE] --resume RECEIPT

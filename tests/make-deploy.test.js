@@ -423,6 +423,16 @@ describe('make deploy dry run, apply and verify', () => {
     await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_MAKE_AHEAD', /make rescue/);
   });
 
+  it('takes the base from the tagged commit and refuses a tag receipt naming another tree', async t => {
+    const s = setup(t);
+    const sha = landChange(s);
+    const forged = `deploy\n\n${JSON.stringify({ schema: 'figma-cli/make-deploy-receipt@1', mainTree: 'b'.repeat(40) })}`;
+    sh(s.p.upstream, 'tag', '-a', '-m', forged, 'make-deploy/0', sha);
+    sh(s.p.upstream, 'push', '-q', 'origin', 'refs/tags/make-deploy/0');
+    await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_MAKE_STATE', /receipt names main tree b{40}/);
+    assert.deepEqual(s.make.writes, []);
+  });
+
   it('refuses a stale plan: main moved, Make changed, or the tag number was taken', async t => {
     const s = setup(t);
     landChange(s);
@@ -526,6 +536,36 @@ describe('make deploy recovery', () => {
     assert.equal(s.make.calls.filter(([kind]) => kind === 'save').length, 0);
     const next = await deployPlan(s.make, s.opts, s.deps);
     assert.equal(next.counts.modify, 1);
+  });
+
+  it('refuses to abort for a caller who is not a repo admin', async t => {
+    const { s, receiptPath } = await interrupted(t);
+    const writes = s.make.writes.length;
+    await refuses(deployAbort(s.make, { receiptPath }, { ...s.deps, gh: fakeGh({ permission: 'write' }).gh }), 'DEPLOY_NOT_ADMIN');
+    assert.equal(s.make.writes.length, writes);
+    assert.equal(readReceipt(receiptPath).stage, 'writing');
+  });
+
+  it('verify does not adopt a saved version that holds Make edits, and keeps the receipt blocking', async t => {
+    const s = setup(t);
+    landChange(s);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.save = 'uncertain';
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => {
+      receiptPath = error.receiptPath;
+      return error.code === 'DEPLOY_SAVE_UNCERTAIN';
+    });
+    s.make.hooks.save = null;
+    const before = readReceipt(receiptPath);
+    s.make.working.set('src/main.tsx', Buffer.from('a designer edit\n'));
+    s.make.commitVersion();
+    await refuses(deployVerify(s.make, { ...s.opts, receiptPath }, s.deps), 'DEPLOY_VERIFY_FAILED', /not this deploy's.*stays at stage/);
+    const after = readReceipt(receiptPath);
+    assert.equal(after.stage, before.stage);
+    assert.equal(after.makeAfter, null);
+    await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_UNFINISHED', /--verify/);
+    assert.deepEqual(s.p.tags(), []);
   });
 
   it('never retries a save whose outcome is unknown; verify finalises it after a reload', async t => {
