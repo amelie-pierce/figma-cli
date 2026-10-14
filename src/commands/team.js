@@ -39,11 +39,11 @@ verb(team.command('save').description('Save my progress: format and build when t
   .option('-m, --message <text>', 'Commit message (default: generated from the changed files)'),
 (ctx, options) => save(ctx, { message: options.message }));
 
-verb(team.command('sync').description('Get the latest: save, then bring in GitHub main (rebase) and push your branch with --force-with-lease')
+verb(team.command('sync').description('Get the latest: commit, bring in newer saves of your branch and GitHub main (rebase), then push your branch with --force-with-lease')
   .option('-m, --message <text>', 'Commit message for any unsaved changes'),
 (ctx, options) => sync(ctx, { message: options.message }));
 
-verb(team.command('conflicts').description('Fix the conflict: auto-resolve only pnpm-lock.yaml and identical changes; otherwise undo and name who else changed each file'),
+verb(team.command('conflicts').description('Fix the conflict: auto-resolve only pnpm-lock.yaml and identical changes; otherwise undo and name who else changed each file. Never finishes a rebase it did not start'),
   ctx => conflicts(ctx));
 
 verb(team.command('pr').description('Ready for review: sync, save, then open (or reuse) a pull request into main and request reviews from the areas map')
@@ -51,8 +51,9 @@ verb(team.command('pr').description('Ready for review: sync, save, then open (or
   .option('-m, --message <text>', 'Commit message for any unsaved changes'),
 (ctx, options) => pr(ctx, { title: options.title, message: options.message }));
 
-verb(team.command('merge').description('Merge it: squash-merge your own approved pull request into main, delete the branch, return to main'),
-  ctx => merge(ctx));
+verb(team.command('merge').description('Merge it: squash-merge your own approved pull request into main after a green build, delete the branch, return to main')
+  .option('--no-build-check', 'Merge even when the pull request has no GitHub checks and the project has no build script'),
+(ctx, options) => merge(ctx, { buildCheck: options.buildCheck !== false }));
 
 verb(team.command('status').description('What\'s going on: branch, unsaved files, pull request and review state, and how far behind main')
   .option('--no-fetch', 'Do not fetch main from GitHub first'),

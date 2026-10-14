@@ -97,7 +97,7 @@ figma-cli team save [-m "<message>"]
 figma-cli team sync
 figma-cli team conflicts
 figma-cli team pr [--title "<title>"]
-figma-cli team merge
+figma-cli team merge [--no-build-check]
 figma-cli team status [--no-fetch]
 figma-cli make export-delta --file <make-file-key> --manifest VENDOR.json --who engineer --candidate-dir candidates --out delta.json
 figma-cli make sync --file <make-file-key> --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --plan-out plan.json
@@ -385,7 +385,9 @@ convention, not a server-side guarantee.
 
 - `team start "<name>"` requires a clean tree (`TEAM_UNSAVED`; `--save-first`
   saves your own branch first, or carries changes made on `main` onto the new
-  branch), fetches `main`, refuses local commits on `main` (`TEAM_MAIN_AHEAD`)
+  branch, running the secret, large-file, format and build checks before
+  anything is created; if the save still fails after the branch exists, the
+  error says the branch was started and the changes are unsaved on it), fetches `main`, refuses local commits on `main` (`TEAM_MAIN_AHEAD`)
   and an existing branch (`TEAM_BRANCH_EXISTS`), creates `<login>/<slug>` from
   `origin/main`, fast-forwards the local `main` ref and pushes the branch with
   upstream. It lists the `areas` owners.
@@ -397,17 +399,28 @@ convention, not a server-side guarantee.
   and `build` scripts when present (pnpm, or npm with only a `package-lock.json`;
   `TEAM_FORMAT_FAILED`/`TEAM_BUILD_FAILED` save nothing), commits everything with
   your message or a generated one, and pushes. Changes in another person's
-  area produce a warning. A remote branch with newer commits refuses
-  (`TEAM_PUSH_REJECTED`).
-- `team sync` saves, fetches `main`, rebases onto `origin/main` and pushes with
-  a lease on what GitHub had.
+  area produce a warning. The push is plain: a GitHub branch with commits this
+  clone lacks refuses (`TEAM_PUSH_REJECTED`, only for git's `stale info`,
+  `non-fast-forward` and `fetch first`; the commit stays local and `team sync`
+  brings that work in). A push GitHub's server refuses (`[remote rejected]`:
+  push protection, pre-receive hooks, rulesets) is `TEAM_PUSH_BLOCKED` with
+  GitHub's own `remote: error:` line.
+- `team sync` commits locally (the same checks as `save`, no push), fetches
+  your branch from GitHub and rebases local commits onto any newer saves there
+  (commits already present in rewritten form, after an earlier sync whose push
+  failed, are not replayed), then fetches `main`, rebases onto `origin/main` and
+  pushes with `--force-with-lease` on the GitHub sha it brought in. Conflicts
+  in either step are handled as below.
 - `team conflicts` (also run by `sync`) resolves only `pnpm-lock.yaml` (takes
   `main`'s, then `pnpm install --lockfile-only --ignore-scripts`) and conflict
   blocks whose two sides are identical. Anything else runs `rebase --abort`,
   checks the branch is back at its old commit and reports `TEAM_CONFLICT` with
   `conflicts[{path, changedBy[{author, pr, commit}]}]`, taken from `gh api
-  repos/<repo>/commits/<sha>/pulls` or the squash subject's `(#n)`. With a
-  rebase already unfinished in the clone, it finishes or undoes that one.
+  repos/<repo>/commits/<sha>/pulls` or the squash subject's `(#n)`. figma-cli
+  always finishes or undoes its own rebases, so a rebase (or merge,
+  cherry-pick, revert) already unfinished in the clone was started by something
+  else: every verb that changes the branch refuses with
+  `TEAM_OPERATION_IN_PROGRESS` and never continues, skips or pushes it.
 - `team pr [--title]` syncs, saves, refuses a branch with no changes
   (`TEAM_NOTHING_TO_REVIEW`), then reuses the open pull request for the branch
   or runs `gh pr create --base main` with a template (what changed, how to see
@@ -420,10 +433,13 @@ convention, not a server-side guarantee.
   neither the author nor you (`TEAM_NOT_APPROVED`; reviews are read from
   `gh api repos/<repo>/pulls/<n>/reviews`, whose `commit_id` gh's
   `latestReviews` leaves empty; an approval of an earlier commit is named as
-  stale and does not count), passing
-  checks when any exist (`TEAM_CHECKS_FAILED`/`TEAM_CHECKS_PENDING`) and a
-  branch containing `origin/main`. When `main` moved, it syncs and refuses
-  (`TEAM_BEHIND_MAIN`) so checks and review can run again. Then `gh pr merge
+  stale and does not count), a green build and a branch containing
+  `origin/main`. When `main` moved, it syncs and refuses (`TEAM_BEHIND_MAIN`)
+  so checks and review can run again. The green build is the pull request's
+  GitHub checks (`TEAM_CHECKS_FAILED`/`TEAM_CHECKS_PENDING`); when it has none,
+  the project's `build` script runs locally on the exact head being merged
+  (`TEAM_BUILD_FAILED`), and with no `build` script either it refuses
+  (`TEAM_NO_BUILD_CHECK`) unless `--no-build-check` is passed. Then `gh pr merge
   --squash --match-head-commit <sha>`, a check that GitHub reports `MERGED`,
   `main` checked out and fast-forwarded, and the branch deleted on GitHub (with
   a lease) and locally.

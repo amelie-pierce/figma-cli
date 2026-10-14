@@ -40,6 +40,7 @@ Run each verb inside the clone, or pass `--dir <clone>`.
 | "Fix the conflict" | `figma-cli team conflicts` | What was sorted out automatically, or who to talk to |
 | "I'm ready for review" | `figma-cli team pr [--title "<title>"]` | The pull request link (full URL) and who was asked to review |
 | "Merge it" | `figma-cli team merge` | The merged link, who approved, and that they are back on main |
+| … and `TEAM_NO_BUILD_CHECK`, after they confirm merging without any build | `figma-cli team merge --no-build-check` | That no build confirmed it, so they should check the app on main |
 | "What's going on?" | `figma-cli team status` | Branch, unsaved files, review state, and how far behind main |
 
 Write a short, specific commit message from what you changed for them when you
@@ -58,15 +59,17 @@ On failure the CLI prints `{error, code}` on stderr and exits 1:
 | `TEAM_UNSAVED` | List the files; offer to save first |
 | `TEAM_SECRET` | Name each file (and line); ask them to remove the secret. Never print a value |
 | `TEAM_LARGE_FILE` | The file is too big for the repo; make it smaller or keep it outside |
-| `TEAM_BUILD_FAILED` / `TEAM_FORMAT_FAILED` | Nothing was saved; explain the error lines plainly and offer to fix the code |
+| `TEAM_BUILD_FAILED` / `TEAM_FORMAT_FAILED` | Nothing was saved (or, from `merge`, nothing merged); explain the error lines plainly and offer to fix the code. If the message says a task was started, they are on the new branch with their changes still unsaved |
 | `TEAM_CONFLICT` | Their branch is unchanged. For each file, name the person and the pull request link from `conflicts[].changedBy`, and suggest asking on the pull request |
-| `TEAM_PUSH_REJECTED` | GitHub has newer work on their branch (maybe another computer); check before syncing |
+| `TEAM_PUSH_REJECTED` | GitHub has newer work on their branch (maybe another computer); their work is still saved here. Run `figma-cli team sync` to bring it in and send theirs |
+| `TEAM_PUSH_BLOCKED` | GitHub refused the push by a rule (for example secret scanning); quote GitHub's reason and help fix what it names. Syncing will not help |
 | `TEAM_NOT_APPROVED` | Someone other than them must approve the latest version of the pull request; share the link. A stale approval needs a fresh look |
 | `TEAM_CHANGES_REQUESTED` | A reviewer asked for changes; help make them, then save |
 | `TEAM_CHECKS_PENDING` / `TEAM_CHECKS_FAILED` | Wait for, or fix, the named checks |
+| `TEAM_NO_BUILD_CHECK` | The pull request has no checks and the project no build script, so nothing proves it builds; ask whether to merge anyway |
 | `TEAM_BEHIND_MAIN` | Main moved; their branch was brought up to date, so ask to merge again after checks rerun |
 | `TEAM_NOTHING_TO_REVIEW` | No changes yet compared with main |
-| `TEAM_OPERATION_IN_PROGRESS` | Run `figma-cli team conflicts` to finish or undo it |
+| `TEAM_OPERATION_IN_PROGRESS` | Something figma-cli did not start is unfinished in the clone; nothing changed. Ask a developer for help; never finish it yourself |
 | `TEAM_GH_FAILED` | Ask them to run `gh auth login` (suggest `! gh auth login`) |
 | `TEAM_NOT_A_CLONE` / `TEAM_NO_REPO` | Clone the project first with `figma-cli make clone OWNER/REPO` |
 

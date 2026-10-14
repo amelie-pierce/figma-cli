@@ -30,7 +30,7 @@ These examples are templates; choose paths/content for the actual requested work
 | Start the dev server and print its local URL (agents: background job, then poll the URL) | `figma-cli make dev [dir]` |
 | Start a task branch `<login>/<slug>` from the latest `main` (see the figma-make-team skill) | `figma-cli team start "task name" [--save-first]` |
 | Save (format, build, secret check), commit and push your task branch | `figma-cli team save [-m "message"]` |
-| Bring in the latest `main`; finish or undo a conflicted one | `figma-cli team sync` / `figma-cli team conflicts` |
+| Bring in the latest `main` (and newer saves of your branch); sort out or undo a conflict | `figma-cli team sync` / `figma-cli team conflicts` |
 | Open the pull request into `main`; merge it after a non-author approval | `figma-cli team pr` / `figma-cli team merge` |
 | Branch, unsaved files, review state, distance from `main` | `figma-cli team status` |
 | Check vendor drift and saved state, including hidden files | `figma-cli make drift --file KEY --manifest VENDOR.json --json` |

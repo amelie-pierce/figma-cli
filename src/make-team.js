@@ -20,8 +20,8 @@ const SCAN_BYTES = 2 * 1024 * 1024;
 export const TEAM_CODES = Object.freeze(['TEAM_NOT_A_CLONE', 'TEAM_NO_REPO', 'TEAM_GH_FAILED', 'TEAM_BAD_NAME', 'TEAM_UNSAVED',
   'TEAM_BRANCH_EXISTS', 'TEAM_MAIN_AHEAD', 'TEAM_SWITCH_FAILED', 'TEAM_ON_MAIN', 'TEAM_NOT_YOUR_BRANCH', 'TEAM_DETACHED',
   'TEAM_OPERATION_IN_PROGRESS', 'TEAM_SECRET', 'TEAM_LARGE_FILE', 'TEAM_FORMAT_FAILED', 'TEAM_BUILD_FAILED', 'TEAM_PUSH_REJECTED',
-  'TEAM_PUSH_REFUSED', 'TEAM_CONFLICT', 'TEAM_NOTHING_TO_REVIEW', 'TEAM_NO_PR', 'TEAM_PR_NOT_READY', 'TEAM_NOT_APPROVED',
-  'TEAM_CHANGES_REQUESTED', 'TEAM_CHECKS_PENDING', 'TEAM_CHECKS_FAILED', 'TEAM_BEHIND_MAIN', 'TEAM_OUT_OF_DATE', 'TEAM_MERGE_FAILED']);
+  'TEAM_PUSH_BLOCKED', 'TEAM_PUSH_REFUSED', 'TEAM_CONFLICT', 'TEAM_NOTHING_TO_REVIEW', 'TEAM_NO_PR', 'TEAM_PR_NOT_READY', 'TEAM_NOT_APPROVED',
+  'TEAM_CHANGES_REQUESTED', 'TEAM_CHECKS_PENDING', 'TEAM_CHECKS_FAILED', 'TEAM_BEHIND_MAIN', 'TEAM_OUT_OF_DATE', 'TEAM_NO_BUILD_CHECK', 'TEAM_MERGE_FAILED']);
 
 function fail(message, code, extra = {}) {
   const error = new Error(message);
@@ -201,9 +201,15 @@ export function pushBranch(ctx, branch, { lease, setUpstream = false, deleteRemo
   const result = ctx.tryGit(args);
   if (result.status !== 0) {
     const text = `${result.stdout}\n${result.stderr}`;
-    if (/stale info|non-fast-forward|fetch first|rejected/.test(text)) {
-      fail(`GitHub has newer changes on ${branch} than this computer, so nothing was pushed. ` +
-        'Someone (or another computer of yours) saved to it. Say "get the latest" after checking with them.', 'TEAM_PUSH_REJECTED');
+    const refused = /\[remote rejected\][^\n]*/.exec(text);
+    if (refused) {
+      const reason = text.split('\n').map(line => line.trim()).find(line => /^remote:\s*error:/i.test(line))?.replace(/^remote:\s*/i, '') || refused[0];
+      fail(`GitHub refused the push to ${branch}: ${reason}. Nothing was pushed. This is a rule on GitHub (for example secret scanning ` +
+        'or a repository rule), not newer work; fix what it names, then save again.', 'TEAM_PUSH_BLOCKED');
+    }
+    if (/stale info|non-fast-forward|fetch first/.test(text)) {
+      fail(`GitHub has newer changes on ${branch} than this computer (another computer of yours, or someone else, saved to it), so nothing was pushed. ` +
+        'Your work is still saved on this computer. Say "get the latest" (figma-cli team sync) to bring those changes in and send yours.', 'TEAM_PUSH_REJECTED');
     }
     fail(`Pushing ${branch} failed: ${lastLine(result)}`);
   }
@@ -236,10 +242,11 @@ export function operationInProgress(ctx) {
   return null;
 }
 
+// figma-cli always finishes or undoes its own rebases, so an unfinished one
+// was started by something else; it is never continued, skipped or pushed.
 function requireNoOperation(ctx) {
   const op = operationInProgress(ctx);
-  if (op === 'rebase') fail('A rebase is unfinished in this clone. Say "fix the conflict" (figma-cli team conflicts) to finish or undo it.', 'TEAM_OPERATION_IN_PROGRESS');
-  if (op) fail(`A git ${op} is unfinished in this clone. Ask for help before saving; nothing was changed.`, 'TEAM_OPERATION_IN_PROGRESS');
+  if (op) fail(`A git ${op} that figma-cli did not start is unfinished in this clone, so nothing was changed. Ask a developer for help with it.`, 'TEAM_OPERATION_IN_PROGRESS');
 }
 
 // --- changes in plain words ------------------------------------------------
@@ -345,14 +352,14 @@ export function projectScripts(root) {
 
 const tail = (text, lines = 15) => String(text).trim().split('\n').slice(-lines).join('\n');
 
-function runScripts(ctx) {
+function runScripts(ctx, { only = ['format', 'build'], outcome = 'Nothing was saved' } = {}) {
   const ran = [];
-  for (const { name, command, args } of projectScripts(ctx.root)) {
+  for (const { name, command, args } of projectScripts(ctx.root).filter(script => only.includes(script.name))) {
     const result = ctx.run(command, args, { cwd: ctx.root });
     if (result.status !== 0) {
       const code = name === 'build' ? 'TEAM_BUILD_FAILED' : 'TEAM_FORMAT_FAILED';
       const hint = existsSync(join(ctx.root, 'node_modules')) ? '' : ' Dependencies are not installed; run figma-cli make install first.';
-      fail(`Nothing was saved: the project's ${name} step (${command} ${args.join(' ')}) failed.${hint} Its last lines:\n${tail(result.stdout + result.stderr)}`, code,
+      fail(`${outcome}: the project's ${name} step (${command} ${args.join(' ')}) failed.${hint} Its last lines:\n${tail(result.stdout + result.stderr)}`, code,
         { step: name });
     }
     ran.push(`${command} ${args.join(' ')}`);
@@ -381,13 +388,10 @@ function areaWarnings(ctx, paths) {
 
 // --- verbs -------------------------------------------------------------------
 
-// Save: commit everything on the caller's own branch and push it.
-export function save(ctx, { message } = {}) {
-  const branch = requireOwnBranch(ctx);
-  requireNoOperation(ctx);
+// Secrets and large files are refused before any script runs, and again on
+// what format left behind.
+function checkChanges(ctx) {
   let changes = listChanges(ctx);
-  const warnings = [];
-  let commit = null;
   let ran = [];
   if (changes.length) {
     requireSafe(ctx, changes);
@@ -395,6 +399,16 @@ export function save(ctx, { message } = {}) {
     changes = listChanges(ctx);
     requireSafe(ctx, changes);
   }
+  return { changes, ran };
+}
+
+// Commit everything on the caller's own branch, without pushing.
+function commitLocal(ctx, { message } = {}) {
+  requireNoOperation(ctx);
+  const branch = requireOwnBranch(ctx);
+  const { changes, ran } = checkChanges(ctx);
+  const warnings = [];
+  let commit = null;
   if (changes.length) {
     warnings.push(...areaWarnings(ctx, changes.map(c => c.path)));
     ctx.git(['add', '--all', '--', '.'], 'Staging your changes');
@@ -402,6 +416,13 @@ export function save(ctx, { message } = {}) {
     ctx.git(['commit', '--quiet', '-m', text], 'Saving your changes');
     commit = { sha: revOf(ctx, 'HEAD'), message: text };
   }
+  return { branch, changes, commit, ran, warnings };
+}
+
+// Save: commit, then a plain push. Newer work on GitHub is never overwritten;
+// sync is the way to bring it in.
+export function save(ctx, { message } = {}) {
+  const { branch, changes, commit, ran, warnings } = commitLocal(ctx, { message });
   const remote = remoteBranchSha(ctx, branch);
   const head = revOf(ctx, 'HEAD');
   let pushed = false;
@@ -430,7 +451,7 @@ export function start(ctx, name, { saveFirst = false } = {}) {
       fail(`You have unsaved changes on ${current || 'a detached HEAD'} (${changes.length} file${changes.length === 1 ? '' : 's'}). ` +
         'Say "save my progress" first, or start with --save-first to save them before switching.', 'TEAM_UNSAVED', { files: changes.map(describeChange) });
     }
-    if (current === TRUNK) carry = true;
+    if (current === TRUNK) { carry = true; checkChanges(ctx); }
     else { requireOwnBranch(ctx, current); saved = save(ctx); }
   }
   const remoteMain = fetchMain(ctx);
@@ -451,7 +472,13 @@ export function start(ctx, name, { saveFirst = false } = {}) {
   else if (localMain !== remoteMain) ctx.git(['update-ref', TRUNK_REF, remoteMain, localMain], `Updating local ${TRUNK}`);
   ctx.git(['config', `branch.${branch}.figmaCliTask`, String(name).trim()]);
   pushBranch(ctx, branch, { setUpstream: true });
-  if (carry) saved = save(ctx);
+  if (carry) {
+    try { saved = save(ctx); }
+    catch (error) {
+      error.message = `Started ${branch} and sent it to GitHub, but your changes are still unsaved on it. ${error.message}`;
+      throw error;
+    }
+  }
   const areas = ctx.project().areas.map(({ glob, owners }) => ({ area: glob, owners }));
   return { verb: 'start', branch, from: { [TRUNK]: remoteMain }, ...(saved ? { saved } : {}), ...(areas.length ? { areas } : {}),
     summary: `Started "${String(name).trim()}" on ${branch}, from the latest ${TRUNK}.${carry ? ` Your unsaved changes moved onto it and were saved.` : ''}` };
@@ -514,35 +541,28 @@ function otherChanges(ctx, path, base, onto) {
   return seen;
 }
 
-function regenerateLockfile(ctx) {
+function regenerateLockfile(ctx, label) {
   const shown = ctx.tryGit(['show', `:2:${LOCKFILE}`]);
   if (shown.status === 0) writeFileSync(join(ctx.root, LOCKFILE), shown.stdout);
-  else ctx.git(['checkout', '--ours', '--', LOCKFILE], `Taking ${TRUNK}'s ${LOCKFILE}`);
+  else ctx.git(['checkout', '--ours', '--', LOCKFILE], `Taking ${label}'s ${LOCKFILE}`);
   const result = ctx.run('pnpm', ['install', '--lockfile-only', '--ignore-scripts'], { cwd: ctx.root });
   if (result.status !== 0) return `pnpm could not regenerate ${LOCKFILE}: ${lastLine(result)}`;
   ctx.git(['add', '--', LOCKFILE]);
   return null;
 }
 
-// Replay the branch onto main. Only pnpm-lock.yaml and identical hunks are
-// resolved automatically; anything else aborts the rebase, so the branch is
-// exactly as before, and reports who else changed each file.
-export function rebaseOntoMain(ctx, { onto = ORIGIN_TRUNK } = {}) {
-  let original;
-  const ontoSha = revOf(ctx, onto);
-  if (operationInProgress(ctx) === 'rebase') {
-    const head = ctx.git(['rev-parse', '--git-path', 'rebase-merge/orig-head']);
-    const path = [join(ctx.root, head), head].find(existsSync);
-    original = path ? readFileSync(path, 'utf8').trim() : null;
-  } else {
-    original = revOf(ctx, 'HEAD');
-    const behind = count(ctx, `HEAD..${ontoSha}`);
-    if (behind === 0) return { rebased: false, behind: 0, autoResolved: [] };
-    const started = ctx.tryGit(['-c', 'merge.conflictStyle=merge', '-c', 'rebase.autoStash=false', 'rebase', '--quiet', ontoSha]);
-    if (started.status === 0) return { rebased: true, behind, autoResolved: [] };
-    if (operationInProgress(ctx) !== 'rebase') fail(`Bringing in ${TRUNK} failed: ${lastLine(started)}. Nothing was changed.`);
-  }
-  const base = original ? ctx.tryGit(['merge-base', original, ontoSha]).stdout.trim() : ontoSha;
+// Replay the branch onto a commit (GitHub main, or the branch's own newer
+// saves on GitHub). Only pnpm-lock.yaml and identical hunks are resolved
+// automatically; anything else aborts the rebase, so the branch is exactly as
+// before, and reports who else changed each file.
+export function rebaseOnto(ctx, ontoSha, label = TRUNK) {
+  const original = revOf(ctx, 'HEAD');
+  const behind = count(ctx, `HEAD..${ontoSha}`);
+  if (behind === 0) return { rebased: false, behind: 0, autoResolved: [] };
+  const started = ctx.tryGit(['-c', 'merge.conflictStyle=merge', '-c', 'rebase.autoStash=false', 'rebase', '--quiet', ontoSha]);
+  if (started.status === 0) return { rebased: true, behind, autoResolved: [] };
+  if (operationInProgress(ctx) !== 'rebase') fail(`Bringing in ${label} failed: ${lastLine(started)}. Nothing was changed.`);
+  const base = ctx.tryGit(['merge-base', original, ontoSha]).stdout.trim();
   const autoResolved = [];
   for (let step = 0; step < 1000 && operationInProgress(ctx) === 'rebase'; step++) {
     const unresolved = [];
@@ -560,68 +580,70 @@ export function rebaseOntoMain(ctx, { onto = ORIGIN_TRUNK } = {}) {
     }
     let lockError = null;
     if (!unresolved.length && lockfile) {
-      lockError = regenerateLockfile(ctx);
-      if (!lockError) autoResolved.push({ path: LOCKFILE, how: `took ${TRUNK}'s and regenerated it` });
+      lockError = regenerateLockfile(ctx, label);
+      if (!lockError) autoResolved.push({ path: LOCKFILE, how: `took ${label}'s and regenerated it` });
     }
     if (unresolved.length || lockError) {
       if (lockError) unresolved.push(LOCKFILE);
       const conflicts = unresolved.map(path => ({ path, changedBy: otherChanges(ctx, path, base, ontoSha) }));
       ctx.git(['rebase', '--abort'], 'Undoing the unfinished rebase');
-      const now = revOf(ctx, 'HEAD');
-      const untouched = original == null || now === original;
+      const untouched = revOf(ctx, 'HEAD') === original;
       const lines = conflicts.map(({ path, changedBy }) => changedBy.length
         ? `${path} was also changed by ${changedBy.map(c => `${c.author}${c.pr ? ` in ${c.pr}` : ''}`).join(', ')}`
-        : `${path} was also changed on ${TRUNK}`);
-      fail(`Your changes and ${TRUNK} both changed the same lines, so nothing was merged. ${lines.join('; ')}. ` +
+        : `${path} was also changed on ${label}`);
+      fail(`Your changes and ${label} both changed the same lines, so nothing was merged. ${lines.join('; ')}. ` +
         `${lockError ? `${lockError}. ` : ''}Ask them (or the area owner) on your pull request how to combine both changes. ` +
         `Your branch was ${untouched ? 'left exactly as it was' : 'NOT restored to its earlier commit; ask for help'}.`, 'TEAM_CONFLICT', { conflicts, untouched });
     }
     const next = ctx.tryGit(['-c', 'core.editor=true', 'rebase', '--continue']);
     if (next.status !== 0 && operationInProgress(ctx) === 'rebase' && !conflictedPaths(ctx).length) {
       const staged = ctx.tryGit(['diff', '--cached', '--quiet']);
-      if (staged.status === 0) ctx.git(['rebase', '--skip'], 'Skipping a change main already has');
+      if (staged.status === 0) ctx.git(['rebase', '--skip'], `Skipping a change ${label} already has`);
       else {
         ctx.tryGit(['rebase', '--abort']);
-        fail(`Bringing in ${TRUNK} stopped (${lastLine(next)}), so it was undone and your branch is as it was. Ask for help.`, 'TEAM_CONFLICT');
+        fail(`Bringing in ${label} stopped (${lastLine(next)}), so it was undone and your branch is as it was. Ask for help.`, 'TEAM_CONFLICT');
       }
     }
   }
-  return { rebased: true, autoResolved };
+  return { rebased: true, behind, autoResolved };
 }
 
-// Sync: save, then replay the branch onto the latest main and push it with a
-// lease on what GitHub had, to the caller's own branch only.
+// Newer saves on GitHub's copy of the branch (another computer, or a push
+// that failed after a local rebase) are brought in first. Commits this clone
+// already has in rewritten form are not replayed. The fetched sha is the lease.
+function bringInOwnBranch(ctx, branch) {
+  if (!remoteBranchSha(ctx, branch)) return { lease: null, rebased: false, autoResolved: [] };
+  const tracking = `refs/remotes/origin/${branch}`;
+  ctx.git(['fetch', '--quiet', 'origin', `+refs/heads/${branch}:${tracking}`], 'Getting your branch from GitHub');
+  const lease = revOf(ctx, tracking);
+  const newer = ctx.git(['cherry', 'HEAD', lease]).split('\n').some(line => line.startsWith('+'));
+  return { lease, ...(newer ? rebaseOnto(ctx, lease, 'your branch on GitHub') : { rebased: false, autoResolved: [] }) };
+}
+
+// Sync: commit locally, bring in the branch's newer saves from GitHub, replay
+// it onto the latest main and push with a lease on what GitHub had, to the
+// caller's own branch only.
 export function sync(ctx, { message } = {}) {
-  const saved = save(ctx, { message });
-  const branch = saved.branch;
+  const local = commitLocal(ctx, { message });
+  const { branch } = local;
+  const own = bringInOwnBranch(ctx, branch);
   const remoteMain = fetchMain(ctx);
-  const lease = remoteBranchSha(ctx, branch);
-  const result = rebaseOntoMain(ctx);
+  const result = rebaseOnto(ctx, remoteMain, TRUNK);
   const head = revOf(ctx, 'HEAD');
   let pushed = false;
-  if (head !== lease) { pushBranch(ctx, branch, { lease: lease || undefined, setUpstream: true }); pushed = true; }
-  const notes = result.autoResolved.map(r => `${r.path}: ${r.how}`);
-  return { verb: 'sync', branch, [TRUNK]: remoteMain, saved: saved.saved, broughtIn: result.rebased, pushed,
-    ...(notes.length ? { autoResolved: notes } : {}),
-    summary: result.rebased ? `Brought the latest ${TRUNK} into ${branch}${notes.length ? ` (sorted out ${notes.length} file${notes.length === 1 ? '' : 's'} automatically)` : ''} and sent it to GitHub.`
-      : `${branch} already has everything from ${TRUNK}.` };
+  if (head !== own.lease) { pushBranch(ctx, branch, { lease: own.lease || undefined, setUpstream: true }); pushed = true; }
+  const notes = [...own.autoResolved, ...result.autoResolved].map(r => `${r.path}: ${r.how}`);
+  const brought = [own.rebased ? 'your newer saves from GitHub' : null, result.rebased ? `the latest ${TRUNK}` : null].filter(Boolean);
+  return { verb: 'sync', branch, [TRUNK]: remoteMain, saved: !!local.commit, broughtInOwn: own.rebased, broughtIn: result.rebased, pushed,
+    ...(notes.length ? { autoResolved: notes } : {}), ...(local.warnings.length ? { warnings: local.warnings } : {}),
+    summary: brought.length ? `Brought ${brought.join(' and ')} into ${branch}${notes.length ? ` (sorted out ${notes.length} file${notes.length === 1 ? '' : 's'} automatically)` : ''} and sent it to GitHub.`
+      : `${branch} already has everything from ${TRUNK}${pushed ? '; sent your saves to GitHub' : ''}.` };
 }
 
-// Conflicts: finish or undo an unfinished rebase; otherwise the same as sync.
+// Conflicts: the same as sync. A rebase figma-cli did not start is reported
+// by sync's first check and left alone.
 export function conflicts(ctx) {
-  if (operationInProgress(ctx) !== 'rebase') return { ...sync(ctx), verb: 'conflicts' };
-  const branch = (() => {
-    const head = ctx.git(['rev-parse', '--git-path', 'rebase-merge/head-name']);
-    const path = [join(ctx.root, head), head].find(existsSync);
-    return path ? readFileSync(path, 'utf8').trim().replace(/^refs\/heads\//, '') : null;
-  })();
-  requireOwnBranch(ctx, branch);
-  const lease = remoteBranchSha(ctx, branch);
-  const result = rebaseOntoMain(ctx);
-  const head = revOf(ctx, 'HEAD');
-  if (head !== lease) pushBranch(ctx, branch, { lease: lease || undefined, setUpstream: true });
-  return { verb: 'conflicts', branch, autoResolved: result.autoResolved.map(r => `${r.path}: ${r.how}`),
-    summary: `Finished bringing ${TRUNK} into ${branch} and sent it to GitHub.` };
+  return { ...sync(ctx), verb: 'conflicts' };
 }
 
 // --- pull requests -----------------------------------------------------------
@@ -757,11 +779,12 @@ export function checkState(pull) {
 }
 
 // Merge: only the caller's own PR into main, approved by someone else, with
-// green checks (when any exist) and up to date with main. Squash, delete the
-// branch, return to an updated main.
-export function merge(ctx) {
-  const branch = requireOwnBranch(ctx);
+// a green build and up to date with main. The build is GitHub's checks, or,
+// when the PR has none, the project's build script run here on the exact head
+// being merged. Squash, delete the branch, return to an updated main.
+export function merge(ctx, { buildCheck = true } = {}) {
   requireNoOperation(ctx);
+  const branch = requireOwnBranch(ctx);
   const unsaved = listChanges(ctx);
   if (unsaved.length) fail(`You have ${unsaved.length} unsaved file${unsaved.length === 1 ? '' : 's'}. Say "save my progress" first.`, 'TEAM_UNSAVED',
     { files: unsaved.map(describeChange) });
@@ -795,6 +818,16 @@ export function merge(ctx) {
     fail(`${TRUNK} moved since your last sync, so nothing was merged. ${synced.summary} Checks and the reviewer may need to look again; then ask to merge again.`,
       'TEAM_BEHIND_MAIN', { url: pull.url });
   }
+  let localBuild = null;
+  if (checks.state === 'none') {
+    if (projectScripts(ctx.root).some(script => script.name === 'build')) {
+      runScripts(ctx, { only: ['build'], outcome: `${pull.url} has no checks on GitHub, so its build was run here; it failed and nothing was merged` });
+      localBuild = 'passed';
+    } else if (buildCheck) {
+      fail(`${pull.url} has no checks on GitHub and the project has no build script, so a green build cannot be confirmed and nothing was merged. ` +
+        'Add a build script or CI checks, or ask again with --no-build-check to merge without a build.', 'TEAM_NO_BUILD_CHECK', { url: pull.url });
+    } else localBuild = 'skipped';
+  }
   ctx.gh(['pr', 'merge', String(pull.number), '--repo', ctx.repo(), '--squash', '--match-head-commit', head], 'Merging the pull request');
   const after = ctx.ghJson(['pr', 'view', String(pull.number), '--repo', ctx.repo(), '--json', 'state,mergeCommit'], 'Confirming the merge');
   if (after?.state !== 'MERGED') fail(`GitHub did not report ${pull.url} as merged (state ${after?.state || 'unknown'}). Nothing else was changed.`, 'TEAM_MERGE_FAILED');
@@ -806,7 +839,7 @@ export function merge(ctx) {
   catch (error) { ctx.warn(`The branch ${branch} is still on GitHub: ${error.message}`); }
   if (ctx.tryGit(['branch', '-D', '--', branch]).status === 0) cleanup.push('deleted the local branch');
   return { verb: 'merge', branch, url: pull.url, approvedBy: reviews.approvedBy.map(r => `@${r.who}`), checks: checks.state,
-    mergeCommit: after.mergeCommit?.oid || null, [TRUNK]: newMain, cleanup,
+    ...(localBuild ? { localBuild } : {}), mergeCommit: after.mergeCommit?.oid || null, [TRUNK]: newMain, cleanup,
     summary: `Merged ${pull.url} into ${TRUNK} (approved by ${reviews.approvedBy.map(r => `@${r.who}`).join(', ')}). You are back on an up-to-date ${TRUNK}.` };
 }
 

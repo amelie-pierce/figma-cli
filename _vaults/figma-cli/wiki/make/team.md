@@ -18,11 +18,17 @@ In team mode GitHub `main` is the source of truth and people work in a local clo
 
 ## Save
 
-`save` (`src/make-team.js:385`) refuses secret-like files and token-looking content before running anything (`findSecrets`, `src/make-team.js:286`; findings are path and line only), then runs `package.json` `format` and `build` when present (`src/make-team.js:340`), re-checks, commits with `git add --all` and pushes. A remote branch with commits this clone lacks is refused, never overwritten.
+`save` commits through `commitLocal`, which refuses secret-like files and token-looking content before running anything (`checkChanges`/`findSecrets`; findings are path and line only), runs `package.json` `format` and `build` when present (`projectScripts`), re-checks and commits with `git add --all`; `save` then makes a plain push. A remote branch with commits this clone lacks is refused (`TEAM_PUSH_REJECTED`, only for `stale info`/`non-fast-forward`/`fetch first`), never overwritten, and the message points at `sync`. A server-side `[remote rejected]` (push protection, hooks, rulesets) is `TEAM_PUSH_BLOCKED` with GitHub's `remote: error:` line. `start --save-first` on `main` runs `checkChanges` before creating the branch, and a later save failure says the branch was started.
 
 ## Sync and conflicts
 
-`rebaseOntoMain` (`src/make-team.js:530`) runs `git rebase` onto `origin/main` with `merge.conflictStyle=merge`. Per stop it resolves only identical conflict blocks (`resolveIdenticalHunks`, `src/make-team.js:464`; git's own merge already collapses most) and `pnpm-lock.yaml`, by taking stage `:2:` (the `main` side during a rebase) and running `pnpm install --lockfile-only --ignore-scripts` (`src/make-team.js:517`). Anything else aborts the rebase, checks HEAD is back at the original commit, and names who else touched each file from `git log base..origin/main -- path`, mapped to a PR by `gh api repos/<repo>/commits/<sha>/pulls` or a squash subject's `(#n)` (`src/make-team.js:498`).
+`sync` never starts with a push: `commitLocal`, then `bringInOwnBranch` fetches `origin/<branch>` and rebases onto it when `git cherry HEAD <remote>` shows commits this clone lacks (so a branch rewritten by an earlier sync whose lease push failed is not replayed twice), then rebases onto `origin/main` and pushes with a lease on the fetched sha. That makes `sync` the way out of `TEAM_PUSH_REJECTED` (saves from two computers, or a failed push after a local rebase).
+
+`rebaseOnto` runs `git rebase` onto the given commit with `merge.conflictStyle=merge`. Per stop it resolves only identical conflict blocks (`resolveIdenticalHunks`, `src/make-team.js:464`; git's own merge already collapses most) and `pnpm-lock.yaml`, by taking stage `:2:` (the `main` side during a rebase) and running `pnpm install --lockfile-only --ignore-scripts` (`src/make-team.js:517`). Anything else aborts the rebase, checks HEAD is back at the original commit, and names who else touched each file from `git log base..<onto> -- path`, mapped to a PR by `gh api repos/<repo>/commits/<sha>/pulls` or a squash subject's `(#n)` (`otherChanges`). The verbs always finish or abort their own rebases, so any unfinished rebase (`rebase-merge` or `rebase-apply`), merge, cherry-pick or revert is foreign: `requireNoOperation` refuses with `TEAM_OPERATION_IN_PROGRESS` and nothing continues, skips or pushes it. `conflicts` is `sync` under another name.
+
+## Merge build
+
+`merge` needs a green build: failing or pending GitHub checks refuse; with no checks it runs the project's `build` script locally on the exact head it will merge (after the up-to-date check), and with no `build` script it refuses with `TEAM_NO_BUILD_CHECK` unless `--no-build-check`.
 
 ## Areas
 

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { areaOwners, checkState, commitMessage, conflicts, defaultRun, findSecrets, globPattern, isOwnBranch, merge, parseAreas, pr,
@@ -68,7 +68,7 @@ function project(t, { areas, files = {} } = {}) {
 
 // gh and pnpm fakes. Pull requests live in memory; "merging" squashes the
 // branch onto origin main through a scratch working copy, the way GitHub would.
-function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0 } = {}) {
+function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0, failLeasePushes = 0 } = {}) {
   const calls = [];
   const prs = [];
   const run = (command, args, options = {}) => {
@@ -79,11 +79,18 @@ function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0 }
         assert.ok(!/refs\/heads\/main\b|\bmain$|:main\b/.test(text), `pushed main: ${text}`);
         assert.ok(!args.some(a => a === '--force' || a === '-f' || /^\+/.test(a)), `unleased force push: ${text}`);
         assert.ok(!args.some(a => a.startsWith('--force-with-lease') && !/=refs\/heads\/[^:]+:[a-f0-9]{40}$/.test(a)), `bare lease: ${text}`);
+        if (failLeasePushes && args.some(a => a.startsWith('--force-with-lease'))) {
+          failLeasePushes--;
+          return { status: 128, stdout: '', stderr: 'fatal: unable to access the remote: Could not resolve host\n' };
+        }
       }
       return defaultRun(command, args, options);
     }
     if (command === 'pnpm') {
-      if (args[1] === 'build') return { status: build, stdout: build ? 'src/App.tsx(3,1): error TS2304\n' : 'built\n', stderr: '' };
+      if (args[1] === 'build') {
+        const status = typeof build === 'function' ? build() : build;
+        return { status, stdout: status ? 'src/App.tsx(3,1): error TS2304\n' : 'built\n', stderr: '' };
+      }
       if (args[1] === 'format') { format?.(options.cwd); return { status: 0, stdout: '', stderr: '' }; }
       if (args[0] === 'install') {
         const pkg = JSON.parse(readFileSync(join(options.cwd, 'package.json'), 'utf8'));
@@ -271,6 +278,31 @@ describe('team start', () => {
     assert.equal(p.originSha('main'), before);
     assert.equal(sh(p.clone, 'show', 'origin/alice/card:src/Card.tsx'), 'card');
   });
+  it('checks unsaved changes on main before starting, so a failing save starts nothing', t => {
+    const p = project(t, { files: { 'package.json': { ...PKG, scripts: { ...PKG.scripts, build: 'vite build' } } } });
+    write(p.clone, { 'src/Card.tsx': 'card\n', '.env.local': 'KEY=1\n' });
+    code(() => start(fakes(p).ctx(), 'card', { saveFirst: true }), 'TEAM_SECRET');
+    write(p.clone, { '.env.local': null });
+    const failing = fakes(p, { build: 1 });
+    code(() => start(failing.ctx(), 'card', { saveFirst: true }), 'TEAM_BUILD_FAILED');
+    assert.equal(sh(p.clone, 'branch', '--show-current'), 'main');
+    assert.equal(sh(p.clone, 'branch', '--list', 'alice/card'), '');
+    assert.equal(sh(p.origin, 'branch', '--list', 'alice/card'), '');
+    assert.equal(sh(p.clone, 'status', '--porcelain'), '?? src/Card.tsx');
+  });
+  it('says the branch was started when the save fails after it', t => {
+    const p = project(t, { files: { 'package.json': { ...PKG, scripts: { ...PKG.scripts, build: 'vite build' } } } });
+    let builds = 0;
+    const f = fakes(p, { build: () => (++builds > 1 ? 1 : 0) });
+    write(p.clone, { 'src/Card.tsx': 'card\n' });
+    assert.throws(() => start(f.ctx(), 'card', { saveFirst: true }), error => {
+      assert.equal(error.code, 'TEAM_BUILD_FAILED');
+      assert.match(error.message, /^Started alice\/card and sent it to GitHub, but your changes are still unsaved on it\./);
+      return true;
+    });
+    assert.equal(sh(p.clone, 'branch', '--show-current'), 'alice/card');
+    assert.equal(sh(p.clone, 'status', '--porcelain'), '?? src/Card.tsx');
+  });
   it('refuses when local main has commits that are not on GitHub', t => {
     const p = project(t);
     commit(p.clone, { 'x.txt': 'x' }, 'local only');
@@ -350,16 +382,59 @@ describe('team sync and conflicts', () => {
     assert.ok(f.calls.some(c => c.command === 'git' && c.args[0] === 'push' && c.args.some(a => a.startsWith('--force-with-lease=refs/heads/alice/x:'))));
     assert.equal(sync(f.ctx()).broughtIn, false);
   });
-  it('refuses to overwrite newer work on the remote branch', t => {
+  it('refuses to overwrite saves from another computer, and sync brings them in', t => {
     const p = project(t);
     const f = fakes(p);
     start(f.ctx(), 'x');
     const other = join(p.root, 'laptop');
     sh(p.root, 'clone', '-q', '-b', 'alice/x', p.origin, other);
-    commit(other, { 'other.txt': 'o' });
-    sh(other, 'push', '-q', 'origin', 'alice/x');
+    write(other, { 'other.txt': 'o' });
+    save(f.ctx(other));
+    const theirs = p.originSha('refs/heads/alice/x');
     write(p.clone, { 'mine.txt': 'm' });
+    assert.throws(() => save(f.ctx()), error => error.code === 'TEAM_PUSH_REJECTED' && /get the latest/.test(error.message));
+    assert.equal(p.originSha('refs/heads/alice/x'), theirs);
+    const result = sync(f.ctx());
+    assert.equal(result.broughtInOwn, true);
+    assert.equal(result.pushed, true);
+    assert.equal(p.originSha('refs/heads/alice/x'), sh(p.clone, 'rev-parse', 'HEAD'));
+    assert.equal(sh(p.clone, 'merge-base', '--is-ancestor', theirs, 'HEAD'), '');
+    assert.equal(sh(p.clone, 'show', 'origin/alice/x:other.txt'), 'o');
+    assert.equal(sh(p.clone, 'show', 'origin/alice/x:mine.txt'), 'm');
+  });
+  it('recovers when the push after a local rebase failed', t => {
+    const p = project(t);
+    const f = fakes(p, { failLeasePushes: 1 });
+    start(f.ctx(), 'x');
+    write(p.clone, { 'src/A.tsx': 'a\n' });
+    save(f.ctx());
+    const saved = p.originSha('refs/heads/alice/x');
+    const mainSha = p.land({ 'src/B.tsx': 'b\n' });
+    assert.throws(() => sync(f.ctx()), /Could not resolve host/);
+    assert.equal(p.originSha('refs/heads/alice/x'), saved);
+    write(p.clone, { 'src/C.tsx': 'c\n' });
     code(() => save(f.ctx()), 'TEAM_PUSH_REJECTED');
+    const result = sync(f.ctx());
+    assert.equal(result.broughtInOwn, false, 'the rewritten saves are not replayed again');
+    assert.equal(p.originSha('refs/heads/alice/x'), sh(p.clone, 'rev-parse', 'HEAD'));
+    assert.equal(sh(p.clone, 'rev-parse', 'HEAD~2'), mainSha);
+    assert.equal(sh(p.clone, 'rev-list', '--count', `${mainSha}..HEAD`), '2');
+    assert.equal(p.originSha('main'), mainSha);
+  });
+  it('reports a push GitHub refuses by rule with GitHub\'s own reason', t => {
+    const p = project(t);
+    const f = fakes(p);
+    start(f.ctx(), 'x');
+    const hook = join(p.origin, 'hooks', 'pre-receive');
+    writeFileSync(hook, '#!/bin/sh\necho "error: GH013: Repository rule violations found for refs/heads/alice/x." >&2\nexit 1\n');
+    chmodSync(hook, 0o755);
+    write(p.clone, { 'a.txt': 'a' });
+    assert.throws(() => save(f.ctx()), error => {
+      assert.equal(error.code, 'TEAM_PUSH_BLOCKED');
+      assert.match(error.message, /GitHub refused the push to alice\/x: error: GH013: Repository rule violations found/);
+      assert.doesNotMatch(error.message, /get the latest/);
+      return true;
+    });
   });
   it('stops on a real conflict, leaves the branch untouched and names the other PR and author', t => {
     const p = project(t);
@@ -408,22 +483,28 @@ describe('team sync and conflicts', () => {
     assert.equal(sh(p.clone, 'status', '--porcelain'), '');
     assert.equal(p.originSha('refs/heads/alice/deps'), sh(p.clone, 'rev-parse', 'HEAD'));
   });
-  it('finishes an unfinished rebase whose only conflicts are identical hunks', t => {
-    const p = project(t);
-    const f = fakes(p);
-    start(f.ctx(), 'x');
-    write(p.clone, { 'src/App.tsx': lines(20).replace('line 9', 'mine') });
-    save(f.ctx());
-    p.land({ 'src/App.tsx': lines(20).replace('line 9', 'theirs') });
-    sh(p.clone, 'fetch', '-q', 'origin', 'main');
-    assert.notEqual(defaultRun('git', ['rebase', 'origin/main'], { cwd: p.clone }).status, 0);
-    write(p.clone, { 'src/App.tsx': lines(20).replace('line 9', '<<<<<<< HEAD\nsame\n=======\nsame\n>>>>>>> mine') });
-    const result = conflicts(f.ctx());
-    assert.deepEqual(result.autoResolved, ['src/App.tsx: both sides made the same change']);
-    assert.equal(readFileSync(join(p.clone, 'src/App.tsx'), 'utf8'), lines(20).replace('line 9', 'same'));
-    assert.equal(sh(p.clone, 'branch', '--show-current'), 'alice/x');
-    assert.equal(p.originSha('refs/heads/alice/x'), sh(p.clone, 'rev-parse', 'HEAD'));
-  });
+  for (const kind of ['--merge', '--apply']) {
+    it(`never finishes, skips or pushes a rebase it did not start (${kind})`, t => {
+      const p = project(t);
+      const f = fakes(p);
+      start(f.ctx(), 'x');
+      write(p.clone, { 'src/App.tsx': lines(20).replace('line 9', 'mine') });
+      save(f.ctx());
+      const saved = p.originSha('refs/heads/alice/x');
+      p.land({ 'src/App.tsx': lines(20).replace('line 9', 'theirs') });
+      sh(p.clone, 'fetch', '-q', 'origin', 'main');
+      assert.notEqual(defaultRun('git', ['rebase', kind, 'origin/main'], { cwd: p.clone }).status, 0);
+      const pushes = () => f.calls.filter(c => c.command === 'git' && c.args[0] === 'push').length;
+      const before = pushes();
+      for (const fn of [conflicts, sync, save, merge]) {
+        assert.throws(() => fn(f.ctx()), error => error.code === 'TEAM_OPERATION_IN_PROGRESS' && /did not start/.test(error.message));
+      }
+      assert.equal(pushes(), before);
+      assert.equal(status(f.ctx(), { fetch: false }).unfinished, 'rebase');
+      assert.ok(!f.calls.some(c => c.command === 'git' && c.args.includes('rebase') && c.args.some(a => ['--continue', '--skip', '--abort'].includes(a))));
+      assert.equal(p.originSha('refs/heads/alice/x'), saved);
+    });
+  }
 });
 
 describe('team pr and merge', () => {
@@ -504,6 +585,35 @@ describe('team pr and merge', () => {
     pr(f.ctx());
     sh(p.clone, 'switch', '-q', '-c', 'bob/thing');
     code(() => merge(f.ctx()), 'TEAM_NOT_YOUR_BRANCH');
+  });
+  it('runs the build here on the exact head when the PR has no checks, and refuses without one', t => {
+    const scripts = { 'package.json': { ...PKG, scripts: { ...PKG.scripts, build: 'vite build' } } };
+    const { p, f } = ready(t, { files: scripts });
+    pr(f.ctx());
+    review(p, f.prs[0], 'bob');
+    const failing = fakes(p, { build: 1 });
+    failing.prs.push(...f.prs);
+    assert.throws(() => merge(failing.ctx()), error => error.code === 'TEAM_BUILD_FAILED' && /no checks on GitHub/.test(error.message) && /TS2304/.test(error.message));
+    assert.ok(!failing.calls.some(c => c.command === 'gh' && c.args[1] === 'merge'));
+    const head = sh(p.clone, 'rev-parse', 'HEAD');
+    const builtAt = [];
+    const g = fakes(p, { build: () => { builtAt.push(sh(p.clone, 'rev-parse', 'HEAD')); return 0; } });
+    g.prs.push(...f.prs);
+    const result = merge(g.ctx());
+    assert.equal(result.localBuild, 'passed');
+    assert.deepEqual(builtAt, [head]);
+    assert.equal(sh(p.origin, 'log', '-1', '--format=%s', 'main'), 'Filter panel (#1)');
+  });
+  it('refuses a PR with no checks and no build script unless --no-build-check', t => {
+    const { p, f } = ready(t);
+    pr(f.ctx());
+    review(p, f.prs[0], 'bob');
+    const mainBefore = p.originSha('main');
+    assert.throws(() => merge(f.ctx()), error => error.code === 'TEAM_NO_BUILD_CHECK' && /--no-build-check/.test(error.message));
+    assert.equal(p.originSha('main'), mainBefore);
+    const result = merge(f.ctx(), { buildCheck: false });
+    assert.equal(result.localBuild, 'skipped');
+    assert.notEqual(p.originSha('main'), mainBefore);
   });
   it('squash-merges an approved, green, up-to-date PR, deletes the branch and returns to main', t => {
     const { p, f } = ready(t);
