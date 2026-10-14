@@ -50,6 +50,7 @@ The Make page exposes no readable GitHub link: a read-only prop scan of Hinge fo
 - the relation from the saved tree;
 - `mirror` from the **working** tree, because Push sends unsaved edits too;
 - LFS paths (root `.gitattributes`), compared outside the tree join, since Make stores the pointer and Push the raw bytes (T7).
+- a team marker in Make that `main` lacks is left out of the relation and `differingPaths` (`markerOutsideMain`), as [deploy.md](deploy.md) does; the mirror check still counts it (Updated 2026-10-15).
 
 ## Live proof (read-only, 2026-10-14)
 

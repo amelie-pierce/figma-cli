@@ -1,6 +1,6 @@
 ---
 name: figma-make-team
-description: Plain-language git for designers working on a team-mode Figma Make project's local clone. Maps phrases like "start a task", "save my progress", "get the latest", "fix the conflict", "I'm ready for review", "merge it", "what's going on?", and the cross-review phrases "what needs my review", "review Bob's change", "approve it", "ask for changes", "show my review feedback" and "address the comments" to figma-cli team verbs and explains the result without git jargon. Use whenever a designer asks to branch, save, sync, review, merge or check the state of a prototype repo; never run raw git for them.
+description: Plain-language git for designers working on a team-mode Figma Make project's local clone. Maps phrases like "start a task", "save my progress", "get the latest", "fix the conflict", "I'm ready for review", "merge it", "what's going on?", the cross-review phrases "what needs my review", "review Bob's change", "approve it", "ask for changes", "show my review feedback" and "address the comments", and the admin deploy phrases "deploy", "what would deploy change" and "is the deploy done" to figma-cli team verbs and make deploy, and explains the result without git jargon. Use whenever a designer asks to branch, save, sync, review, merge, deploy or check the state of a prototype repo; never run raw git for them.
 ---
 
 # Figma Make team workflow
@@ -27,8 +27,9 @@ it in the clone, and explain the JSON result in plain language.
   undoes and names the people to talk to; pass that on.
 - Never put tokens or `.npmrc`/`.env` files into the repo. `team save` blocks
   them; tell the person to keep secrets in their own `~/.npmrc` or a git-ignored file.
-- Do not write to Figma Make from this workflow. Deploying `main` to Make is a
-  repo admin's separate step.
+- Do not write to Figma Make from this workflow. The only Make write in team
+  mode is `figma-cli make deploy`, which only a repo admin can run (see
+  "Deploying to Make" below).
 
 ## Words to verbs
 
@@ -72,6 +73,26 @@ lists (`lavish.poll`) and turn every note into one `team comment`:
   that element. Without one it is posted as a general comment quoting the
   locator; say so, since it is not pinned to a line.
 Reply in Lavish with what you posted. A general remark goes in as-is.
+
+## Deploying to Make (repo admins)
+
+Merged `main` reaches the Make file only through `make deploy`, run in the clone
+on an up-to-date `main` (`figma-cli make pull` first). `KEY` is the Make file key.
+
+| The person says | Run | Then tell them |
+|---|---|---|
+| "What would deploy change?" | `figma-cli make deploy --file KEY` | The `summary` and files; nothing changed yet. Keep the `planPath` |
+| "Deploy" / "deploy to Make" | First the dry run above, show it, then on their yes `figma-cli make deploy --file KEY --apply <planPath>` | The version saved and the `make-deploy/<n>` tag; that a check after a reload comes next |
+| "Is the deploy done?" | `figma-cli make deploy --file KEY --verify <receiptPath>` | Whether Make holds that `main` after a fresh reload (`fresh-sandbox-verified`) |
+| … a deploy stopped part-way (`DEPLOY_WRITE_FAILED`) | Ask, then `--resume <receiptPath>` to finish, or `--abort <receiptPath>` to put Make back | Which; never run both |
+| … the save outcome is unknown (`DEPLOY_SAVE_UNCERTAIN`) | `--verify <receiptPath>` only | Never save or deploy again before verify answers |
+
+`DEPLOY_NOT_ADMIN`: only repo admins deploy; name who to ask. `DEPLOY_MAKE_AHEAD`:
+someone edited Make directly; nothing was overwritten, and a developer must bring
+those edits into `main` first. `DEPLOY_NOT_CURRENT`/`DEPLOY_NOT_MAIN`/`DEPLOY_DIRTY`:
+run `figma-cli make pull` on a clean `main`. `DEPLOY_UNREVIEWED`: `main` must come
+from a merged pull request. `DEPLOY_STALE_PLAN`/`DEPLOY_MAIN_MOVED`/`DEPLOY_TAG_CLASH`:
+run a new dry run. `DEPLOY_SOLO`: the file has no repo, so there is nothing to deploy.
 
 Write a short, specific commit message from what you changed for them when you
 know it (`-m "Tighten card padding"`); otherwise let `save` generate one.

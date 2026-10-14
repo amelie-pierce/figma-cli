@@ -113,6 +113,12 @@ export function requireFirstVersionPending(sinceFlat, working, expectedPaths) {
   return actual;
 }
 
+// Root lockfiles Make's client hides from its rendered file tree (and from
+// changedFiles), like dotfiles. Their write read-back is proven by client VFS
+// and sandbox agreement instead; a deploy of pnpm-lock.yaml found the tree
+// never shows it (scratch, 2026-10-15).
+export const TREE_HIDDEN_ROOT_FILES = Object.freeze(['pnpm-lock.yaml', 'package-lock.json']);
+
 // Root paths Make's client hides from codeFileChanges.changedFiles, although
 // createVersion still commits them. Only paths whose persistence was proven by
 // a saved version and a fresh-sandbox reload belong here; see the vault note

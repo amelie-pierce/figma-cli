@@ -12,12 +12,19 @@ import { makeWorkspace, openMakeFilesTab } from './make-workspace.js';
 import { makeUiSnapshot } from './make-ui.js';
 import { makePersistenceState, makeVersionHistory } from './make-persistence.js';
 import { compareVendor, digest, externalReceipt, sourcePath, vendorManifest, verifyGeneratedManifest } from './make-drift.js';
-import { makeDurablePageAction, requireFirstVersionPending, requireGitMode, requireExactPending } from './make-durable.js';
+import { makeDurablePageAction, requireFirstVersionPending, requireGitMode, requireExactPending, TREE_HIDDEN_ROOT_FILES } from './make-durable.js';
 import { gitBlobSha, isIgnored, parseIgnore } from './git-tree.js';
 import { lfsMatcher, PROJECT_EXCLUDES, PROJECT_MARKER, treeOf, workingFlat } from './make-project.js';
 import { SandboxGit } from './sandbox-git.js';
 
 const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
+
+// createVersion may have run: the caller must inspect, never retry the save.
+function uncertainSave(message) {
+  const error = new Error(message);
+  error.createVersionCalled = true;
+  return error;
+}
 
 function saveRequest(title, expectedPaths) {
   if (typeof title !== 'string' || !title.trim() || title.length > 160) throw new Error('Make version title must be 1–160 characters.');
@@ -486,7 +493,7 @@ export class MakeClient {
   // Returns which independent views agreed. On timeout, the error names the
   // last state of each view instead of a bare timeout.
   async _durableAgreement(path, expectedContent, deadline) {
-    const hidden = path.split('/').some(part => part.startsWith('.'));
+    const hidden = path.split('/').some(part => part.startsWith('.')) || TREE_HIDDEN_ROOT_FILES.includes(path);
     let observed = null;
     try {
       for (;;) {
@@ -520,9 +527,9 @@ export class MakeClient {
         } else {
           const view = (exists, content) => !exists ? 'absent' : content === expectedContent ? 'matched' : 'different';
           observed = { vfs: view(vfs.exists, vfs.content), sandbox: sandbox ? view(true, sandbox.content) : 'unreadable',
-            tree: inTree ? 'present' : hidden ? 'omits dotfiles' : 'absent' };
+            tree: inTree ? 'present' : hidden ? 'omits hidden files' : 'absent' };
           if (observed.vfs === 'matched' && observed.sandbox === 'matched' && (inTree || hidden)) {
-            // Make's rendered tree deliberately omits dotfiles. VFS and sandbox
+            // Make's rendered tree deliberately omits dotfiles and root lockfiles. VFS and sandbox
             // agreement is the available independent proof for those paths.
             if (hidden) return 'vfs-sandbox-matched';
             // Make shows Markdown as a preview with no editor to read. The client
@@ -688,8 +695,10 @@ export class MakeClient {
   // 2026-10-14). The expected set must equal the working copy's difference
   // from the base: the saved version's tree, or with firstVersion the `since`
   // sandbox commit. Make must list nothing pending, and the saved tree must
-  // equal the working tree this check read.
-  async saveCheckedVersion(title, expectedPaths, { firstVersion = false, since } = {}) {
+  // equal the working tree this check read. With `listed` (deploy), Make may
+  // list pending paths, but only expected ones; createVersion is then given
+  // exactly the set Make lists, and the tree check still covers every path.
+  async saveCheckedVersion(title, expectedPaths, { firstVersion = false, since, listed = false } = {}) {
     saveRequest(title, expectedPaths);
     if (firstVersion && !/^[a-f0-9]{40}$/.test(since || '')) {
       throw new Error('--first-version requires --since <commit>: the sandbox head make status reported before the writes.');
@@ -699,8 +708,9 @@ export class MakeClient {
     if (firstVersion && before.treeSource !== 'sandbox-head') throw new Error('Make sandbox HEAD was not the comparison base; first version refused.');
     if (!firstVersion) {
       if (before.treeSource !== 'saved-version') throw new Error('Make saved version was not the comparison base; version refused.');
-      if (state.pendingPaths.length) {
-        throw new Error(`Make lists other pending changes; expected none, found ${JSON.stringify(state.pendingPaths)}.`);
+      const others = listed ? state.pendingPaths.filter(path => !expectedPaths.includes(path)) : state.pendingPaths;
+      if (others.length) {
+        throw new Error(`Make lists other pending changes; expected ${listed ? 'only the expected paths' : 'none'}, found ${JSON.stringify(others)}.`);
       }
     }
     const baseFlat = !firstVersion ? before.makeFlat : await this._operation(async deadline => {
@@ -725,13 +735,14 @@ export class MakeClient {
       } finally { await bridge.dispose(); }
       let created;
       try {
-        created = await this._durable({ type: 'save', ...(firstVersion ? { firstVersion: true } : {}), title, expectedPaths: [],
+        created = await this._durable({ type: 'save', ...(firstVersion ? { firstVersion: true } : {}), title,
+          expectedPaths: listed ? state.pendingPaths : [],
           expectedGitSha: firstVersion ? null : state.savedVersion }, deadline);
       }
-      catch (cause) { throw new Error(`Make version outcome is uncertain: ${cause.message}. Inspect versions before retrying.`); }
+      catch (cause) { throw uncertainSave(`Make version outcome is uncertain: ${cause.message}. Inspect versions before retrying.`); }
       if (created?.refused) throw new Error(created.refused);
       if (typeof created?.id !== 'string' || !created.id || !Number.isSafeInteger(created.versionNumber) ||
-          !/^[a-f0-9]{40}$/.test(created.gitSha || '')) throw new Error('Make version response is incomplete; inspect versions before retrying.');
+          !/^[a-f0-9]{40}$/.test(created.gitSha || '')) throw uncertainSave('Make version response is incomplete; inspect versions before retrying.');
       return created;
     });
     const saved = { fileKey: this.fileKey, title, ...(firstVersion ? { firstVersion: true } : {}), versionId: version.id,
@@ -750,11 +761,17 @@ export class MakeClient {
       if (after.treeSource !== 'saved-version' || after.persistence?.savedVersion !== version.gitSha) {
         throw new Error('the saved version is not the baseline Make reports');
       }
-      if (after.makeTree !== before.workingTree || after.workingTree !== after.makeTree) {
-        throw new Error(`saved tree ${after.makeTree} differs from the checked working tree ${before.workingTree}`);
-      }
-      return { ...saved, tree: after.makeTree,
-        verification: `${firstVersion ? 'first-version' : 'saved-version'}-clean-baseline; saved-tree-matched` };
+      // A deploy compares content: listing exposes no file mode, so a file
+      // Make rewrote itself (its own reinstall of pnpm-lock.yaml) can keep
+      // 100755 where the working tree guessed 100644 (scratch, 2026-10-15).
+      const contentDiffers = (a, b) => [...new Set([...a.keys(), ...b.keys()])].filter(path => a.get(path)?.blob !== b.get(path)?.blob);
+      const differs = listed
+        ? contentDiffers(after.makeFlat, before.workingFlat).length || contentDiffers(after.workingFlat, after.makeFlat).length
+        : after.makeTree !== before.workingTree || after.workingTree !== after.makeTree;
+      if (differs) throw new Error(`saved tree ${after.makeTree} differs from the checked working tree ${before.workingTree}`);
+      const modeOnly = listed ? [...after.makeFlat].filter(([path, entry]) => before.workingFlat.get(path)?.mode !== entry.mode).map(([path]) => path).sort() : [];
+      return { ...saved, tree: after.makeTree, ...(modeOnly.length ? { modeOnly } : {}),
+        verification: `${firstVersion ? 'first-version' : 'saved-version'}-clean-baseline; saved-${listed ? 'content' : 'tree'}-matched` };
     } catch (cause) {
       const error = new Error(`Make version ${version.versionNumber} (${version.gitSha}) was created but its baseline or tree was not verified: ${cause.message}. Do not retry the save.`);
       error.version = saved;
@@ -1012,6 +1029,7 @@ export class MakeClient {
     const lfsPaths = [...new Set([...scan.inventory.keys(), ...git.flat.keys()])].filter(isLfs).sort();
     return { persistence: scan.state, history: git.history, head: git.head, makeTree: git.tree, treeSource: git.treeSource,
       makeFlat: git.flat, workingFlat: working, workingTree: treeOf(working), fileCount: scan.inventory.size,
+      workingSha256: new Map([...scan.inventory].map(([path, file]) => [path, file.sha256])),
       excluded: scan.excluded, excludeSource: scan.excludeSource, lfsPaths, isLfs,
       markerBytes: scan.contents.get(PROJECT_MARKER) ?? null, batches: scan.batches };
   }
