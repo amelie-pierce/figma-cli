@@ -389,7 +389,7 @@ describe('team save', () => {
       'src/vendor/kit/README', 'src/vendor/kit/VENDOR.json', 'src/vendor/kit/styles/tokens.css']);
     const result = save(f.ctx());
     for (const [path, bytes] of Object.entries(before)) assert.ok(readFileSync(join(p.clone, path)).equals(bytes), `${path} is byte-identical`);
-    assert.equal(statSync(join(p.clone, 'src/vendor/kit/Button.tsx')).mode & 0o777, 0o644);
+    if (process.platform !== 'win32') assert.equal(statSync(join(p.clone, 'src/vendor/kit/Button.tsx')).mode & 0o777, 0o644);
     assert.match(readFileSync(join(p.clone, 'src/App.tsx'), 'utf8'), /formatted/, 'the project\'s own files are still formatted');
     assert.deepEqual(result.files.filter(file => /vendor|VENDOR|kit-logo/.test(file)), ['new file: src/vendor/kit/New.tsx'],
       'no vendored file is saved with the formatter\'s changes; the designer\'s new vendored file is saved as they wrote it');
@@ -820,7 +820,7 @@ describe('team merge --force', () => {
     assert.ok(message.includes(`Reason: ${reason}`));
     const [file] = readdirSync(forceReceiptDir(home));
     assert.equal(join(forceReceiptDir(home), file), result.receipt.path);
-    assert.equal(statSync(result.receipt.path).mode & 0o777, 0o600);
+    if (process.platform !== 'win32') assert.equal(statSync(result.receipt.path).mode & 0o777, 0o600);
     const saved = JSON.parse(readFileSync(result.receipt.path, 'utf8'));
     assert.deepEqual({ ...saved }, { schema: 'figma-cli/team-force-merge@1', at: '2026-10-15T10:00:00.000Z', repo: REPO, number: 1,
       url: `https://github.com/${REPO}/pull/1`, by: '@alice', reason, head, mergeCommit: p.originSha('main'), checks: 'none', localBuild: 'passed', staleApprovals: [] });
