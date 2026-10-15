@@ -586,3 +586,16 @@ test('reload waits for a new document and its Make state', async () => {
   assert.equal(answers.length, 0);
   assert.equal(result.persistence.savedVersion, base);
 });
+
+test('a CDP call gets a timeout scaled to the file it carries, never past the operation deadline', async () => {
+  const seen = [];
+  const client = new MakeClient({ transport: { timeoutMs: 5000, close() {}, evaluate: async (expression, options) => { seen.push(options.timeoutMs); return { exists: false }; } }, timeoutMs: 120000 });
+  client.fileKey = 'ScratchKey';
+  const deadline = Date.now() + 120000;
+  await client._durable({ type: 'write', path: 'src/big.scss', content: 'x'.repeat(377 * 1024), expectedContent: null }, deadline);
+  await client._durable({ type: 'read', path: 'src/big.scss' }, deadline);
+  await client._durable({ type: 'write', path: 'src/big.scss', content: 'x'.repeat(2 * 1024 * 1024), expectedContent: null }, Date.now() + 30000);
+  assert.ok(seen[0] >= 5000 + 377 * 100 && seen[0] < 60000, `large write: ${seen[0]}`);
+  assert.ok(seen[1] > 110000 && seen[1] <= 120000, `read waits up to the deadline: ${seen[1]}`);
+  assert.ok(seen[2] <= 30000, `capped by the deadline: ${seen[2]}`);
+});

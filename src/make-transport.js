@@ -174,12 +174,12 @@ export class MakeTransport {
     });
   }
 
-  async evaluate(expression) {
+  async evaluate(expression, { timeoutMs = this.timeoutMs } = {}) {
     const response = await this.send('Runtime.evaluate', {
       expression,
       returnByValue: true,
       awaitPromise: true,
-    });
+    }, { timeoutMs });
     if (response.exceptionDetails) {
       const details = response.exceptionDetails;
       throw new Error(details.exception?.description || details.text || 'Make JavaScript evaluation failed');

@@ -39,6 +39,11 @@ function saveRequest(title, expectedPaths) {
   if (!Array.isArray(expectedPaths) || !expectedPaths.length || expectedPaths.length > 1000) throw new Error('Provide the exact expected changed-file set.');
   expectedPaths.forEach(sourcePath);
 }
+// Each CDP call has its own timeout (the transport's, 5 s by default), which a
+// call carrying a whole file into the page can outlast: a 377 KB stylesheet
+// write timed out live. Such a call gets 100 ms more per KiB it carries.
+const payloadTimeout = bytes => 5000 + Math.ceil(bytes / 1024) * 100;
+
 // How long a selected Markdown file may show no source editor before it is
 // treated as preview-only, which is how Make renders Markdown.
 const EDITOR_WAIT_MS = 3000;
@@ -233,12 +238,18 @@ export class MakeClient {
     }
   }
 
-  async _evaluate(expression, deadline) {
-    return this._bounded(() => this.transport.evaluate(guardExpression(this.fileKey, expression)), deadline);
+  // `bytes` is the size the call returns, when larger than what it sends;
+  // never past the operation's deadline.
+  async _evaluate(expression, deadline, { bytes = 0 } = {}) {
+    const timeoutMs = Math.min(this._remaining(deadline), Math.max(this.transport.timeoutMs || 0, payloadTimeout(Math.max(expression.length, bytes))));
+    return this._bounded(() => this.transport.evaluate(guardExpression(this.fileKey, expression), { timeoutMs }), deadline);
   }
 
+  // A read returns a whole file of unknown size, so it may take the
+  // operation's remaining time; reads change nothing.
   _editor(action, deadline) {
-    return this._evaluate(`(${makeEditorAction.toString()})(${JSON.stringify(action)}, (${makeWorkspace.toString()}))`, deadline);
+    return this._evaluate(`(${makeEditorAction.toString()})(${JSON.stringify(action)}, (${makeWorkspace.toString()}))`, deadline,
+      { bytes: action.type === 'read' ? Infinity : 0 });
   }
 
   async _operation(callback) {
@@ -493,7 +504,8 @@ export class MakeClient {
   }
 
   _durable(action, deadline) {
-    return this._evaluate(`(${makeDurablePageAction.toString()})(${JSON.stringify(action)})`, deadline);
+    return this._evaluate(`(${makeDurablePageAction.toString()})(${JSON.stringify(action)})`, deadline,
+      { bytes: action.type === 'read' ? Infinity : 0 });
   }
 
   _sourceTree(deadline) {
