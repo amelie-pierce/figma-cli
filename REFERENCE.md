@@ -682,7 +682,12 @@ saved vendor tree from the AtomicAUI kit, writes an immutable
 `public/atomicaui/<version>/` folder plus `latest.json`, checks the exact
 pending path set, saves one Make version, and verifies the written files.
 Without `--version`, it uses the next patch version. Publishing remains a
-manual Figma Make click; the command prints the steps.
+manual Figma Make click; the command prints the steps. Archive and oversized
+source files use base64 parts of at most 512 KiB by default (configurable up to
+2 MiB with `--part-bytes`). After an interrupted, unsaved release, use
+`--version X.Y.Z --resume`; it checks every pending path and byte before
+continuing. `make atomicaui verify-release --file KEY --version X.Y.Z`
+independently reads the saved release path set and hashes without writing.
 
 `make atomicaui add [--version X.Y.Z]`, `upgrade [--to X.Y.Z]`, and `status`
 use the public site over credential-free HTTPS. Pass `--file KEY` for a solo
@@ -692,6 +697,11 @@ rejects HTML fallbacks and redirects, verifies the manifest, every archive
 part, and every source file, then checks local vendor edits before installing.
 The change report lists added, changed, and removed paths and any breaking
 notes carried by the manifest.
+
+`public/atomicaui/**` is kit-only release data. Vendor drift, sync plans, and
+export deltas exclude it. An older kit without `tokens/generated.manifest.json`
+can use the matching committed package manifest through `make sync
+--generation-manifest` for a read-only component sync plan.
 
 ### Make delta and sync
 

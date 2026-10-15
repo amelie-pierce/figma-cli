@@ -33,6 +33,15 @@ test('vendor classifications and exit codes include missing, mismatched and extr
   });
 });
 
+test('kit-only release files do not affect vendor drift', () => {
+  const files = inventory({ 'public/atomicaui/latest.json': info(Buffer.from('release pointer')),
+    'public/atomicaui/7.0.0/manifest.json': info(Buffer.from('release manifest')) });
+  const result = compare(files);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.counts, { matched: 2, mismatched: 0, missing: 0, extra: 0 });
+  assert.equal(result.files.some(file => file.path.startsWith('public/atomicaui/')), false);
+});
+
 test('pending, missing baseline, mode and changing state fail persistence proof', () => {
   const files = inventory();
   for (const state of [

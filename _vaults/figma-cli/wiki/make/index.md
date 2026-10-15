@@ -6,6 +6,7 @@
 - [persistence.md](persistence.md): mode-specific Make saving, session-only CLI writes, the `--session-only` gate, durable writes to preview-only Markdown, root files Make does not list as pending, and `--first-version` for a never-saved git-mode file.
 - [drift.md](drift.md): read-only hidden-file inventory, manifest comparison, and saved-state checks.
 - [sync.md](sync.md): explicit Make/workspace delta and plan-bound sync with the Core token gate.
+- [atomicaui-release.md](atomicaui-release.md): kit-hosted AtomicAUI release paths, guarded save and readback, and separation from vendor exchange.
 - [status.md](status.md): read-only `make status`, git tree SHAs from Make's sandbox objects, the project-root inventory, solo/team mode and the write gate.
 - [local.md](local.md): `make clone`, `install`, `pull` and `dev` for running a team-mode project from GitHub `main`; kit refusal, `.npmrc` handling and the frozen, script-free pnpm install.
 - [team.md](team.md): `figma-cli team` verbs for designers; own-branch and push rules in code, save checks, conflict auto-resolution limits, and the current-head non-author approval for merge.
