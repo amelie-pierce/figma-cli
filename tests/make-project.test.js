@@ -182,6 +182,16 @@ describe('make status', () => {
     assert.ok(calls.every(path => !path.includes(' ')));
   });
 
+  it('compares without the team marker when main holds none, as make deploy does', async () => {
+    const plain = flat({ 'src/App.tsx': 'a' });
+    const { result } = await status({ make: makeSide({ saved: A }), routes: repoRoutes({ main: plain, base: plain, commits: [] }) });
+    assert.equal(result.github.relation, 'in-sync');
+    assert.equal(result.github.markerOutsideMain, true);
+    assert.deepEqual(result.github.differingPaths, []);
+    const edited = await status({ make: makeSide({ saved: B }), routes: repoRoutes({ main: plain, base: plain, commits: [] }) });
+    assert.equal(edited.result.github.relation, 'make-ahead');
+  });
+
   it('reports make-ahead, git-ahead and diverged against the receipt base', async () => {
     const cases = [[B, A, A, 'make-ahead'], [A, B, A, 'git-ahead'], [B, C, A, 'diverged']];
     for (const [saved, main, base, relation] of cases) {

@@ -9,6 +9,7 @@ import { driftExitCode, digest } from '../make-drift.js';
 import { buildStatus, checkWriteMode, linkedRepo, MODE_CODES, parseMarker, readGithub, recordLinkedRepo, refuseMarkerPaths,
   repoName, statusExitCode } from '../make-project.js';
 import { CONFIRM_FLAG, runModeChange } from '../make-mode.js';
+import { DEPLOY_CODES, deployAbort, deployApply, deployPlan, deployResume, deployVerify } from '../make-deploy.js';
 import { cloneProject, install, LOCAL_CODES, pullProject, repoRoot, resolveCloneRepo, runDev } from '../make-local.js';
 import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, planSync, validatePlanDigest, VENDOR_ROOT,
   writeApplyOutputs } from '../make-sync.js';
@@ -21,7 +22,8 @@ const make = program.command('make')
     '\nEvery write refuses in team mode, and in ambiguous mode without --solo.' +
     '\nOnly make mode team|solo adds or removes the .figma-cli/project.json team marker.' +
     '\nGit-mode write/delete use Make client VFS; save-version records a saved version.' +
-    '\nclone, install, pull and dev run a team-mode project locally from GitHub main; they never write to Make.');
+    '\nclone, install, pull and dev run a team-mode project locally from GitHub main; they never write to Make.' +
+    '\nIn team mode only make deploy writes to Make: a repo admin deploys GitHub main from a local clone.');
 
 function report(value) { console.log(JSON.stringify(value, null, 2)); }
 function failure(error) {
@@ -31,7 +33,9 @@ function failure(error) {
     ...(error.receiptPath ? { receiptPath: error.receiptPath } : {}),
     ...(error.version ? { version: error.version } : {}),
     ...(error.completedWrites ? { completedWrites: error.completedWrites } : {}),
-    ...(error.code === 'MAKE_SESSION_ONLY_REQUIRED' || MODE_CODES.includes(error.code) || LOCAL_CODES.includes(error.code) ? { code: error.code } : {}),
+    ...(error.code === 'MAKE_SESSION_ONLY_REQUIRED' || MODE_CODES.includes(error.code) || LOCAL_CODES.includes(error.code) ||
+      DEPLOY_CODES.includes(error.code) ? { code: error.code } : {}),
+    ...(error.paths ? { paths: error.paths } : {}),
     ...(error.dir ? { dir: error.dir } : {}),
     ...(error.sessionWrites ? { sessionWrites: error.sessionWrites, requestedPaths: error.requestedPaths, observedWrites: error.observedWrites } : {}) }));
   process.exitCode = 1;
@@ -373,6 +377,30 @@ modeCommand(mode.command('solo').description('Remove the team marker, save that 
     action: 'solo', firstVersion: options.firstVersion === true, since: options.since, dryRun: options.dryRun === true,
     confirm: options.yesTurnOffTeamMode === true,
   }))));
+
+// Deploy GitHub main into a team-mode Make file. It is the one Make write that
+// team mode allows, so it runs its own guards instead of the write gate.
+target(make.command('deploy').description('Deploy GitHub main from a local clone into a team-mode Make file (repo admins only). Dry run by default'), 120000)
+  .option('--dir <path>', 'Local clone of the repo, on a clean main equal to GitHub\'s (default: current folder)')
+  .option('--apply <plan>', 'Re-plan, check the reviewed plan still holds, then write, save one version, check drift, record the receipt and push the tag')
+  .option('--verify <receipt>', 'Reload Make, confirm the deployed version and tree, and finalise an uncertain receipt (pushes a missing tag)')
+  .option('--resume <receipt>', 'Finish an interrupted deploy that saved no version: write the remaining paths, then save')
+  .option('--abort <receipt>', 'Undo an interrupted deploy that saved no version: restore the written paths from backups')
+  .addHelpText('after', '\nGuards: team-mode Make file; your gh login is an admin of its repo; the clone is on main, clean and equal' +
+    '\nto GitHub\'s main, which arrived through a merged pull request; pnpm install --frozen-lockfile and the build pass; Make' +
+    '\nis in git mode with a saved version, nothing pending, idle, and equal to the last make-deploy/<n> tag\'s main tree.' +
+    '\nBinary, large and LFS files are refused. Receipts are private, under ~/.figma-cli/deploys/.')
+  .action(options => withClient(options, async client => {
+    const chosen = ['apply', 'verify', 'resume', 'abort'].filter(name => options[name]);
+    if (chosen.length > 1) throw new Error(`Choose one of --apply, --verify, --resume or --abort, not ${chosen.map(name => `--${name}`).join(' and ')}.`);
+    const deps = { warn: message => console.error(`warning: ${message}`) };
+    const dir = options.dir ? resolve(options.dir) : undefined;
+    if (options.apply) return report(await deployApply(client, { dir, planPath: options.apply }, deps));
+    if (options.verify) return report(await deployVerify(client, { dir, receiptPath: options.verify }, deps));
+    if (options.resume) return report(await deployResume(client, { dir, receiptPath: options.resume }, deps));
+    if (options.abort) return report(await deployAbort(client, { receiptPath: options.abort }, deps));
+    report(await deployPlan(client, { dir }, deps));
+  }));
 
 // Local runs of a team-mode project. They read GitHub through the caller's
 // own gh and git logins and never write to Make; only clone --file reads Make

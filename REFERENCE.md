@@ -248,8 +248,8 @@ GitHub. It reports:
   repo reads, the file key → repo link is recorded locally in
   `~/.figma-cli/make-repos.json` (never in the repo or in Make):
   - `main`'s commit and tree, and the latest `make-deploy/<n>` tag with its
-    receipt base (`mainTree` from the tag's JSON receipt, else the tagged
-    commit's tree);
+    base, the tagged commit's tree (a tag receipt naming a different
+    `mainTree` is reported as `receiptMismatch`);
   - `relation`: `in-sync`, `make-ahead`, `git-ahead`, `diverged`, or `no-base`
     when there is no tag, plus the differing paths;
   - `unreviewed`: commits on `main` since the base (all history without one, up
@@ -370,6 +370,91 @@ Errors are JSON on stderr with a `code`; results are JSON on stdout.
   server's code. It runs until stopped: **agents start it as a background job
   and poll the printed URL** (for example `curl -sf http://localhost:5173/`)
   instead of waiting for it to return.
+
+### Deploying main to Make (`make deploy`)
+
+In team mode the only Make write is a deploy of GitHub `main`, run by a repo
+admin from a local clone. Results are JSON on stdout with a plain `summary`;
+errors are JSON on stderr with a `DEPLOY_*` `code` and, once anything was
+written, the `receiptPath`.
+
+```bash
+figma-cli make deploy --file KEY [--dir CLONE]   # dry run (default)
+figma-cli make deploy --file KEY [--dir CLONE] --apply PLAN
+figma-cli make deploy --file KEY [--dir CLONE] --verify RECEIPT
+figma-cli make deploy --file KEY [--dir CLONE] --resume RECEIPT
+figma-cli make deploy --file KEY --abort RECEIPT
+```
+
+Guards, each refusing with nothing written:
+- the Make file is in team mode (`DEPLOY_SOLO`: a solo file has nothing to deploy
+  from; `DEPLOY_NOT_TEAM`: ambiguous or invalid marker) and the clone's origin is
+  the marker's repo (`DEPLOY_REPO_MISMATCH`);
+- your `gh` login has `admin` on the repo (`DEPLOY_NOT_ADMIN`, GET requests only);
+- the clone is on `main` (`DEPLOY_NOT_MAIN`), clean (`DEPLOY_DIRTY`), and after a
+  fetch `HEAD` equals `origin/main` (`DEPLOY_NOT_CURRENT`); that commit came from a
+  pull request merged into `main` (`DEPLOY_UNREVIEWED`), since `main` is unprotected
+  and review is a convention;
+- `make install`'s checks and `pnpm install --frozen-lockfile --ignore-scripts`
+  pass (`DEPLOY_INSTALL_FAILED`; a `@make-kits/*` dependency refuses here), the
+  `build` script passes (`DEPLOY_BUILD_FAILED`) and leaves no file git sees;
+- Make is idle, in git mode with a saved version, with nothing pending or unsaved
+  and no AI generation running (`DEPLOY_MAKE_BUSY`, `DEPLOY_MAKE_STATE`,
+  `DEPLOY_MAKE_AHEAD`);
+- Make's saved tree equals the tree of the newest `make-deploy/<n>` tag's
+  commit (`DEPLOY_MAKE_AHEAD`: Make was edited outside deploys; bring the edits
+  into `main` first with the coming `make rescue` step). A tag receipt naming a
+  different `mainTree` is refused (`DEPLOY_MAKE_STATE`). The first deploy's base is
+  Make's saved tree. No earlier deploy of the file may be unfinished
+  (`DEPLOY_UNFINISHED` names the recovery command).
+
+The plan compares `main`'s tree with Make's saved tree by content (Make commits
+files it writes as `100644`, so mode-only differences are listed, not written).
+`.npmrc` and `.figma/design-context/` are never deployed; `.figma-cli/project.json`
+is kept in Make when `main` has none, and refused when `main`'s names another file
+or repo (`DEPLOY_MARKER`). Binary files and files over 2 MiB (`DEPLOY_BINARY`),
+LFS paths that differ (`DEPLOY_LFS`), and new or deleted files directly in the
+project root or in a new top-level folder, submodules and symbolic links
+(`DEPLOY_UNSUPPORTED_PATH`) are refused. Lockfiles are written first and the root
+`package.json` last, because Make reinstalls when `package.json` changes. The
+plan records each path's operation and before/after SHA-256 and git blob, the
+next tag number and a digest; it is written to `~/.figma-cli/deploys/plans/`.
+
+`--apply` runs every guard again and re-plans: the digest must match the reviewed
+plan, `origin/main` must still be the planned commit (`DEPLOY_MAIN_MOVED`) and
+the tag number must be free (`DEPLOY_TAG_CLASH`). It then writes each path with
+the durable client-VFS write (backups under `~/.figma-cli/deploys/backups/`),
+saves one version `deploy <sha7>` whose saved tree must equal the checked working
+tree (Make may list only planned paths as pending), checks the whole project
+root against `main`, and pushes the annotated tag `make-deploy/<n>` on the
+deployed commit. The tag message ends with the receipt's public JSON (no local
+paths). `make status` and the next deploy take the tagged commit's tree as the
+base; a receipt `mainTree` that differs from it is refused by deploy and flagged
+by `make status` as `receiptMismatch`.
+
+The receipt, `figma-cli/make-deploy-receipt@1` in `~/.figma-cli/deploys/`
+(mode 0600), holds `deployId`, `who`, `at`, `repo`, `mainCommit`, `mainTree`,
+`fileKey`, `makeBefore{versionGitSha,tree}`,
+`makeAfter{versionId,versionNumber,versionGitSha,tree}`, `planDigest`,
+`files[{path,op,beforeSha256,afterSha256,backupPath}]`, `excluded`, the `tag`,
+the `stage`, `outcome` (`ok`, `uncertain` or `aborted`) and `verification`
+(`saved-clean-tree-matched`, then `fresh-sandbox-verified`).
+
+Recovery:
+
+| Stopped at | `stage` | Run |
+|---|---|---|
+| A write, before any save (`DEPLOY_WRITE_FAILED`) | `writing` / `written` | `--resume` writes the remaining paths and saves; each planned path must hold its before or after content and nothing else may be unsaved. `--abort` restores the written paths from the backups instead |
+| createVersion ran but was not confirmed (`DEPLOY_SAVE_UNCERTAIN`) | `save-uncertain` / `saved-unverified` | `--verify` only; the save is never retried |
+| Saved, but the drift check could not read Make (`DEPLOY_DRIFT`) | `saved` | `--verify`; if Make has moved past the saved version, it records `saved-drift` |
+| Saved, but Make does not equal `main` (`DEPLOY_DRIFT`) | `saved-drift` | Look at the listed paths; the next dry run plans from this version, or refuses as make-ahead when Make has moved past it |
+| Tag number taken after the save | `tag-clash` | A new dry run plans from this version |
+| Tag push failed | `tag-pending` | `--verify` pushes it, even when Make has changed since, because the save already passed the drift check |
+
+`--verify` reloads the Make tab, requires Make's saved version and tree to be the
+deploy's with nothing pending, adopts the version an unconfirmed save created,
+pushes a missing tag and marks the receipt `fresh-sandbox-verified`. A warm match
+right after the save is not proof that the version persists.
 
 ### Team git workflow (`team`)
 

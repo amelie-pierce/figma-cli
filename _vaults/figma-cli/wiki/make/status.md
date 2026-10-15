@@ -42,7 +42,7 @@ The Make page exposes no readable GitHub link: a read-only prop scan of Hinge fo
 ## GitHub side
 
 `readGithub` uses the caller's `gh` login with GET requests only (`src/make-project.js:189`):
-- `main`'s commit and tree, and the latest `make-deploy/<n>` tag. The base is the `mainTree` of the tag's JSON receipt, or the tagged commit's tree.
+- `main`'s commit and tree, and the latest `make-deploy/<n>` tag. The base is the tagged commit's tree; a tag receipt naming a different `mainTree` is reported as `receiptMismatch` (deploy refuses it).
 - Commits since the base (all history without one, up to 100). Each is checked against `commits/<sha>/pulls` for a merged PR into the trunk.
 - The caller's permission from `repos/<repo>` (`admin` may deploy).
 
@@ -50,6 +50,7 @@ The Make page exposes no readable GitHub link: a read-only prop scan of Hinge fo
 - the relation from the saved tree;
 - `mirror` from the **working** tree, because Push sends unsaved edits too;
 - LFS paths (root `.gitattributes`), compared outside the tree join, since Make stores the pointer and Push the raw bytes (T7).
+- a team marker in Make that `main` lacks is left out of the relation and `differingPaths` (`markerOutsideMain`), as [deploy.md](deploy.md) does; the mirror check still counts it (Updated 2026-10-15).
 
 ## Live proof (read-only, 2026-10-14)
 
