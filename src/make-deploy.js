@@ -491,18 +491,31 @@ const publicReceipt = receipt => ({ schema: receipt.schema, deployId: receipt.de
   files: receipt.files.map(({ path, op, beforeSha256, afterSha256 }) => ({ path, op, beforeSha256, afterSha256 })),
   excluded: receipt.excluded });
 
-// Push the annotated tag make-deploy/<n>. A tag that already exists on
-// GitHub is a clash: someone else deployed under that number.
+// Who holds make-deploy/<n> on GitHub: null when nobody, 'ours' when it tags
+// this receipt's commit with this deployId, otherwise 'theirs'.
+function remoteTagHolder(ctx, receipt) {
+  const name = receipt.tag.name;
+  if (!remoteTags(ctx).some(tag => tag.name === name)) return null;
+  ctx.git(['fetch', '--quiet', '--no-tags', 'origin', `+refs/tags/${name}:refs/tags/${name}`], `Reading ${name} from GitHub`);
+  const ours = revOf(ctx, `refs/tags/${name}`) === receipt.mainCommit &&
+    receiptJson(ctx.tryGit(['cat-file', 'tag', `refs/tags/${name}`]).stdout)?.deployId === receipt.deployId;
+  return ours ? 'ours' : 'theirs';
+}
+
+// Push the annotated tag make-deploy/<n>. Another deploy's tag under that
+// number is a clash; this deploy's own tag already on GitHub is pushed.
 export function pushTag(ctx, receipt) {
   const name = receipt.tag.name;
-  if (remoteTags(ctx).some(tag => tag.name === name)) return 'clash';
+  const holder = remoteTagHolder(ctx, receipt);
+  if (holder) return holder === 'ours' ? 'pushed' : 'clash';
   const message = `${name}: deploy ${short(receipt.mainCommit)} to Figma Make ${receipt.fileKey}, version ${receipt.makeAfter.versionNumber ?? 'unknown'}\n\n` +
     `${JSON.stringify(publicReceipt(receipt))}\n`;
   ctx.git(['tag', '-a', '-f', '-m', message, name, receipt.mainCommit], `Creating ${name}`);
   const pushed = ctx.tryGit(['push', '--quiet', 'origin', `refs/tags/${name}:refs/tags/${name}`]);
   if (pushed.status === 0) return 'pushed';
   ctx.tryGit(['tag', '-d', name]);
-  return remoteTags(ctx).some(tag => tag.name === name) ? 'clash' : 'failed';
+  const after = remoteTagHolder(ctx, receipt);
+  return after === 'ours' ? 'pushed' : after ? 'clash' : 'failed';
 }
 
 async function tagAndFinish(ctx, receipt, home) {

@@ -644,6 +644,48 @@ describe('make deploy recovery', () => {
     await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_MAKE_AHEAD', /make rescue/);
   });
 
+  it('treats its own tag as pushed when the push reported failure after GitHub took it', async t => {
+    const s = setup(t);
+    landChange(s);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    let dropOnce = true;
+    const run = (command, args, options) => {
+      const result = s.deps.run(command, args, options);
+      if (dropOnce && command === 'git' && args[0] === 'push' && result.status === 0) { dropOnce = false; return { status: 1, stdout: '', stderr: 'connection reset' }; }
+      return result;
+    };
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, { ...s.deps, run });
+    assert.equal(applied.stage, 'deployed');
+    assert.equal(applied.outcome, 'ok');
+    assert.deepEqual(s.p.tags(), ['make-deploy/0']);
+  });
+
+  it('verify finishes a tag-pending receipt whose earlier push did land', async t => {
+    const s = setup(t);
+    landChange(s);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    let pushes = 0;
+    let hideTags = false;
+    const run = (command, args, options) => {
+      if (command === 'git' && args[0] === 'push' && pushes++ === 0) {
+        s.deps.run(command, args, options);
+        hideTags = true;
+        return { status: 1, stdout: '', stderr: 'connection reset' };
+      }
+      if (hideTags && command === 'git' && args[0] === 'ls-remote') { hideTags = false; return { status: 0, stdout: '', stderr: '' }; }
+      return s.deps.run(command, args, options);
+    };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, { ...s.deps, run }), error => {
+      receiptPath = error.receiptPath;
+      return error.code === 'DEPLOY_TAG_FAILED';
+    });
+    assert.deepEqual(s.p.tags(), ['make-deploy/0']);
+    const verified = await deployVerify(s.make, { ...s.opts, receiptPath }, s.deps);
+    assert.equal(verified.stage, 'deployed');
+    assert.equal(verified.outcome, 'ok');
+  });
+
   it('verify records saved-drift when Make moved past a saved version whose drift check could not run', async t => {
     const s = setup(t);
     landChange(s);
