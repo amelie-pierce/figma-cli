@@ -490,9 +490,11 @@ test('remote read admits hidden package source but rejects missing project paths
   });
   const path = 'node_modules/example/guidelines/Guidelines.md';
   assert.equal((await client.read(path, { remote: true })).path, path);
+  const hidden = 'src/vendor/atomic-aui/tokens/generated/.generated';
+  assert.equal((await client.read(hidden, { remote: true })).path, hidden);
   await assert.rejects(client.read('missing.md', { remote: true }), /missing/);
   await assert.rejects(client.read('node_modules/../../private', { remote: true }));
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
 });
 
 test('remote read rejects mismatched identity, encoding and malformed text, always releasing the bridge', async (t) => {

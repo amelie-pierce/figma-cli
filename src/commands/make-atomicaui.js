@@ -15,9 +15,10 @@ const PUBLISH = [
   'Keep the existing sienna-khaki-58053801.figma.site address, publish, then close the dialog.',
 ];
 
-function requireClean(state) {
+function requireClean(state, allowedPending = null) {
   if (!state || state.mode !== 'git' || !state.hasBaseline || !/^[a-f0-9]{40}$/.test(state.savedVersion || '') ||
-      state.isLoading || state.error || state.pendingCount !== 0 || !Array.isArray(state.pendingPaths) || state.pendingPaths.length) {
+      state.isLoading || state.error || !Array.isArray(state.pendingPaths) || state.pendingCount !== state.pendingPaths.length ||
+      (allowedPending ? state.pendingPaths.some(path => !allowedPending.has(path)) : state.pendingCount !== 0)) {
     throw new Error('AtomicAUI operation requires a clean saved git-mode Make version.');
   }
 }
@@ -28,9 +29,13 @@ async function withMake(file, fn) {
 }
 function fileNames(tree) { return new Set(tree.filter(entry => entry.kind === 'file').map(entry => entry.path)); }
 
-export async function releaseAtomicaui(client, { requestedVersion, breakingChanges = [] } = {}) {
+export async function releaseAtomicaui(client, { requestedVersion, breakingChanges = [], resume = false, partBase64Bytes } = {}) {
   await checkWriteMode(client, {});
-  requireClean((await client._driftState(Date.now() + 120000)).state);
+  if (resume && !requestedVersion) throw new Error('Resuming an AtomicAUI release requires --version.');
+  const resumePrefix = resume ? `${RELEASE_ROOT}/${version(requestedVersion)}/` : null;
+  const releasePending = state => requireClean(state, resume && state ? new Set(state.pendingPaths.filter(path =>
+    path.startsWith(resumePrefix) || path === `${RELEASE_ROOT}/latest.json`)) : null);
+  releasePending((await client._driftState(Date.now() + 120000)).state);
   const tree = fileNames(await client.files());
   const latestPath = `${RELEASE_ROOT}/latest.json`;
   let current = null, oldLatestHash = null;
@@ -43,21 +48,49 @@ export async function releaseAtomicaui(client, { requestedVersion, breakingChang
   }
   const selected = requestedVersion ? version(requestedVersion) : current ? nextPatch(current.version) : '7.0.0';
   const prefix = `${RELEASE_ROOT}/${selected}/`;
-  if ([...tree].some(path => path.startsWith(prefix))) throw new Error(`AtomicAUI ${selected} already exists. Release folders are immutable.`);
+  const existingRelease = [...tree].filter(path => path.startsWith(prefix));
+  if (!resume && existingRelease.length) throw new Error(`AtomicAUI ${selected} already exists. Release folders are immutable.`);
+  if (resume && !existingRelease.length) throw new Error(`AtomicAUI ${selected} has no interrupted release to resume.`);
   const scan = await client.inventoryVendor(ATOMICAUI_ROOT, { includeBytes: true });
-  requireClean(scan.state);
-  const release = buildRelease({ inventory: scan.inventory, contents: scan.contents, version: selected, breakingChanges });
+  releasePending(scan.state);
+  if (resume && (!scan.state.pendingCount || existingRelease.some(path => !scan.state.pendingPaths.includes(path)))) {
+    throw new Error(`AtomicAUI ${selected} is not an entirely unsaved release folder; immutable release refused.`);
+  }
+  const release = buildRelease({ inventory: scan.inventory, contents: scan.contents, version: selected, breakingChanges,
+    ...(partBase64Bytes === undefined ? {} : { partBase64Bytes }) });
+  const expected = [...release.output.keys()].sort();
+  const expectedSet = new Set(expected);
+  if (resume && (existingRelease.some(path => !expectedSet.has(path)) ||
+      scan.state.pendingPaths.some(path => !expectedSet.has(path)))) {
+    throw new Error('Interrupted AtomicAUI release contains an unexpected path.');
+  }
   const completed = [];
+  const replacements = new Map();
+  if (resume) {
+    for (const path of existingRelease) {
+      const actual = await client.read(path, { remote: true });
+      const bytes = release.output.get(path);
+      if (Buffer.byteLength(actual.content) === bytes.length && digest(Buffer.from(actual.content)) === digest(bytes)) completed.push(path);
+      else replacements.set(path, actual.sha256);
+    }
+    if (tree.has(latestPath) && current?.version === selected) {
+      const actual = await client.read(latestPath, { remote: true });
+      if (digest(Buffer.from(actual.content)) === digest(release.output.get(latestPath))) completed.push(latestPath);
+      else replacements.set(latestPath, actual.sha256);
+    }
+  }
+  const completedSet = new Set(completed);
   try {
     for (const [path, bytes] of release.output) {
-      const result = await client.writeDurable(path, decode(bytes), { expectedSha256: path === latestPath ? oldLatestHash : undefined });
-      if (result.changed) completed.push(path);
+      if (completedSet.has(path)) continue;
+      const result = await client.writeDurable(path, decode(bytes),
+        { expectedSha256: replacements.get(path) || (path === latestPath ? oldLatestHash : undefined), releaseAsset: true });
+      if (result.changed) { completed.push(path); completedSet.add(path); }
     }
   } catch (error) {
     error.completedWrites = completed.map(path => ({ path }));
     throw error;
   }
-  const expected = [...release.output.keys()].sort();
   if (completed.length !== expected.length) throw new Error('AtomicAUI release write set differs from the expected path set.');
   const saved = await client.saveVersion(`AtomicAUI ${selected} library release`, expected);
   for (let offset = 0; offset < expected.length; offset += 16) {
@@ -72,6 +105,41 @@ export async function releaseAtomicaui(client, { requestedVersion, breakingChang
     archiveParts: release.manifest.archive.parts.length, manifestSha256: digest(release.output.get(`${prefix}manifest.json`)),
     savedVersion: saved.versionNumber, savedGitSha: saved.gitSha, verification: 'saved-version-clean-pending; remote-content-matched',
     publishSteps: PUBLISH };
+}
+
+export async function verifyAtomicauiRelease(client, requestedVersion) {
+  const selected = version(requestedVersion);
+  const before = (await client._driftState(Date.now() + 120000)).state;
+  requireClean(before);
+  const source = await client.inventoryVendor(ATOMICAUI_ROOT, { includeBytes: true });
+  requireClean(source.state);
+  if (source.state.savedVersion !== before.savedVersion) throw new Error('Make version changed during release verification.');
+  const actual = await client.inventoryVendor(RELEASE_ROOT, { includeBytes: true });
+  requireClean(actual.state);
+  if (actual.state.savedVersion !== before.savedVersion) throw new Error('Make version changed during release verification.');
+  const manifestBytes = actual.contents.get(`${selected}/manifest.json`);
+  if (!manifestBytes) throw new Error('Saved AtomicAUI manifest is missing.');
+  let manifest;
+  try { manifest = JSON.parse(decode(manifestBytes)); }
+  catch { throw new Error('Saved AtomicAUI manifest is invalid JSON.'); }
+  const release = buildRelease({ inventory: source.inventory, contents: source.contents, version: selected,
+    breakingChanges: manifest.breakingChanges, partBase64Bytes: manifest.partBase64Bytes });
+  const expected = new Map([...release.output].map(([path, bytes]) => [path.slice(`${RELEASE_ROOT}/`.length),
+    { bytes: bytes.length, sha256: digest(bytes) }]));
+  const currentPaths = [...actual.inventory.keys()].filter(path => path === 'latest.json' || path.startsWith(`${selected}/`));
+  if (currentPaths.length !== expected.size) throw new Error('Saved AtomicAUI release path set differs.');
+  for (const [path, file] of expected) {
+    const observed = actual.inventory.get(path);
+    if (!observed || observed.bytes !== file.bytes || observed.sha256 !== file.sha256) {
+      throw new Error(`Saved AtomicAUI release differs: ${path}`);
+    }
+  }
+  const after = (await client._driftState(Date.now() + 120000)).state;
+  requireClean(after);
+  if (after.savedVersion !== before.savedVersion) throw new Error('Make version changed during release verification.');
+  return { version: selected, releasePaths: expected.size, sourceFiles: release.manifest.files.length,
+    manifestSha256: digest(manifestBytes), savedGitSha: after.savedVersion,
+    verification: 'saved-version-clean-pending; filesystem-content-matched' };
 }
 
 function providerChanges(main, pkg) {
@@ -213,12 +281,22 @@ export function registerAtomicaui(make, report, failure) {
   atomicaui.command('release').description('Snapshot the kit vendor into a new immutable site release; publishing remains a Figma click')
     .requiredOption('--file <key>', 'Exact AtomicAUI 7.0 Make file key')
     .option('--version <X.Y.Z>', 'Release version; defaults to the next patch')
+    .option('--resume', 'Verify and continue an interrupted, unsaved release of the exact --version')
+    .option('--part-bytes <n>', 'Maximum base64 part and direct source size in bytes (default 524288)')
     .option('--breaking-notes <json-file>', 'JSON array of breaking notes and exact app fixes')
     .action(async options => {
       try {
         const breakingChanges = options.breakingNotes ? JSON.parse(readFileSync(resolve(options.breakingNotes), 'utf8')) : [];
-        report(await withMake(options.file, client => releaseAtomicaui(client, { requestedVersion: options.version, breakingChanges })));
+        report(await withMake(options.file, client => releaseAtomicaui(client, { requestedVersion: options.version,
+          breakingChanges, resume: options.resume, partBase64Bytes: options.partBytes === undefined ? undefined : Number(options.partBytes) })));
       }
+      catch (error) { failure(error); }
+    });
+  atomicaui.command('verify-release').description('Read back the exact saved kit release path set and hashes')
+    .requiredOption('--file <key>', 'Exact AtomicAUI 7.0 Make file key')
+    .requiredOption('--version <X.Y.Z>', 'Saved release version')
+    .action(async options => {
+      try { report(await withMake(options.file, client => verifyAtomicauiRelease(client, options.version))); }
       catch (error) { failure(error); }
     });
   const install = mode => atomicaui.command(mode).description(`${mode === 'add' ? 'Install' : 'Upgrade'} AtomicAUI in a team clone or solo Make file`)

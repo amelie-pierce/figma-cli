@@ -11,10 +11,28 @@ export const RELEASE_ROOT = 'public/atomicaui';
 const HASH = /^[a-f0-9]{64}$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const MAX_TEXT = 2 * 1024 * 1024;
-const MAX_PART = Math.floor(MAX_TEXT / 4) * 3;
+export const DEFAULT_PART_BASE64_BYTES = 512 * 1024;
 const MAX_ARCHIVE = 128 * 1024 * 1024;
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = value => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+function partLimit(bytes) {
+  if (!Number.isInteger(bytes) || bytes < 4 || bytes > MAX_TEXT || bytes % 4) {
+    throw new Error('AtomicAUI part size must be a multiple of 4 bytes from 4 through 2 MiB.');
+  }
+  return bytes;
+}
+function encodeParts(bytes, name, output, limit) {
+  const parts = [];
+  const rawLimit = limit / 4 * 3;
+  for (let offset = 0, number = 0; offset < bytes.length; offset += rawLimit, number++) {
+    const chunk = bytes.subarray(offset, offset + rawLimit);
+    const encoded = Buffer.from(chunk.toString('base64'));
+    const path = `${name}.${String(number).padStart(3, '0')}`;
+    parts.push({ path, bytes: encoded.length, sha256: sha(encoded), decodedBytes: chunk.length, decodedSha256: sha(chunk) });
+    output.set(path, encoded);
+  }
+  return parts;
+}
 
 export function version(value) {
   if (!VERSION.test(value || '')) throw new Error('AtomicAUI version must be X.Y.Z.');
@@ -95,9 +113,11 @@ export function unpackArchive(archive, expected) {
   return files;
 }
 
-export function buildRelease({ inventory, contents, version: releaseVersion, breakingChanges = [] }) {
+export function buildRelease({ inventory, contents, version: releaseVersion, breakingChanges = [],
+  partBase64Bytes = DEFAULT_PART_BASE64_BYTES }) {
   version(releaseVersion);
   validateBreakingChanges(breakingChanges);
+  partLimit(partBase64Bytes);
   const vendorBytes = contents.get('VENDOR.json');
   if (!vendorBytes) throw new Error('Kit VENDOR.json is missing.');
   const vendor = vendorManifest(vendorBytes, ATOMICAUI_ROOT);
@@ -111,32 +131,38 @@ export function buildRelease({ inventory, contents, version: releaseVersion, bre
   }
   const records = [...files].sort(([a], [b]) => a.localeCompare(b))
     .map(([path, bytes]) => ({ path, bytes: bytes.length, sha256: sha(bytes) }));
+  const recordsByPath = new Map(records.map(item => [item.path, item]));
   const archive = packArchive(files);
-  const parts = [];
   const output = new Map();
   const base = `${RELEASE_ROOT}/${releaseVersion}`;
-  for (let offset = 0, number = 0; offset < archive.length; offset += MAX_PART, number++) {
-    const chunk = archive.subarray(offset, offset + MAX_PART);
-    const encoded = Buffer.from(chunk.toString('base64'));
-    const path = `atomicaui-${releaseVersion}.tar.gz.b64.${String(number).padStart(3, '0')}`;
-    parts.push({ path, bytes: encoded.length, sha256: sha(encoded), decodedBytes: chunk.length, decodedSha256: sha(chunk) });
-    output.set(`${base}/${path}`, encoded);
+  const archiveOutput = new Map();
+  const parts = encodeParts(archive, `atomicaui-${releaseVersion}.tar.gz.b64`, archiveOutput, partBase64Bytes);
+  for (const [path, bytes] of archiveOutput) output.set(`${base}/${path}`, bytes);
+  for (const [path, bytes] of files) {
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    if (bytes.length <= partBase64Bytes) {
+      output.set(`${base}/files/${path}`, bytes);
+      continue;
+    }
+    const sourceOutput = new Map();
+    const sourceParts = encodeParts(bytes, `file-parts/${sha(Buffer.from(path))}/part.b64`, sourceOutput, partBase64Bytes);
+    recordsByPath.get(path).parts = sourceParts;
+    for (const [partPath, encoded] of sourceOutput) output.set(`${base}/${partPath}`, encoded);
   }
   const manifest = { schema: 'figma-cli/atomicaui-release@1', version: releaseVersion, vendorSha256: sha(vendorBytes),
-    files: records, archive: { bytes: archive.length, sha256: sha(archive), parts }, breakingChanges };
+    partBase64Bytes, files: records, archive: { bytes: archive.length, sha256: sha(archive), parts }, breakingChanges };
   const manifestBytes = json(manifest);
   const latest = { schema: 'figma-cli/atomicaui-latest@1', version: releaseVersion,
     manifest: `${releaseVersion}/manifest.json`, manifestSha256: sha(manifestBytes) };
-  for (const [path, bytes] of files) {
-    const target = `${base}/files/${path}`;
-    if (bytes.length > MAX_TEXT) throw new Error(`Make source file exceeds 2 MiB: ${path}`);
-    new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    output.set(target, bytes);
-  }
   output.set(`${base}/manifest.json`, manifestBytes);
   output.set(`${base}/manifest.sha256`, Buffer.from(`${sha(manifestBytes)}\n`));
   output.set(`${RELEASE_ROOT}/latest.json`, json(latest));
-  for (const [path, bytes] of output) if (bytes.length > MAX_TEXT) throw new Error(`Make release file exceeds 2 MiB: ${path}`);
+  for (const [path, bytes] of output) {
+    if (bytes.length > MAX_TEXT || (path !== `${base}/manifest.json` && path !== `${base}/manifest.sha256` &&
+        path !== `${RELEASE_ROOT}/latest.json` && bytes.length > partBase64Bytes)) {
+      throw new Error(`Make release file exceeds the configured part size: ${path}`);
+    }
+  }
   return { output, manifest, latest, archive };
 }
 
@@ -152,22 +178,41 @@ function validateManifest(bytes, expectedHash, expectedVersion) {
       !Array.isArray(manifest.archive?.parts) || manifest.archive.parts.length < 1 ||
       !HASH.test(manifest.archive.sha256 || '') || !Number.isSafeInteger(manifest.archive.bytes) ||
       !HASH.test(manifest.vendorSha256 || '') || !Array.isArray(manifest.breakingChanges)) throw new Error('Invalid AtomicAUI release manifest.');
+  partLimit(manifest.partBase64Bytes);
   const files = new Map(), folded = new Set();
   for (const item of manifest.files) {
     const path = sourcePath(item.path);
     if (!HASH.test(item.sha256 || '') || !Number.isSafeInteger(item.bytes) || item.bytes < 0 || folded.has(path.toLowerCase())) {
       throw new Error(`Invalid AtomicAUI release file: ${path}`);
     }
+    if (item.bytes > manifest.partBase64Bytes && (!Array.isArray(item.parts) || !item.parts.length)) {
+      throw new Error(`Large AtomicAUI source is missing parts: ${path}`);
+    }
+    if (item.bytes <= manifest.partBase64Bytes && item.parts != null) {
+      throw new Error(`Small AtomicAUI source has unexpected parts: ${path}`);
+    }
     folded.add(path.toLowerCase()); files.set(path, item);
   }
   if (!files.has('VENDOR.json') || files.get('VENDOR.json').sha256 !== manifest.vendorSha256) throw new Error('AtomicAUI vendor manifest is missing.');
   validateBreakingChanges(manifest.breakingChanges);
   const seen = new Set();
-  for (const part of manifest.archive.parts) {
-    if (sourcePath(part.path).includes('/') || seen.has(part.path) || !HASH.test(part.sha256 || '') ||
-        !HASH.test(part.decodedSha256 || '') || !Number.isSafeInteger(part.bytes) || part.bytes > MAX_TEXT ||
-        !Number.isSafeInteger(part.decodedBytes) || part.decodedBytes < 1) throw new Error('Invalid AtomicAUI archive part.');
-    seen.add(part.path);
+  const validateParts = (parts, prefix, label, totalBytes) => {
+    if (!Array.isArray(parts) || !parts.length || parts.length > 10000) throw new Error(`Invalid AtomicAUI ${label} parts.`);
+    let decodedBytes = 0;
+    for (const [number, part] of parts.entries()) {
+      const path = sourcePath(part?.path);
+      if (path !== `${prefix}${String(number).padStart(3, '0')}` || seen.has(path) ||
+          !HASH.test(part.sha256 || '') || !HASH.test(part.decodedSha256 || '') ||
+          !Number.isSafeInteger(part.bytes) || part.bytes < 4 || part.bytes > manifest.partBase64Bytes || part.bytes % 4 ||
+          !Number.isSafeInteger(part.decodedBytes) || part.decodedBytes < 1 ||
+          part.decodedBytes > manifest.partBase64Bytes / 4 * 3) throw new Error(`Invalid AtomicAUI ${label} part.`);
+      seen.add(path); decodedBytes += part.decodedBytes;
+    }
+    if (decodedBytes !== totalBytes) throw new Error(`AtomicAUI ${label} part sizes differ.`);
+  };
+  validateParts(manifest.archive.parts, `atomicaui-${expectedVersion}.tar.gz.b64.`, 'archive', manifest.archive.bytes);
+  for (const item of manifest.files) if (item.parts) {
+    validateParts(item.parts, `file-parts/${sha(Buffer.from(item.path))}/part.b64.`, `source ${item.path}`, item.bytes);
   }
   return { manifest, files };
 }
@@ -247,23 +292,27 @@ export async function downloadRelease({ site = ATOMICAUI_SITE, version: pinned, 
   const base = `${site}/atomicaui/${selected}`;
   const encodedPath = path => path.split('/').map(encodeURIComponent).join('/');
   const { manifest, files: expected } = validateManifest(await getBytes(`${base}/manifest.json`, opts), expectedHash, selected);
-  const chunks = [];
-  for (const part of manifest.archive.parts) {
-    const encoded = await getBytes(`${base}/${encodedPath(part.path)}`, opts);
-    if (encoded.length !== part.bytes || sha(encoded) !== part.sha256 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded.toString('ascii'))) {
-      throw new Error(`AtomicAUI archive part differs: ${part.path}`);
+  const fetchParts = async (parts, label) => {
+    const chunks = [];
+    for (const part of parts) {
+      const encoded = await getBytes(`${base}/${encodedPath(part.path)}`, opts);
+      if (encoded.length !== part.bytes || sha(encoded) !== part.sha256 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded.toString('ascii'))) {
+        throw new Error(`AtomicAUI ${label} part differs: ${part.path}`);
+      }
+      const chunk = Buffer.from(encoded.toString('ascii'), 'base64');
+      if (chunk.toString('base64') !== encoded.toString('ascii') || chunk.length !== part.decodedBytes || sha(chunk) !== part.decodedSha256) {
+        throw new Error(`AtomicAUI decoded part differs: ${part.path}`);
+      }
+      chunks.push(chunk);
     }
-    const chunk = Buffer.from(encoded.toString('ascii'), 'base64');
-    if (chunk.toString('base64') !== encoded.toString('ascii') || chunk.length !== part.decodedBytes || sha(chunk) !== part.decodedSha256) {
-      throw new Error(`AtomicAUI decoded part differs: ${part.path}`);
-    }
-    chunks.push(chunk);
-  }
-  const archive = Buffer.concat(chunks);
+    return Buffer.concat(chunks);
+  };
+  const archive = await fetchParts(manifest.archive.parts, 'archive');
   if (archive.length !== manifest.archive.bytes || sha(archive) !== manifest.archive.sha256) throw new Error('AtomicAUI archive SHA-256 differs.');
   const files = unpackArchive(archive, expected);
   for (const item of manifest.files) {
-    const served = await getBytes(`${base}/files/${encodedPath(item.path)}`, opts);
+    const served = item.parts ? await fetchParts(item.parts, 'source') :
+      await getBytes(`${base}/files/${encodedPath(item.path)}`, opts);
     if (served.length !== item.bytes || sha(served) !== item.sha256 || !served.equals(files.get(item.path))) {
       throw new Error(`AtomicAUI source file differs: ${item.path}`);
     }

@@ -456,7 +456,9 @@ export class MakeClient {
       const existing = await listMakeFiles(this._treeTransport(deadline), {
         timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
       });
-      if (!path.startsWith('node_modules/') && !existing.some(entry => entry.kind === 'file' && entry.path === path)) {
+      const hidden = path.split('/').some(part => part.startsWith('.')) || TREE_HIDDEN_ROOT_FILES.includes(path);
+      if (!hidden && !path.startsWith('node_modules/') &&
+          !existing.some(entry => entry.kind === 'file' && entry.path === path)) {
         throw new Error(`Make source file is missing: ${path}`);
       }
       let bridge;
@@ -527,7 +529,10 @@ export class MakeClient {
 
   // Returns which independent views agreed. On timeout, the error names the
   // last state of each view instead of a bare timeout.
-  async _durableAgreement(path, expectedContent, deadline) {
+  async _durableAgreement(path, expectedContent, deadline, { releaseAsset = false } = {}) {
+    if (releaseAsset && !path.startsWith('public/atomicaui/')) {
+      throw new Error('Three-view release verification is limited to public/atomicaui/.');
+    }
     const hidden = path.split('/').some(part => part.startsWith('.')) || TREE_HIDDEN_ROOT_FILES.includes(path);
     let observed = null;
     try {
@@ -567,6 +572,10 @@ export class MakeClient {
             // Make's rendered tree deliberately omits dotfiles and root lockfiles. VFS and sandbox
             // agreement is the available independent proof for those paths.
             if (hidden) return 'vfs-sandbox-matched';
+            // Release assets are inert, immutable site data. Make can stop
+            // mounting a source editor after many such files are added; the
+            // rendered tree, client VFS and sandbox still give three views.
+            if (releaseAsset) return 'tree-vfs-sandbox-release-matched';
             // Make shows Markdown as a preview with no editor to read. The client
             // VFS, sandbox and rendered tree are the proof for those files only;
             // every other file must still match through its editor.
@@ -598,8 +607,12 @@ export class MakeClient {
 
   // rewrite: write even when Make already holds this content, so Make's client
   // owns it (createVersion skips a lockfile only Make's install rewrote).
-  writeDurable(path, content, { expectedSha256, firstVersion = false, rewrite = false, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
+  writeDurable(path, content, { expectedSha256, firstVersion = false, rewrite = false, releaseAsset = false,
+    backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     sourcePath(path);
+    if (releaseAsset && !path.startsWith('public/atomicaui/')) {
+      throw new Error('Three-view release verification is limited to public/atomicaui/.');
+    }
     if (typeof content !== 'string') throw new Error('Make durable write requires UTF-8 text.');
     if (expectedSha256 != null && !/^[a-fA-F0-9]{64}$/.test(expectedSha256)) throw new Error('Invalid expected SHA-256.');
     return this._operation(async deadline => {
@@ -611,7 +624,7 @@ export class MakeClient {
       const originalSha256 = existing.exists ? sha256(existing.content) : null;
       if (existing.exists && originalSha256 !== expectedSha256.toLowerCase()) throw new Error('Make source changed; SHA-256 does not match.');
       if (!existing.exists) await this._requireListableAncestor(path, deadline);
-      await this._durableAgreement(path, existing.exists ? existing.content : null, deadline);
+      await this._durableAgreement(path, existing.exists ? existing.content : null, deadline, { releaseAsset });
       if (existing.exists && existing.content === content && !rewrite) return { fileKey: this.fileKey, path, changed: false, sha256: originalSha256, verification: 'unchanged' };
       const backupPath = existing.exists ? await this._bounded(() => this._backup(path, existing.content, {
         backupDir, operation: 'durable-write', replacementSha256: sha256(content),
@@ -624,7 +637,7 @@ export class MakeClient {
       try {
         const accepted = await this._durable({ type: 'write', path, content, expectedContent: existing.exists ? existing.content : null }, deadline);
         if (accepted?.refused) throw new Error(accepted.refused);
-        verification = await this._durableAgreement(path, content, deadline);
+        verification = await this._durableAgreement(path, content, deadline, { releaseAsset });
       } catch (cause) {
         const error = new Error(`Make durable write outcome is uncertain: ${cause.message}. Inspect before retrying.`);
         error.backupPath = backupPath;
@@ -1117,8 +1130,13 @@ export class MakeClient {
     const dispose = async () => {
       try { await this.transport.send('Runtime.callFunctionOn', {
         objectId, functionDeclaration: 'function() { this.dispose(); }', returnByValue: true,
-      }, { timeoutMs: 400 }); }
-      finally { await this.transport.send('Runtime.releaseObject', { objectId }, { timeoutMs: 400 }); }
+      }, { timeoutMs: Math.min(5000, Math.max(400, deadline - Date.now())) }); }
+      finally {
+        // Releasing a CDP handle is best-effort housekeeping. A slow browser
+        // must not turn an already verified source write into an uncertain one.
+        await this.transport.send('Runtime.releaseObject', { objectId },
+          { timeoutMs: Math.min(5000, Math.max(400, deadline - Date.now())) }).catch(() => {});
+      }
     };
     // A provisioned socket stays pending until Make acknowledges creating its
     // workspace (about a second after provisioning, observed live); wait
@@ -1176,8 +1194,10 @@ export class MakeClient {
           }`,
         }, { timeoutMs: this._remaining(deadline) });
         return result.result?.value || 0;
-      } finally { await this.transport.send('Runtime.releaseObject', { objectId: sockets.objects.objectId }, { timeoutMs: 400 }); }
-    } finally { await this.transport.send('Runtime.releaseObject', { objectId: prototype.result.objectId }, { timeoutMs: 400 }); }
+      } finally { await this.transport.send('Runtime.releaseObject', { objectId: sockets.objects.objectId },
+        { timeoutMs: Math.min(5000, Math.max(400, deadline - Date.now())) }).catch(() => {}); }
+    } finally { await this.transport.send('Runtime.releaseObject', { objectId: prototype.result.objectId },
+      { timeoutMs: Math.min(5000, Math.max(400, deadline - Date.now())) }).catch(() => {}); }
   }
 
   async _backup(path, content, metadata) {
@@ -1273,7 +1293,8 @@ export class MakeClient {
         timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
       });
       for (const file of validated) {
-        if (!existing.some(entry => entry.kind === 'file' && entry.path === file.path)) {
+        const hidden = file.path.split('/').some(part => part.startsWith('.')) || TREE_HIDDEN_ROOT_FILES.includes(file.path);
+        if (!hidden && !existing.some(entry => entry.kind === 'file' && entry.path === file.path)) {
           throw new Error(`Make source file is missing: ${file.path}`);
         }
       }

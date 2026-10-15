@@ -15,6 +15,10 @@ commands rather than assuming an upstream installation includes it.
 For the AtomicAUI library, use the `make atomicaui` command group. “Release a new
 AtomicAUI version” maps to `release --file KEY` (optionally `--version X.Y.Z`);
 the release command saves the files but the user still clicks Publish in Make.
+After an interrupted unsaved release, use `release --version X.Y.Z --resume`;
+after a save, use `verify-release --file KEY --version X.Y.Z` for a read-only
+full path and hash check. Kit-only `public/atomicaui/**` files are excluded
+from vendor drift, sync plans and export deltas.
 “Add AtomicAUI to this app” maps to `add`, “update AtomicAUI in this app” to
 `upgrade`, and “is AtomicAUI up to date?” to `status`. Direct solo Make writes
 always require the exact `--file KEY`; team clone commands use `--dir` or the

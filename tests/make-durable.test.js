@@ -326,6 +326,22 @@ test('a slow editor on a non-Markdown file fails instead of falling back to VFS,
   assert.match(error.message, /src\/App\.tsx timed out before every view agreed \(vfs matched, sandbox matched, tree present, editor unavailable\)/);
 });
 
+test('immutable release assets use VFS, sandbox and tree without mounting an editor', async () => {
+  const path = 'public/atomicaui/7.0.0/files/lib/field/index.ts';
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
+  client.fileKey = 'ScratchKey';
+  client._durable = async () => ({ exists: true, content: 'release' });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._bridgeRead = async () => ({ content: 'release' });
+  client._sourceTree = async () => [{ kind: 'file', path }];
+  client._read = async () => { throw new Error('release asset must not open an editor'); };
+  assert.equal(await client._durableAgreement(path, 'release', Date.now() + 1000, { releaseAsset: true }),
+    'tree-vfs-sandbox-release-matched');
+  await assert.rejects(client._durableAgreement('src/App.tsx', 'release', Date.now() + 1000,
+    { releaseAsset: true }), /limited to public/);
+  assert.throws(() => client.writeDurable('src/App.tsx', 'release', { releaseAsset: true }), /limited to public/);
+});
+
 test('read-back mismatch fails at the deadline and names each view', async () => {
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
   client.fileKey = 'ScratchKey';
