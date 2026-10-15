@@ -26,6 +26,17 @@ This fork of [silships/figma-cli](https://github.com/silships/figma-cli) adds di
 Figma Make source editing and bundles **figma-cli** (Design) and **figma-make**
 (React source) skills. The original MIT license and author attribution are retained.
 
+### AtomicAUI kit releases
+
+`figma-cli make atomicaui release --file KEY --version X.Y.Z` saves a verified
+release under `public/atomicaui/<version>/` and updates `latest.json`. To make
+the saved release available on the kit site, open **Make settings → General**,
+click **Unpublish** if the site is already published, then **Publish**. Set
+**Who can view** to **Anyone on the web**, leave the password off, and keep the
+same address. The address can return 404 for about a minute while it rebuilds.
+**Update kit** and **Publish kit** do not rebuild the site. See
+[AtomicAUI site releases and installs](REFERENCE.md#atomicaui-site-releases-and-installs).
+
 ### Copy-and-paste installation prompt
 
 Copy this prompt into Claude Code, Codex, or GitHub Copilot running on the same

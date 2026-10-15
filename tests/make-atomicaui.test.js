@@ -156,7 +156,8 @@ test('fake Make client receives an immutable release folder and one exact save',
   assert.equal(saved.length, 1);
   assert.deepEqual(saved[0], [...files.keys()].filter(path => path !== 'public/favicon.svg').sort());
   assert.equal(result.savedVersion, 18);
-  assert.ok(result.publishSteps.some(line => line.includes('Anyone with the link')));
+  assert.ok(result.publishSteps.some(line => line.includes('Anyone on the web')));
+  assert.ok(result.publishSteps.some(line => line.includes('Unpublish')));
   await assert.rejects(releaseAtomicaui(client, { requestedVersion: '7.0.0' }), /immutable/);
 });
 
