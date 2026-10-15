@@ -590,7 +590,15 @@ export class MakeClient {
     }
   }
 
-  writeDurable(path, content, { expectedSha256, firstVersion = false, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
+  // A path's content in Make's client VFS: { exists, content }.
+  readDurable(path) {
+    sourcePath(path);
+    return this._operation(deadline => this._durable({ type: 'read', path }, deadline));
+  }
+
+  // rewrite: write even when Make already holds this content, so Make's client
+  // owns it (createVersion skips a lockfile only Make's install rewrote).
+  writeDurable(path, content, { expectedSha256, firstVersion = false, rewrite = false, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     sourcePath(path);
     if (typeof content !== 'string') throw new Error('Make durable write requires UTF-8 text.');
     if (expectedSha256 != null && !/^[a-fA-F0-9]{64}$/.test(expectedSha256)) throw new Error('Invalid expected SHA-256.');
@@ -604,7 +612,7 @@ export class MakeClient {
       if (existing.exists && originalSha256 !== expectedSha256.toLowerCase()) throw new Error('Make source changed; SHA-256 does not match.');
       if (!existing.exists) await this._requireListableAncestor(path, deadline);
       await this._durableAgreement(path, existing.exists ? existing.content : null, deadline);
-      if (existing.exists && existing.content === content) return { fileKey: this.fileKey, path, changed: false, sha256: originalSha256, verification: 'unchanged' };
+      if (existing.exists && existing.content === content && !rewrite) return { fileKey: this.fileKey, path, changed: false, sha256: originalSha256, verification: 'unchanged' };
       const backupPath = existing.exists ? await this._bounded(() => this._backup(path, existing.content, {
         backupDir, operation: 'durable-write', replacementSha256: sha256(content),
       }), deadline) : null;

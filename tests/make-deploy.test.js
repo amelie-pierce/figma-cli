@@ -84,7 +84,9 @@ const lockFor = pkg => `lockfileVersion: 9.0\n# resolved for ${sha256(Buffer.isB
 // With `install` set, a write of package.json or the lockfile makes Make run
 // its own install, which lands at the next call: it rewrites the lockfile as
 // install(package.json) and, when that changes the pending list under a
-// write, the write refuses as the real client does.
+// write, the write refuses as the real client does. As live, a version
+// commits a root lockfile only when the client wrote it, not when Make's
+// install did.
 class FakeMake {
   constructor(files, { marker = true } = {}) {
     this.fileKey = KEY;
@@ -99,6 +101,7 @@ class FakeMake {
     this.generating = false;
     this.install = null;
     this.installing = false;
+    this.clientWrote = new Set();
   }
   land() {
     if (!this.installing) return;
@@ -116,6 +119,10 @@ class FakeMake {
       throw error;
     }
   }
+  async readDurable(path) {
+    this.calls.push(['read', path]);
+    return this.working.has(path) ? { exists: true, content: this.working.get(path).toString() } : { exists: false, content: null };
+  }
   async idleState(paths) {
     this.calls.push(['idle']);
     if (this.installing) { this.land(); return { busy: true, offline: false, state: null, sha: {} }; }
@@ -128,7 +135,8 @@ class FakeMake {
     return [...new Set([...this.saved.keys(), ...this.working.keys()])]
       .filter(path => !(this.saved.has(path) && this.working.has(path) && this.saved.get(path).equals(this.working.get(path)))).sort();
   }
-  pending() { return this.changed().filter(path => !path.split('/').some(part => part.startsWith('.'))); }
+  // Like live Make, root lockfiles are never listed.
+  pending() { return this.changed().filter(path => !path.split('/').some(part => part.startsWith('.')) && !['pnpm-lock.yaml', 'package-lock.json'].includes(path)); }
   async inspect() { return { fileKey: KEY, ...this.ui }; }
   async projectMarker() { return this.working.get(PROJECT_MARKER) ?? null; }
   async projectStatus() {
@@ -151,15 +159,17 @@ class FakeMake {
     writeFileSync(join(dir, 'metadata.json'), JSON.stringify({ fileKey: KEY, path, sha256: sha256(bytes) }));
     return join(dir, 'original.txt');
   }
-  async writeDurable(path, content, { expectedSha256, backupDir } = {}) {
+  async writeDurable(path, content, { expectedSha256, backupDir, rewrite = false } = {}) {
     this.calls.push(['write', path]);
     this.hooks.beforeWrite?.(path);
     this.landUnder('write');
     const current = this.working.get(path);
     if ((current != null) !== (expectedSha256 != null)) throw new Error('Expected SHA-256 is required for an existing file and forbidden for a new file.');
     if (current && sha256(current) !== expectedSha256) throw new Error('Make source changed; SHA-256 does not match.');
+    if (current && current.equals(Buffer.from(content)) && !rewrite) return { path, changed: false, backupPath: null };
     const backupPath = current ? this.backup(path, current, backupDir) : null;
     this.working.set(path, Buffer.from(content));
+    this.clientWrote.add(path);
     this.installAfter(path);
     return { path, changed: true, backupPath };
   }
@@ -171,10 +181,17 @@ class FakeMake {
     if (!current || sha256(current) !== expectedSha256) throw new Error('Make source is missing or changed; delete refused.');
     const backupPath = this.backup(path, current, backupDir);
     this.working.delete(path);
+    this.clientWrote.add(path);
     return { path, backupPath };
   }
   commitVersion() {
-    this.saved = new Map(this.working);
+    const saved = new Map(this.working);
+    for (const path of ['pnpm-lock.yaml', 'package-lock.json']) {
+      if (this.clientWrote.has(path)) continue;
+      if (this.saved.has(path)) saved.set(path, this.saved.get(path)); else saved.delete(path);
+    }
+    this.saved = saved;
+    this.clientWrote.clear();
     this.version += 1;
     this.savedVersion = sha256(`v${this.version}`).slice(0, 40);
     return { versionId: `id-${this.version}`, versionNumber: this.version, gitSha: this.savedVersion, tree: this.tree(this.saved) };
@@ -450,14 +467,14 @@ describe('make deploy dry run, apply and verify', () => {
     const again = await deployPlan(s.make, s.opts, s.deps);
     assert.equal(again.counts.add + again.counts.modify + again.counts.delete, 0);
   });
-  it('writes the dependency files last, the lockfile and then package.json, and waits for Make after each', async t => {
+  it('writes the dependency files last, package.json and then the lockfile, and waits for Make after each', async t => {
     const s = setup(t);
     landChange(s, { 'package.json': { ...PKG, dependencies: { react: '^19.0.0' } }, 'pnpm-lock.yaml': 'lockfileVersion: 9.0\nreact: 19\n', 'src/App.tsx': 'v2\n' });
     const plan = await deployPlan(s.make, s.opts, s.deps);
-    assert.deepEqual(plan.files.map(file => file.path), ['src/App.tsx', 'pnpm-lock.yaml', 'package.json']);
+    assert.deepEqual(plan.files.map(file => file.path), ['src/App.tsx', 'package.json', 'pnpm-lock.yaml']);
     await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
     assert.deepEqual(s.make.calls.filter(([kind]) => ['write', 'idle'].includes(kind)).map(([kind, path]) => path ?? kind).filter((item, i, all) => item !== 'idle' || all[i - 1] !== 'idle'),
-      ['src/App.tsx', 'pnpm-lock.yaml', 'idle', 'package.json', 'idle']);
+      ['src/App.tsx', 'package.json', 'idle', 'pnpm-lock.yaml', 'idle']);
   });
 
   it('deploys a main marker for this file and team mode stays on', async t => {
@@ -808,17 +825,22 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
   it('waits and re-checks when Make\'s install lands under a write, then retries that path', async t => {
     const s = dependencyChange(t);
     const plan = await deployPlan(s.make, s.opts, s.deps);
-    // An install lands while src/App.tsx is written and leaves a lockfile
-    // neither main's nor Make's saved one.
+    // A reaction lands while src/App.tsx is written: the listed pending set
+    // changes (package.json) and the lockfile is neither main's nor Make's.
     let once = true;
     s.make.hooks.beforeWrite = path => {
-      if (path === 'src/App.tsx' && once) { once = false; s.make.install = () => ({ 'pnpm-lock.yaml': 'regenerated by Make\n' }); s.make.installing = true; }
+      if (path === 'src/App.tsx' && once) {
+        once = false;
+        s.make.install = () => ({ 'package.json': NEW_PKG, 'pnpm-lock.yaml': 'regenerated by Make\n' });
+        s.make.installing = true;
+      }
       else s.make.install = pkg => ({ 'pnpm-lock.yaml': lockFor(pkg) });
     };
     const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
     assert.equal(applied.outcome, 'ok');
     assert.deepEqual(s.make.writes.filter(([kind]) => kind === 'write').map(([, path]) => path),
-      ['src/App.tsx', 'src/App.tsx', 'pnpm-lock.yaml', 'pnpm-lock.yaml', 'package.json']);
+      ['src/App.tsx', 'src/App.tsx', 'package.json', 'pnpm-lock.yaml', 'pnpm-lock.yaml']);
+    assert.equal(s.make.saved.get('package.json').toString(), text(NEW_PKG));
     assert.equal(s.make.saved.get('pnpm-lock.yaml').toString(), lockFor(NEW_PKG));
   });
 
@@ -891,18 +913,39 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     await refuses(deployAbort(s.make, { receiptPath }, s.deps), 'DEPLOY_MAKE_AHEAD');
     await refuses(deployResume(s.make, { ...s.opts, receiptPath }, s.deps), 'DEPLOY_MAKE_AHEAD');
 
-    // The lockfile changed before this deploy ever wrote it: no backup holds
-    // its start, so abort refuses rather than guess.
+    // The lockfile's start was backed up before any write; without that
+    // backup abort refuses rather than guess.
     const n = dependencyChange(t, null);
     const plan = await deployPlan(n.make, n.opts, n.deps);
     n.make.hooks.beforeWrite = path => { if (path === 'src/App.tsx') throw new Error('Make operation timed out.'); };
     let early;
     await assert.rejects(deployApply(n.make, { ...n.opts, planPath: plan.planPath }, n.deps), error => { early = error.receiptPath; return true; });
     n.make.hooks.beforeWrite = null;
+    assert.ok(readReceipt(early).completedWrites.some(write => write.path === 'pnpm-lock.yaml' && write.backupOnly));
+    rmSync(join(n.p.home, '.figma-cli', 'deploys', 'backups'), { recursive: true, force: true });
     n.make.working.set('pnpm-lock.yaml', Buffer.from('regenerated by Make\n'));
     const writes = n.make.writes.length;
     await refuses(deployAbort(n.make, { receiptPath: early }, n.deps), 'DEPLOY_RECEIPT', /No backup of pnpm-lock\.yaml/);
     assert.equal(n.make.writes.length, writes, 'nothing was changed');
+  });
+
+  it('plans from a version that kept the old lockfile while Make\'s install holds main\'s, and saves it through the client', async t => {
+    const s = dependencyChange(t);
+    // Make saved main's package.json with the old lockfile; its install then
+    // put main's lockfile in the working copy, unsaved and unlisted.
+    s.make.saved.set('package.json', Buffer.from(text(NEW_PKG)));
+    s.make.saved.set('src/App.tsx', Buffer.from('v2\n'));
+    s.make.working = new Map(s.make.saved);
+    s.make.working.set('pnpm-lock.yaml', Buffer.from(lockFor(NEW_PKG)));
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    assert.deepEqual(plan.files, [{ path: 'pnpm-lock.yaml', op: 'modify' }]);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.outcome, 'ok');
+    assert.equal(s.make.saved.get('pnpm-lock.yaml').toString(), lockFor(NEW_PKG));
+    // Any other lockfile content in the working copy is still an edit.
+    const other = dependencyChange(t);
+    other.make.working.set('pnpm-lock.yaml', Buffer.from('typed in Make\n'));
+    await refuses(deployPlan(other.make, other.opts, other.deps), 'DEPLOY_MAKE_AHEAD', /pnpm-lock\.yaml/);
   });
 
   it('stops when Make\'s reaction under a write changes a path outside the plan', async t => {

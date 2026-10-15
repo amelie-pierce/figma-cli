@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { isIgnored, parseIgnore } from './git-tree.js';
-import { requireGitMode } from './make-durable.js';
+import { requireGitMode, TREE_HIDDEN_ROOT_FILES } from './make-durable.js';
 import { install as installProject } from './make-local.js';
 import { readRepoAccess } from './make-mode.js';
 import { detectMode, ghRunner, isRepoOnly, lfsMatcher, parseMarker, PROJECT_EXCLUDES, PROJECT_MARKER, repoName } from './make-project.js';
@@ -36,19 +36,25 @@ const BLOCKING = Object.freeze(['writing', 'written', 'saving', 'save-uncertain'
 const KNOWN_BASE = Object.freeze(['saved-drift', 'tag-clash']);
 const BEFORE_SAVE = Object.freeze(['writing', 'written']);
 
-// Make runs its own install when one of these root files changes, and that
-// install can rewrite the lockfile and the pending list while a deploy writes.
-// They are written last (lockfiles, then package.json), Make is waited on
-// until idle after each, and a planned one Make regenerated is written again.
-const DEPENDENCY_FILES = Object.freeze(['pnpm-lock.yaml', 'package-lock.json', 'package.json']);
+// Make runs its own install in the sandbox when one of these root files
+// changes, and rewrites the lockfile to match package.json (live, 1 to 2.5 s
+// later). createVersion commits a lockfile only when Make's client wrote it,
+// not when Make's install did: a scratch deploy that wrote the lockfile before
+// package.json saved the old lockfile. So package.json goes after the other
+// files and the lockfiles go last, each written through the client even when
+// Make's install already holds main's content; Make is waited on until idle
+// after each, and a planned one Make regenerated is written again.
+const DEPENDENCY_FILES = Object.freeze([...TREE_HIDDEN_ROOT_FILES, 'package.json']);
 export const isDependency = path => DEPENDENCY_FILES.includes(path);
-const writeRank = path => (path === 'package.json' ? 2 : isDependency(path) ? 1 : 0);
+const isLockfile = path => TREE_HIDDEN_ROOT_FILES.includes(path);
+const writeRank = path => (isLockfile(path) ? 2 : path === 'package.json' ? 1 : 0);
 const byWriteOrder = (a, b) => writeRank(a.path) - writeRank(b.path) || (a.path < b.path ? -1 : 1);
 // How many times one path is tried, and how many settle-and-check rounds run.
 const ROUNDS = 3;
 // Idle means: no busy editor, no loading state, and the persistence state and
-// dependency hashes unchanged for quietMs.
-const SETTLE = Object.freeze({ quietMs: 5000, pollMs: 1000, timeoutMs: 180000 });
+// dependency hashes unchanged for quietMs. Live, Make never reported busy
+// while its install rewrote the lockfile.
+const SETTLE = Object.freeze({ quietMs: 10000, pollMs: 1000, timeoutMs: 180000 });
 
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const short = sha => String(sha).slice(0, 7);
@@ -251,7 +257,9 @@ export function contentDiff(a, b, skip = () => false) {
   return [...new Set([...a.keys(), ...b.keys()])].filter(path => !skip(path) && a.get(path)?.blob !== b.get(path)?.blob).sort();
 }
 
-export function requireMakeReady(status, ui) {
+// mainFlat: a lockfile Make's own install rewrote to main's content is not an
+// edit (the deploy writes it again through the client).
+export function requireMakeReady(status, ui, mainFlat = new Map()) {
   if (ui?.busy || ui?.offline || ui?.readOnly === true) fail('Make is busy, offline or read-only. Wait until it is idle, then deploy again.', 'DEPLOY_MAKE_BUSY');
   let state;
   try { state = requireGitMode(status.persistence); }
@@ -259,7 +267,8 @@ export function requireMakeReady(status, ui) {
   if (state.pendingPaths.length) fail(`Make has ${state.pendingPaths.length} unsaved change(s) ${JSON.stringify(state.pendingPaths)}. Nothing was deployed.`, 'DEPLOY_MAKE_AHEAD');
   if (status.treeSource !== 'saved-version') fail('Make\'s saved version was not readable as the deploy base.', 'DEPLOY_MAKE_STATE');
   if (status.history?.generationInProgress) fail('A Make AI generation is running. Nothing was deployed.', 'DEPLOY_MAKE_BUSY');
-  const unsaved = contentDiff(status.workingFlat, status.makeFlat);
+  const unsaved = contentDiff(status.workingFlat, status.makeFlat)
+    .filter(path => !(isLockfile(path) && status.workingFlat.get(path)?.blob === mainFlat.get(path)?.blob));
   if (unsaved.length) fail(`Make's working copy has unsaved edits in ${JSON.stringify(unsaved)}. Nothing was deployed.`, 'DEPLOY_MAKE_AHEAD');
   return state;
 }
@@ -416,8 +425,8 @@ async function prepare(client, { dir, reviewed }, deps) {
   const ui = await client.inspect();
   const status = await client.projectStatus();
   await requireTeamMode(client, status);
-  const state = requireMakeReady(status, ui);
   const mainFlat = lsTree(ctx, main.commit);
+  const state = requireMakeReady(status, ui, mainFlat);
   const gitattributes = mainFlat.get('.gitattributes');
   const mainLfs = lfsMatcher(gitattributes ? readBlob(ctx.root, gitattributes.blob).toString('utf8') : null);
   const isLfs = path => mainLfs(path) || (status.isLfs ? status.isLfs(path) : false);
@@ -550,7 +559,10 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
       let result;
       try {
         if (file.op === 'delete') result = await client.deleteDurable(file.path, { expectedSha256: expected, backupDir: backupDir(receipt, home) });
-        else result = await client.writeDurable(file.path, content, { expectedSha256: expected ?? undefined, backupDir: backupDir(receipt, home) });
+        else {
+          result = await client.writeDurable(file.path, content, { expectedSha256: expected ?? undefined, backupDir: backupDir(receipt, home),
+            rewrite: isLockfile(file.path) });
+        }
       } catch (error) {
         if (error.backupPath) recordWrite(receipt, file, error.backupPath, { uncertain: true });
         if (attempt >= ROUNDS || (error.code !== 'MAKE_PENDING_CHANGED' && !isDependency(file.path))) {
@@ -562,7 +574,9 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
           stop(receipt, error, 'writing', `Deploy stopped while writing ${file.path}: ${error.message} Once Make was idle: ${checked.problem}. ` +
             `No version was saved. Run ${recovery(receipt)}.`, checked.code === 'DEPLOY_MAKE_AHEAD' ? 'DEPLOY_MAKE_AHEAD' : 'DEPLOY_WRITE_FAILED');
         }
-        if (checked.files.find(item => item.path === file.path).state === 'after') { recordWrite(receipt, file, null); break; }
+        // Make's install may already hold main's lockfile; the client must
+        // still write it, or the version keeps the old one.
+        if (checked.files.find(item => item.path === file.path).state === 'after' && !isLockfile(file.path)) { recordWrite(receipt, file, null); break; }
         expected = status.workingSha256.get(file.path) ?? null;
         continue;
       }
@@ -573,6 +587,21 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
   }
   receipt.stage = 'written';
   saveReceipt(receipt);
+}
+
+// Make's install rewrites a planned lockfile as soon as package.json is
+// written, so its start content is backed up first, for --abort.
+async function backupLockfiles(client, receipt, home) {
+  for (const file of receipt.plan.files.filter(item => isLockfile(item.path) && item.op === 'modify')) {
+    if (receipt.completedWrites.some(write => write.path === file.path && write.backupPath)) continue;
+    const { exists, content } = await client.readDurable(file.path);
+    if (!exists || sha256(content) !== file.beforeSha256) continue;
+    const dir = join(backupDir(receipt, home), `deploy-${file.path}-${file.beforeSha256.slice(0, 12)}`);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, 'original.txt'), content, { mode: 0o600 });
+    writeFileSync(join(dir, 'metadata.json'), `${JSON.stringify({ fileKey: receipt.fileKey, path: file.path, sha256: file.beforeSha256, operation: 'deploy-lockfile' })}\n`, { mode: 0o600 });
+    recordWrite(receipt, { path: file.path, op: 'backup' }, join(dir, 'original.txt'), { backupOnly: true });
+  }
 }
 
 // Make's install can rewrite a dependency file after the deploy wrote it.
@@ -718,6 +747,7 @@ export async function deployApply(client, { dir, planPath } = {}, deps = {}) {
   receipt.planPath = resolve(planPath);
   saveReceipt(receipt);
   const mainBytes = blob => deps.readBlob(ctx.root, blob);
+  await backupLockfiles(client, receipt, deps.home);
   await writeFiles(client, receipt, plan.files, { mainBytes, home: deps.home, deps });
   await reconcile(client, receipt, { mainBytes, home: deps.home, deps });
   await finish(client, ctx, receipt, main.flat, deps.home);
@@ -779,6 +809,7 @@ export async function deployResume(client, { dir, receiptPath } = {}, deps = {})
   receipt.resumedBy = access.login;
   receipt.stage = 'writing';
   const mainBytes = blob => deps.readBlob(ctx.root, blob);
+  await backupLockfiles(client, receipt, deps.home);
   await writeFiles(client, receipt, todo, { mainBytes, home: deps.home, deps });
   await reconcile(client, receipt, { mainBytes, home: deps.home, deps });
   await finish(client, ctx, receipt, lsTree(ctx, receipt.mainCommit), deps.home);
