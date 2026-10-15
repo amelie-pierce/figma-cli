@@ -1,10 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { areaOwners, checkState, commitMessage, conflicts, defaultRun, findSecrets, globPattern, isOwnBranch, merge, parseAreas, pr,
-  prBody, pushBranch, repoFromUrl, resolveIdenticalHunks, reviewState, save, slugify, start, status, sync, teamContext } from '../src/make-team.js';
+import { areaOwners, checkState, commitMessage, conflicts, defaultRun, findSecrets, forceReceiptDir, globPattern, isOwnBranch, merge, parseAreas, pr,
+  prBody, pushBranch, repoFromUrl, resolveIdenticalHunks, reviewState, save, slugify, start, status, sync, teamContext, vendoredPaths } from '../src/make-team.js';
 
 // Local git only: a bare "origin" in a temp folder stands in for GitHub, gh
 // and pnpm are faked. Nothing here reaches Figma, GitHub or a registry.
@@ -68,7 +68,7 @@ function project(t, { areas, files = {} } = {}) {
 
 // gh and pnpm fakes. Pull requests live in memory; "merging" squashes the
 // branch onto origin main through a scratch working copy, the way GitHub would.
-function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0, failLeasePushes = 0 } = {}) {
+function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0, failLeasePushes = 0, admin = false } = {}) {
   const calls = [];
   const prs = [];
   const run = (command, args, options = {}) => {
@@ -91,7 +91,10 @@ function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0, 
         const status = typeof build === 'function' ? build() : build;
         return { status, stdout: status ? 'src/App.tsx(3,1): error TS2304\n' : 'built\n', stderr: '' };
       }
-      if (args[1] === 'format') { format?.(options.cwd); return { status: 0, stdout: '', stderr: '' }; }
+      if (args[1] === 'format') {
+        const status = format?.(options.cwd);
+        return { status: typeof status === 'number' ? status : 0, stdout: '', stderr: status ? 'format crashed\n' : '' };
+      }
       if (args[0] === 'install') {
         const pkg = JSON.parse(readFileSync(join(options.cwd, 'package.json'), 'utf8'));
         writeFileSync(join(options.cwd, 'pnpm-lock.yaml'), `lockfileVersion: 9.0\n${Object.keys(pkg.dependencies).sort().map(d => `${d}: x\n`).join('')}`);
@@ -104,6 +107,10 @@ function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0, 
     if (args[0] === 'api' && args[1] === 'user') return ok(`${login}\n`);
     if (args[0] === 'api') {
       const path = args.find(a => a.startsWith('repos/'));
+      if (path === `repos/${REPO}`) {
+        assert.equal(flag('--jq'), '.permissions');
+        return ok({ admin, maintain: admin, push: true, triage: true, pull: true });
+      }
       const number = /pulls\/(\d+)\/reviews$/.exec(path)?.[1];
       if (number) {
         assert.ok(args.includes('--paginate'));
@@ -139,7 +146,7 @@ function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0, 
       const server = join(p.root, `server-${target.number}`);
       sh(p.root, 'clone', '-q', p.origin, server);
       sh(server, 'merge', '--squash', '-q', `origin/${target.headRefName}`);
-      sh(server, 'commit', '-q', '-m', `${target.title} (#${target.number})`);
+      sh(server, 'commit', '-q', '-m', `${target.title} (#${target.number})`, ...(args.includes('--body') ? ['-m', flag('--body')] : []));
       sh(server, 'push', '-q', 'origin', 'main');
       target.state = 'MERGED';
       target.mergeCommit = { oid: sh(server, 'rev-parse', 'HEAD') };
@@ -220,8 +227,19 @@ describe('team: pure helpers', () => {
     assert.equal(commitMessage([{ path: 'src/A.tsx', change: 'new file' }]), 'Add src/A.tsx');
     assert.equal(commitMessage([{ path: 'src/a/A.tsx', change: 'changed' }, { path: 'src/a/B.tsx', change: 'deleted' }]), 'Update 2 files in src/a');
     assert.equal(commitMessage([{ path: 'a', change: 'changed' }, { path: 'src/b', change: 'changed' }]), 'Update 2 files');
-    const body = prBody({ branch: 'alice/x', files: ['changed: src/App.tsx'], task: 'X' });
-    for (const part of ['## What changed', '- changed: src/App.tsx', 'gh pr checkout alice/x', '## Screenshot']) assert.ok(body.includes(part), part);
+    const body = prBody({ branch: 'alice/x', files: [{ path: 'src/App.tsx', change: 'changed' }], task: 'X', review: 'Review requested from @bob (from the areas map).' });
+    for (const part of ['## What changed', '- changed: src/App.tsx', '## Review', '@bob', 'gh pr checkout alice/x', '## Screenshot']) assert.ok(body.includes(part), part);
+  });
+  it('keeps the PR body short for a big change: counts and folders, not every path', () => {
+    const files = [...Array.from({ length: 205 }, (_, i) => ({ path: `src/vendor/atomic-aui/c${i}.tsx`, change: 'new file' })),
+      ...Array.from({ length: 70 }, (_, i) => ({ path: `src/components/C${i}.tsx`, change: 'changed' })),
+      { path: 'package.json', change: 'changed' }, { path: 'src/old.ts', change: 'deleted' }, { path: 'src/vendor/atomic-aui/VENDOR.json', change: 'new file' }];
+    const body = prBody({ branch: 'alice/x', files, task: 'Adopt AtomicAUI 7.0' });
+    assert.ok(body.includes('278 files: 206 new, 71 changed, 1 deleted.'), body);
+    assert.ok(body.includes('- src/vendor/: 206 files') && body.includes('- src/components/: 70 files') && body.includes('- (project root): 1 file'));
+    assert.ok(!body.includes('c17.tsx') && !body.includes('C3.tsx'), 'no single path is listed');
+    assert.ok(body.split('\n').length < 40, `${body.split('\n').length} lines`);
+    assert.ok(body.includes('Ask a teammate to review.'));
   });
   it('finds secret files and token-looking content by path and line only', t => {
     const dir = temp(t);
@@ -337,6 +355,43 @@ describe('team save', () => {
     const again = save(f.ctx(), { message: 'ignored' });
     assert.equal(again.saved, false);
     assert.equal(again.pushed, false);
+  });
+  it('never reformats vendored files: a formatter that rewrites everything leaves them byte-identical', t => {
+    const manifest = { files: [{ path: 'Button.tsx', bytes: 1, sha256: 'a'.repeat(64) }, { path: 'styles/tokens.css', bytes: 1, sha256: 'b'.repeat(64) }] };
+    const vendored = { 'src/vendor/kit/VENDOR.json': manifest, 'src/vendor/kit/Button.tsx': 'export const   Button=1\n',
+      'src/vendor/kit/styles/tokens.css': ':root{--a:1}', 'src/vendor/kit/README': 'unlisted, but in the folder\n',
+      'VENDOR.json': { files: [{ path: 'public/kit-logo.svg', bytes: 1, sha256: 'c'.repeat(64) }] }, 'public/kit-logo.svg': '<svg/>' };
+    const p = project(t, { files: { 'package.json': { ...PKG, scripts: { ...PKG.scripts, format: 'oxfmt .' } }, ...vendored } });
+    const walk = (dir, base = '') => readdirSync(join(dir, base), { withFileTypes: true }).flatMap(entry => entry.name === '.git' ? []
+      : entry.isDirectory() ? walk(dir, join(base, entry.name)) : [join(base, entry.name)]);
+    // oxfmt-like: rewrites every file, also deletes one vendored file and adds one.
+    let crash = false;
+    const format = dir => {
+      for (const path of walk(dir).filter(path => path !== 'package.json')) writeFileSync(join(dir, path), `${readFileSync(join(dir, path), 'utf8').trimEnd()}\n// formatted\n`);
+      rmSync(join(dir, 'src/vendor/kit/README'));
+      chmodSync(join(dir, 'src/vendor/kit/Button.tsx'), 0o755);
+      return crash ? 1 : 0;
+    };
+    const f = fakes(p, { format });
+    start(f.ctx(), 'adopt kit');
+    write(p.clone, { 'src/App.tsx': lines(21), 'src/vendor/kit/New.tsx': 'export const New = 1\n' });
+    const before = Object.fromEntries([...Object.keys(vendored), 'src/vendor/kit/New.tsx'].map(path => [path, readFileSync(join(p.clone, path))]));
+    assert.deepEqual(vendoredPaths(f.ctx()), ['VENDOR.json', 'public/kit-logo.svg', 'src/vendor/kit/Button.tsx', 'src/vendor/kit/New.tsx',
+      'src/vendor/kit/README', 'src/vendor/kit/VENDOR.json', 'src/vendor/kit/styles/tokens.css']);
+    const result = save(f.ctx());
+    for (const [path, bytes] of Object.entries(before)) assert.ok(readFileSync(join(p.clone, path)).equals(bytes), `${path} is byte-identical`);
+    assert.equal(statSync(join(p.clone, 'src/vendor/kit/Button.tsx')).mode & 0o777, 0o644);
+    assert.match(readFileSync(join(p.clone, 'src/App.tsx'), 'utf8'), /formatted/, 'the project\'s own files are still formatted');
+    assert.deepEqual(result.files.filter(file => /vendor|VENDOR|kit-logo/.test(file)), ['new file: src/vendor/kit/New.tsx'],
+      'no vendored file is saved with the formatter\'s changes; the designer\'s new vendored file is saved as they wrote it');
+    assert.equal(result.vendoredKept, 7);
+    assert.equal(result.vendoredRestored, 7);
+    assert.match(result.warnings.join(' '), /changed 7 vendored files .* put back exactly/);
+    assert.equal(sh(p.clone, 'status', '--porcelain'), '');
+    write(p.clone, { 'src/App.tsx': lines(23) });
+    crash = true;
+    code(() => save(f.ctx()), 'TEAM_FORMAT_FAILED');
+    for (const [path, bytes] of Object.entries(before)) assert.ok(readFileSync(join(p.clone, path)).equals(bytes), `${path} is restored after a failed format`);
   });
   it('blocks a failing build, secret files and token content, saving nothing', t => {
     const p = project(t, { files: { 'package.json': { ...PKG, scripts: { ...PKG.scripts, build: 'vite build' } } } });
@@ -588,6 +643,18 @@ describe('team pr and merge', () => {
     assert.equal(again.created, false);
     assert.equal(f.prs.length, 1);
   });
+  it('says plainly when no reviewer was requested, and why', t => {
+    const none = ready(t);
+    const result = pr(none.f.ctx());
+    assert.deepEqual(result.reviewers, []);
+    assert.match(result.noReviewerRequested, /no areas map in \.figma-cli\/project\.json/);
+    assert.match(result.summary, /No reviewer was requested, because this project has no areas map/);
+    assert.match(none.f.prs[0].body, /No reviewer was requested automatically: this project has no areas map/);
+    const mine = ready(t, { areas: { 'src/components/**': ['alice'] } });
+    assert.match(pr(mine.f.ctx()).noReviewerRequested, /you own every area/);
+    const elsewhere = ready(t, { areas: { 'docs/**': ['bob'] } });
+    assert.match(pr(elsewhere.f.ctx()).noReviewerRequested, /no area .* covers the changed files/);
+  });
   it('warns, but still opens the PR, when a reviewer cannot be requested', t => {
     const { f } = ready(t, { areas: { 'src/**': ['bob'] }, edit: 1 });
     const result = pr(f.ctx());
@@ -687,6 +754,78 @@ describe('team pr and merge', () => {
     assert.equal(defaultRun('git', ['rev-parse', '--verify', '--quiet', 'refs/heads/alice/filter-panel'], { cwd: p.origin }).status, 1);
     assert.equal(defaultRun('git', ['rev-parse', '--verify', '--quiet', 'refs/heads/alice/filter-panel'], { cwd: p.clone }).status, 1);
     assert.ok(existsSync(join(p.clone, 'src/components/Filter.tsx')));
+  });
+});
+
+describe('team merge --force', () => {
+  const scripts = { 'package.json': { ...PKG, scripts: { ...PKG.scripts, build: 'vite build' } } };
+  function opened(t, opts = {}) {
+    const p = project(t, { files: scripts });
+    const f = fakes(p, opts);
+    start(f.ctx(), 'Hotfix');
+    write(p.clone, { 'src/Fix.tsx': 'fix\n' });
+    pr(f.ctx());
+    return { p, f, home: temp(t) };
+  }
+  const reason = 'Demo in an hour, nobody else is online';
+  it('refuses without --force, without a reason, with --no-build-check, and for non-admins', t => {
+    const { p, f, home } = opened(t);
+    const mainBefore = p.originSha('main');
+    code(() => merge(f.ctx(), { home }), 'TEAM_NOT_APPROVED');
+    code(() => merge(f.ctx(), { reason, home }), 'TEAM_FORCE_NO_REASON');
+    code(() => merge(f.ctx(), { force: true, home }), 'TEAM_FORCE_NO_REASON');
+    code(() => merge(f.ctx(), { force: true, reason: '  ', home }), 'TEAM_FORCE_NO_REASON');
+    code(() => merge(f.ctx(), { force: true, reason: `token ghp_${'a'.repeat(36)}`, home }), 'TEAM_FORCE_NO_REASON');
+    code(() => merge(f.ctx(), { force: true, reason, buildCheck: false, home }), 'TEAM_FORCE_NEEDS_BUILD');
+    assert.throws(() => merge(f.ctx(), { force: true, reason, home }), error => error.code === 'TEAM_FORCE_NOT_ADMIN' && /Only admins of owner\/proto/.test(error.message));
+    assert.equal(p.originSha('main'), mainBefore);
+    assert.ok(!f.calls.some(c => c.command === 'gh' && c.args[1] === 'merge'));
+    assert.ok(!existsSync(forceReceiptDir(home)));
+  });
+  it('still needs no request for changes, an up-to-date branch and a passing build', t => {
+    const { p, f, home } = opened(t, { admin: true });
+    review(p, f.prs[0], 'bob', 'CHANGES_REQUESTED');
+    code(() => merge(f.ctx(), { force: true, reason, home }), 'TEAM_CHANGES_REQUESTED');
+    f.prs[0].reviews.length = 0;
+    f.prs[0].statusCheckRollup = [{ name: 'build', status: 'COMPLETED', conclusion: 'FAILURE' }];
+    code(() => merge(f.ctx(), { force: true, reason, home }), 'TEAM_CHECKS_FAILED');
+    f.prs[0].statusCheckRollup = [];
+    const failing = fakes(p, { admin: true, build: 1 });
+    failing.prs.push(...f.prs);
+    code(() => merge(failing.ctx(), { force: true, reason, home }), 'TEAM_BUILD_FAILED');
+    p.land({ 'src/Other.tsx': 'o\n' });
+    code(() => merge(f.ctx(), { force: true, reason, home }), 'TEAM_BEHIND_MAIN');
+    assert.ok(!f.calls.some(c => c.command === 'gh' && c.args[1] === 'merge'));
+  });
+  it('merges for an admin with a reason in the merge commit and a private receipt', t => {
+    const { p, f, home } = opened(t, { admin: true });
+    const head = sh(p.clone, 'rev-parse', 'HEAD');
+    const result = merge(f.ctx(), { force: true, reason: `  ${reason}  `, home, now: () => new Date('2026-10-15T10:00:00Z') });
+    assert.equal(result.forced, true);
+    assert.equal(result.reason, reason);
+    assert.equal(result.localBuild, 'passed');
+    assert.match(result.summary, /without an approval \(force merge by @alice/);
+    const message = sh(p.origin, 'log', '-1', '--format=%B', 'main');
+    assert.match(message, /^Hotfix \(#1\)/);
+    assert.match(message, /Force-merged by @alice without an approval from someone other than the author\./);
+    assert.ok(message.includes(`Reason: ${reason}`));
+    const [file] = readdirSync(forceReceiptDir(home));
+    assert.equal(join(forceReceiptDir(home), file), result.receipt.path);
+    assert.equal(statSync(result.receipt.path).mode & 0o777, 0o600);
+    const saved = JSON.parse(readFileSync(result.receipt.path, 'utf8'));
+    assert.deepEqual({ ...saved }, { schema: 'figma-cli/team-force-merge@1', at: '2026-10-15T10:00:00.000Z', repo: REPO, number: 1,
+      url: `https://github.com/${REPO}/pull/1`, by: '@alice', reason, head, mergeCommit: p.originSha('main'), checks: 'none', localBuild: 'passed', staleApprovals: [] });
+    assert.equal(sh(p.clone, 'branch', '--show-current'), 'main');
+  });
+  it('merges normally, without a receipt, when the PR is already approved', t => {
+    const { p, f, home } = opened(t, { admin: true });
+    review(p, f.prs[0], 'bob');
+    const result = merge(f.ctx(), { force: true, reason, home });
+    assert.equal(result.forced, undefined);
+    assert.deepEqual(result.approvedBy, ['@bob']);
+    assert.ok(f.warnings.some(w => /merged normally/.test(w)));
+    assert.ok(!existsSync(forceReceiptDir(home)));
+    assert.doesNotMatch(sh(p.origin, 'log', '-1', '--format=%B', 'main'), /Force-merged/);
   });
 });
 

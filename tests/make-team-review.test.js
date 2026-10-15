@@ -4,8 +4,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultRun, merge, pr, save, start, sync, teamContext } from '../src/make-team.js';
-import { address, approve, comment, commentable, feedback, inlineBuild, parseDiff, requestChanges, review, reviewPage, reviews,
+import { address, approve, comment, commentable, feedback, headerPath, inlineBuild, parseDiff, requestChanges, review, reviewPage, reviews,
   sourceFromSelector } from '../src/make-team-review.js';
+import { NOT_LISTENING_HELP } from '../src/lavish-listen.js';
 
 // Local git only: a bare "origin" in a temp folder stands in for GitHub and
 // one in-memory GitHub serves two people (alice writes, bob reviews), each
@@ -175,6 +176,15 @@ describe('team review: pure helpers', () => {
     assert.ok(!commentable(files, 'src/App.tsx', 12));
     assert.ok(!commentable(files, 'other.ts', 1));
   });
+  it('counts empty new and deleted files and mode-only changes, which have no ---/+++ lines', () => {
+    const files = parseDiff(['diff --git a/empty.ts b/empty.ts', 'new file mode 100644', 'index 0000000..e69de29',
+      'diff --git a/gone.txt b/gone.txt', 'deleted file mode 100644', 'index e69de29..0000000',
+      'diff --git a/run.sh b/run.sh', 'old mode 100644', 'new mode 100755',
+      'diff --git "a/with \\"quote\\".ts" "b/with \\"quote\\".ts"', 'new file mode 100644', 'index 0000000..e69de29'].join('\n'));
+    assert.deepEqual(files.map(f => [f.path, f.change]), [['empty.ts', 'new file'], ['gone.txt', 'deleted'], ['run.sh', 'changed'], ['with "quote".ts', 'new file']]);
+    assert.equal(headerPath('diff --git a/a b c b/a b c'), 'a b c');
+    assert.equal(headerPath('diff --git a/x b/y'), null, 'a rename names its paths on other lines');
+  });
   it('writes a review page whose line ids map to file and line, escaping content', () => {
     const files = parseDiff(diff.replace('+line 5 padding 16', '+<b onclick="x">'));
     const { html, map } = reviewPage({ pull: { title: 'Card <padding>', url: 'u' }, files, commits: [{ subject: 's' }], summary: 'sum' });
@@ -227,8 +237,17 @@ describe('team reviews and review', () => {
     assert.ok(existsSync(join(result.dir, 'node_modules')));
     assert.match(result.summary, /@alice's "Card padding" changes 2 files \(\+2 −1 lines\)/);
     assert.equal(sh(bob.dir, 'status', '--porcelain'), '', 'the review copy is invisible to the clone\'s saves');
+    assert.ok(!readFileSync(join(bob.dir, '.git/info/exclude'), 'utf8').includes('reviews'), 'the shared .git/info/exclude is never written');
+    assert.ok(existsSync(join(bob.dir, '.figma-cli/reviews/.gitignore')));
     assert.equal(sh(bob.dir, 'symbolic-ref', '--short', 'HEAD'), 'main', 'bob\'s own checkout is untouched');
     assert.equal(review(bob.ctx(), pull.url, { install: false }).refreshed, false);
+  });
+  it('counts empty new files in the change summary', t => {
+    const w = world(t);
+    const { pull } = alicePr(w, { files: { 'src/Card.tsx': 'export const Card = 1;\n', 'src/empty.ts': '', 'src/vendor/keep/.gitkeep': '' } });
+    const result = review(w.person('bob').ctx(), pull.number, { install: false });
+    assert.deepEqual(result.files, ['new file: src/Card.tsx (+1 −0)', 'new file: src/empty.ts (+0 −0)', 'new file: src/vendor/keep/.gitkeep (+0 −0)']);
+    assert.match(result.summary, /changes 3 files/);
   });
   it('updates the review copy to a newer version, refusing when it has local edits', t => {
     const w = world(t);
@@ -287,6 +306,11 @@ describe('team reviews and review', () => {
     assert.equal(JSON.parse(readFileSync(join(result.dir, '.lavish/review/source-map.json'), 'utf8')).lines['f0-R5'].line, 5);
     assert.ok(readFileSync(app, 'utf8').includes('<script type="module">console.log("<\\/script>")</script>'));
     assert.ok(w.github.calls.some(c => c.command === 'lavish-axi' && c.args[0] === change));
+    assert.equal(result.listen.auto, true, 'the agent is told to listen without the designer asking');
+    assert.deepEqual(result.listen.commands, [change, app].map(page => `lavish-axi poll ${JSON.stringify(page)}`));
+    assert.match(result.listen.rule, /tracked background job/);
+    assert.match(result.listen.rule, /start it again/);
+    assert.ok(readFileSync(change, 'utf8').includes(NOT_LISTENING_HELP.replace(/"/g, '&quot;')), 'the page says what to type if nobody listens');
     assert.equal(review(bob.ctx(), pull.number, { install: false }).refreshed, false, 'the Lavish files do not count as edits');
   });
   it('reuses the make start design build, and warns when the app does not build or Lavish is missing', t => {
@@ -295,6 +319,7 @@ describe('team reviews and review', () => {
     const broken = w.person('bob', { vite: 1, lavish: 1 });
     const result = review(broken.ctx(), pull.number, { app: true });
     assert.deepEqual([result.lavish.pages.length, result.lavish.opened], [1, 0]);
+    assert.equal(result.listen, undefined, 'nothing to listen to when no page opened');
     assert.ok(broken.warnings.some(m => /could not be built/.test(m)) && broken.warnings.some(m => /lavish-axi is not installed/.test(m)));
     write(result.dir, { '.lavish/prototype/index.html': '<html></html>' });
     const again = review(w.person('bob').ctx(), pull.number, { lavish: true, install: false });
@@ -437,6 +462,25 @@ describe('team feedback and address', () => {
     approve(bob.ctx(), pull.number);
     const merged = merge(alice.ctx(), { buildCheck: false });
     assert.deepEqual(merged.approvedBy, ['@bob']);
+  });
+  it('says when only the author\'s own comments exist, instead of "no comments"', t => {
+    const w = world(t);
+    const { alice, pull } = alicePr(w);
+    comment(alice.ctx(), pull.number, { message: 'Note to self: check dark mode' });
+    comment(alice.ctx(), pull.number, { message: 'Also this line', file: 'src/App.tsx', line: 5 });
+    const seen = feedback(alice.ctx());
+    assert.deepEqual(seen.feedback, []);
+    assert.equal(seen.authorCommentsHidden, 2);
+    assert.doesNotMatch(seen.summary, /No comments from reviewers yet/);
+    assert.match(seen.summary, /No comments from other people yet\. 2 comments by @alice \(the pull request's author\) are not listed/);
+    const todo = address(alice.ctx());
+    assert.equal(todo.authorCommentsHidden, 2);
+    assert.match(todo.summary, /No comments from other people to work through\. 2 comments by @alice/);
+    const bob = w.person('bob');
+    comment(bob.ctx(), pull.number, { message: 'Looks good' });
+    const both = feedback(alice.ctx());
+    assert.equal(both.feedback.length, 1);
+    assert.match(both.summary, /1 comment from reviewers\. 2 comments by @alice/);
   });
   it('refuses to address someone else\'s pull request or with unsaved changes', t => {
     const w = world(t);

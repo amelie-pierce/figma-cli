@@ -4,6 +4,8 @@ description: How figma-cli team start/save/sync/conflicts/pr/merge/status keep d
 date: 2026-10-14
 ---
 
+Updated 2026-10-15: vendored files in `save`, the short PR body and reviewer reason, force merge, and quiet toolchain notices.
+
 # The team git layer for designers
 
 In team mode GitHub `main` is the source of truth and people work in a local clone ([local.md](local.md)). Designers are not expected to know git, so every branch, save, sync, pull request and merge is a `figma-cli team <verb>` (`src/commands/team.js:9`), backed by `src/make-team.js`. The skill `skills/figma-make-team/SKILL.md` maps their phrases to verbs and forbids improvised git. Nothing here reads or writes Figma.
@@ -18,7 +20,9 @@ In team mode GitHub `main` is the source of truth and people work in a local clo
 
 ## Save
 
-`save` commits through `commitLocal`, which refuses secret-like files and token-looking content before running anything (`checkChanges`/`findSecrets`; findings are path and line only), runs `package.json` `format` and `build` when present (`projectScripts`), re-checks and commits with `git add --all`; `save` then makes a plain push. A remote branch with commits this clone lacks is refused (`TEAM_PUSH_REJECTED`, only for `stale info`/`non-fast-forward`/`fetch first`), never overwritten, and the message points at `sync`. A server-side `[remote rejected]` (push protection, hooks, rulesets) is `TEAM_PUSH_BLOCKED` with GitHub's `remote: error:` line; push protection scans every pushed commit, so `pushSaves` (used by `save` and `sync`) then runs `reset --soft` to GitHub's copy of the branch (or to the merge-base with `origin/main` when that is newer or the copy is not an ancestor, as after a sync's rebase, so `main`'s changes are never staged as yours), undoing only local commits and keeping the files, so removing the flagged content and saving again works. When the branch's own pushed saves were rebased by that sync (GitHub's copy is not an ancestor of the reset base), their rewritten copies are undone too, GitHub keeps the originals, and the message says to "get the latest" (`sync`, which brings them back in) instead of saving again, since a plain save would be a non-fast-forward. `start --save-first` on `main` runs `checkChanges` before creating the branch, and a later save failure says the branch was started and whether the changes are unsaved or only local.
+`save` commits through `commitLocal`, which refuses secret-like files and token-looking content before running anything (`checkChanges`/`findSecrets`; findings are path and line only), runs `package.json` `format` and `build` when present (`projectScripts`), re-checks and commits with `git add --all`; `save` then makes a plain push.
+
+**Vendored files.** `checkChanges` (`src/make-team.js:474`) snapshots every vendored file before `format`/`build` and restores it byte for byte, mode included, in a `finally`, so even a failing script leaves them intact (`snapshotVendored`/`restoreVendored`, `src/make-team.js:416`). Vendored means every file in the folder of a `VENDOR.json` plus every path a `VENDOR.json` lists, relative to its folder (`vendoredPaths`, `src/make-team.js:400`); a root `VENDOR.json` pins only what it lists, since its folder is the whole project. The designer's own edits to a vendored file are snapshotted after they made them, so they are kept and saved. Found in the first Model B test (Hinge adopting AtomicAUI 7.0), where an oxfmt `format` script would have rewritten 205 vendored files. A remote branch with commits this clone lacks is refused (`TEAM_PUSH_REJECTED`, only for `stale info`/`non-fast-forward`/`fetch first`), never overwritten, and the message points at `sync`. A server-side `[remote rejected]` (push protection, hooks, rulesets) is `TEAM_PUSH_BLOCKED` with GitHub's `remote: error:` line; push protection scans every pushed commit, so `pushSaves` (used by `save` and `sync`) then runs `reset --soft` to GitHub's copy of the branch (or to the merge-base with `origin/main` when that is newer or the copy is not an ancestor, as after a sync's rebase, so `main`'s changes are never staged as yours), undoing only local commits and keeping the files, so removing the flagged content and saving again works. When the branch's own pushed saves were rebased by that sync (GitHub's copy is not an ancestor of the reset base), their rewritten copies are undone too, GitHub keeps the originals, and the message says to "get the latest" (`sync`, which brings them back in) instead of saving again, since a plain save would be a non-fast-forward. `start --save-first` on `main` runs `checkChanges` before creating the branch, and a later save failure says the branch was started and whether the changes are unsaved or only local.
 
 ## Sync and conflicts
 
@@ -30,6 +34,18 @@ In team mode GitHub `main` is the source of truth and people work in a local clo
 
 `merge` needs a green build: failing or pending GitHub checks refuse; with no checks it runs the project's `build` script locally on the exact head it will merge (after the up-to-date check), and with no `build` script it refuses with `TEAM_NO_BUILD_CHECK` unless `--no-build-check`.
 
+## Pull request body
+
+`changeOverview` (`src/make-team.js:784`) lists each file only up to 10; above that the body has counts by kind and by top two folder levels, and points at GitHub's Files tab (the Hinge PR had 278 files). `pr` (`src/make-team.js:848`) works out why nobody is asked to review (`noReviewer`: no areas map, no area matching, or the caller owns them all) and puts it in the body, the `noReviewerRequested` field and the summary.
+
+## Force merge
+
+`merge --force --reason` (`src/make-team.js:965`) skips only the non-author approval. Refusals run before any GitHub write: `forceReason` (`src/make-team.js:932`; 5 to 500 characters, no token-looking text, since it becomes public), `--no-build-check` with `--force`, and `requireRepoAdmin` (`src/make-team.js:944`, `gh api repos/<repo>` `.permissions.admin`). Requested changes, checks, the local build and the up-to-date check still apply. The reason goes into `gh pr merge --body` (the squash commit body) and a private receipt from `writeForceReceipt` (`src/make-team.js:952`, `~/.figma-cli/merge-receipts/`, 0600, `wx`). An already approved pull request merges normally with a warning and no receipt.
+
+## Toolchain notices
+
+The Hinge clone's `.mise.toml` notice appeared on every command. `install` shows each toolchain warning once per clone when the CLI passes `noticeStore()` (`src/make-local.js:177`; hashes of clone path and text in `~/.figma-cli/notices.json`); library callers without a store still see every warning. Child processes get `MISE_STATUS_MESSAGE_MISSING_TOOLS=never` unless set (`src/tool-env.js`), which silences mise's own missing-tool line. UNVERIFIED: the exact mise message the Hinge run printed; mise is not installed here.
+
 ## Areas
 
 `.figma-cli/project.json` may carry `areas` (path glob → logins). `parseAreas`/`globPattern` (`src/make-team.js:96`) drive the `save` warning for another person's area and the `pr` reviewer requests; a failed request only warns. Reviewers and owners are a convention; deploy rights are repo admin, not areas.
@@ -40,4 +56,4 @@ On `amelie-pierce/figma-testing-workflow` only: `status` on `main`, `start` (bra
 
 Reviewing someone else's pull request (review copy, comments, approvals, author feedback) is in [review.md](review.md).
 
-Tests: `tests/make-team.test.js` (real git against a bare origin; `gh` and `pnpm` faked).
+Tests: `tests/make-team.test.js` (real git against a bare origin; `gh` and `pnpm` faked; the vendored test uses a formatter that rewrites, deletes and re-modes files), `tests/make-local.test.js` (notices) and `tests/bare-cli.test.js` (a bare `figma-cli` never stops or starts Figma Desktop; `src/commands/setup.js:172`).

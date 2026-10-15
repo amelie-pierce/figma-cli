@@ -325,7 +325,11 @@ Designers never need git: `figma-cli team start "<task>"`, `team save`,
 `team sync`, `team conflicts`, `team pr`, `team merge` and `team status` do the
 branching, saving, syncing, pull requests and merges on their own
 `<login>/<task>` branch. They never push to `main`, and merge only a pull
-request approved by someone other than its author. The `figma-make-team` skill
+request approved by someone other than its author; a repo admin can merge
+without that approval with `team merge --force --reason "…"`, which still needs
+a passing build and an up-to-date branch and records the reason in the merge
+commit and a receipt. `team save` never reformats vendored files (pinned by a
+`VENDOR.json`). The `figma-make-team` skill
 maps phrases such as "save my progress" or "merge it" to these verbs. See
 [team git workflow](REFERENCE.md#team-git-workflow-team).
 
@@ -334,7 +338,13 @@ Designers also review each other's pull requests without git: `team reviews`
 installed without scripts, optionally opened in Lavish for line and element
 notes), `team comment`, `team approve` and `team request-changes` (as the
 reviewer's own GitHub login, never on their own pull request), and on the
-author's side `team feedback` and `team address`.
+author's side `team feedback` and `team address`. When a page opens in Lavish
+for the designer, the result tells the agent to start listening to it
+(`lavish-axi poll`) at once and keep it running, so notes arrive with nothing
+for the designer to turn on.
+
+A bare `figma-cli` with no command only prints the connection status and how
+to connect; it never starts, quits or patches Figma Desktop.
 
 A repo admin deploys merged `main` into the team-mode Make file with
 `make deploy --file KEY` in their clone. The default is a dry run that writes a

@@ -1,7 +1,9 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { PROJECT_MARKER, repoName } from './make-project.js';
+import { quietToolEnv } from './tool-env.js';
 
 // `figma-cli team <verb>`: the plain-language git layer for designers working
 // on a team-mode project's local clone. Every git and gh step is decided here,
@@ -22,7 +24,8 @@ export const TEAM_CODES = Object.freeze(['TEAM_NOT_A_CLONE', 'TEAM_NO_REPO', 'TE
   'TEAM_OPERATION_IN_PROGRESS', 'TEAM_SECRET', 'TEAM_LARGE_FILE', 'TEAM_FORMAT_FAILED', 'TEAM_BUILD_FAILED', 'TEAM_PUSH_REJECTED',
   'TEAM_PUSH_BLOCKED', 'TEAM_PUSH_REFUSED', 'TEAM_CONFLICT', 'TEAM_NOTHING_TO_REVIEW', 'TEAM_NO_PR', 'TEAM_PR_NOT_READY', 'TEAM_NOT_APPROVED',
   'TEAM_CHANGES_REQUESTED', 'TEAM_CHECKS_PENDING', 'TEAM_CHECKS_FAILED', 'TEAM_BEHIND_MAIN', 'TEAM_OUT_OF_DATE', 'TEAM_NO_BUILD_CHECK', 'TEAM_MERGE_FAILED',
-  'TEAM_PR_NOT_FOUND', 'TEAM_AMBIGUOUS', 'TEAM_PR_CLOSED', 'TEAM_SELF_REVIEW', 'TEAM_REVIEW_COPY', 'TEAM_REVIEW_DIRTY', 'TEAM_REVIEW_OUTDATED', 'TEAM_BAD_COMMENT']);
+  'TEAM_PR_NOT_FOUND', 'TEAM_AMBIGUOUS', 'TEAM_PR_CLOSED', 'TEAM_SELF_REVIEW', 'TEAM_REVIEW_COPY', 'TEAM_REVIEW_DIRTY', 'TEAM_REVIEW_OUTDATED', 'TEAM_BAD_COMMENT',
+  'TEAM_FORCE_NO_REASON', 'TEAM_FORCE_NOT_ADMIN', 'TEAM_FORCE_NEEDS_BUILD']);
 
 export function fail(message, code, extra = {}) {
   const error = new Error(message);
@@ -34,7 +37,7 @@ export function fail(message, code, extra = {}) {
 // Capture a command's output; nothing reaches the terminal unless asked.
 // Git never opens an editor or a credential prompt here.
 export function defaultRun(command, args, { cwd, stream = false } = {}) {
-  const env = { ...process.env, GIT_EDITOR: 'true', GIT_TERMINAL_PROMPT: '0', GIT_MERGE_AUTOEDIT: 'no' };
+  const env = { ...quietToolEnv(), GIT_EDITOR: 'true', GIT_TERMINAL_PROMPT: '0', GIT_MERGE_AUTOEDIT: 'no' };
   const result = spawnSync(command, args, { cwd, env, encoding: 'utf8', shell: false, maxBuffer: 64 * 1024 * 1024,
     stdio: stream ? ['ignore', process.stderr, process.stderr] : ['ignore', 'pipe', 'pipe'] });
   if (result.error?.code === 'ENOENT') return { status: 127, stdout: '', stderr: `${command}: not found` };
@@ -383,6 +386,67 @@ function runScripts(ctx, { only = ['format', 'build'], outcome = 'Nothing was sa
   return ran;
 }
 
+// --- vendored files ----------------------------------------------------------
+
+// A VENDOR.json pins vendored source (src/vendor/<kit>/): every file in its
+// folder, and every file it lists, must stay byte-identical. A project's
+// format or build script may rewrite anything, so those files are read before
+// the scripts run and put back exactly afterwards. A VENDOR.json at the project
+// root pins only the files it lists, not the whole project.
+const VENDOR_MANIFEST = 'VENDOR.json';
+const safeRelative = path => typeof path === 'string' && path && !path.startsWith('/') && !/[\\:\0]/.test(path) &&
+  path.split('/').every(part => part && part !== '.' && part !== '..');
+
+export function vendoredPaths(ctx) {
+  const all = ctx.git(['ls-files', '-z', '--cached', '--others', '--exclude-standard'], 'Listing the project\'s files').split('\0').filter(Boolean);
+  const manifests = [...new Set(all.filter(path => basename(path) === VENDOR_MANIFEST))];
+  const paths = new Set();
+  for (const manifest of manifests) {
+    const folder = manifest.slice(0, manifest.length - VENDOR_MANIFEST.length);
+    paths.add(manifest);
+    if (folder) all.filter(path => path.startsWith(folder)).forEach(path => paths.add(path));
+    let listed = [];
+    try { listed = JSON.parse(readFileSync(join(ctx.root, manifest), 'utf8'))?.files; } catch { ctx.warn(`${manifest} is not valid JSON; only its folder is kept as it is.`); }
+    for (const file of Array.isArray(listed) ? listed : []) if (safeRelative(file?.path)) paths.add(`${folder}${file.path}`);
+  }
+  return [...paths].sort();
+}
+
+// path → { bytes, mode } of a regular file, or null when there is none.
+export function snapshotVendored(ctx) {
+  const snapshot = new Map();
+  for (const path of vendoredPaths(ctx)) {
+    const full = join(ctx.root, path);
+    let stat = null;
+    try { stat = lstatSync(full); } catch { /* absent */ }
+    if (stat && !stat.isFile()) continue;
+    snapshot.set(path, stat ? { bytes: readFileSync(full), mode: stat.mode & 0o777 } : null);
+  }
+  return snapshot;
+}
+
+// Put every vendored file back exactly as it was; returns the paths that the
+// scripts had changed, created or removed.
+export function restoreVendored(ctx, snapshot) {
+  const restored = [];
+  for (const [path, before] of snapshot) {
+    const full = join(ctx.root, path);
+    let now = null;
+    try { now = lstatSync(full).isFile() ? readFileSync(full) : undefined; } catch { /* absent */ }
+    if (before == null) {
+      if (now !== null) { rmSync(full, { recursive: true, force: true }); restored.push(path); }
+      continue;
+    }
+    if (now && now.equals(before.bytes) && (lstatSync(full).mode & 0o777) === before.mode) continue;
+    if (now === undefined) rmSync(full, { recursive: true, force: true });
+    mkdirSync(join(full, '..'), { recursive: true });
+    writeFileSync(full, before.bytes);
+    chmodSync(full, before.mode);
+    restored.push(path);
+  }
+  return restored;
+}
+
 // --- commit messages and areas -------------------------------------------
 
 export function commitMessage(changes) {
@@ -405,25 +469,33 @@ function areaWarnings(ctx, paths) {
 // --- verbs -------------------------------------------------------------------
 
 // Secrets and large files are refused before any script runs, and again on
-// what format left behind.
+// what format left behind. Vendored files come back byte for byte, also when
+// a script fails.
 function checkChanges(ctx) {
   let changes = listChanges(ctx);
   let ran = [];
+  let vendored = { kept: 0, restored: [] };
   if (changes.length) {
     requireSafe(ctx, changes);
-    ran = runScripts(ctx);
+    const snapshot = snapshotVendored(ctx);
+    try { ran = runScripts(ctx); }
+    finally { vendored = { kept: snapshot.size, restored: restoreVendored(ctx, snapshot) }; }
     changes = listChanges(ctx);
     requireSafe(ctx, changes);
   }
-  return { changes, ran };
+  return { changes, ran, vendored };
 }
 
 // Commit everything on the caller's own branch, without pushing.
 function commitLocal(ctx, { message } = {}) {
   requireNoOperation(ctx);
   const branch = requireOwnBranch(ctx);
-  const { changes, ran } = checkChanges(ctx);
+  const { changes, ran, vendored } = checkChanges(ctx);
   const warnings = [];
+  if (vendored.restored.length) {
+    warnings.push(`The project's format or build step changed ${vendored.restored.length} vendored file${vendored.restored.length === 1 ? '' : 's'} ` +
+      `(pinned by ${VENDOR_MANIFEST}); they were put back exactly as they were. Vendored files are never reformatted.`);
+  }
   let commit = null;
   if (changes.length) {
     warnings.push(...areaWarnings(ctx, changes.map(c => c.path)));
@@ -432,7 +504,7 @@ function commitLocal(ctx, { message } = {}) {
     ctx.git(['commit', '--quiet', '-m', text], 'Saving your changes');
     commit = { sha: revOf(ctx, 'HEAD'), message: text };
   }
-  return { branch, changes, commit, ran, warnings };
+  return { branch, changes, commit, ran, warnings, vendored };
 }
 
 // A push GitHub refuses by rule would be refused again while the flagged
@@ -460,7 +532,7 @@ function pushSaves(ctx, branch, options) {
 // Save: commit, then a plain push. Newer work on GitHub is never overwritten;
 // sync is the way to bring it in.
 export function save(ctx, { message } = {}) {
-  const { branch, changes, commit, ran, warnings } = commitLocal(ctx, { message });
+  const { branch, changes, commit, ran, warnings, vendored } = commitLocal(ctx, { message });
   const remote = remoteBranchSha(ctx, branch);
   const head = revOf(ctx, 'HEAD');
   let pushed = false;
@@ -472,7 +544,8 @@ export function save(ctx, { message } = {}) {
     ? `Saved ${changes.length} file${changes.length === 1 ? '' : 's'} on ${branch} and ${pushed ? 'sent them to GitHub' : 'GitHub already had them'}.`
     : pushed ? `Nothing new to save; sent your earlier saves on ${branch} to GitHub.` : 'Nothing new to save; GitHub already has everything.';
   return { verb: 'save', branch, saved: !!commit, files: changes.map(describeChange), ...(commit ? { commit } : {}),
-    ...(ran.length ? { checks: ran } : {}), pushed, ...(warnings.length ? { warnings } : {}), summary };
+    ...(ran.length ? { checks: ran } : {}), ...(vendored?.kept ? { vendoredKept: vendored.kept, vendoredRestored: vendored.restored.length } : {}),
+    pushed, ...(warnings.length ? { warnings } : {}), summary };
 }
 
 // Start: a fresh <login>/<slug> branch from the latest main, pushed.
@@ -704,12 +777,37 @@ export function readReviews(ctx, number) {
   return out.split('\n').filter(Boolean).map(line => { try { return JSON.parse(line); } catch { fail('gh returned unreadable reviews.', 'TEAM_GH_FAILED'); } });
 }
 
-export function prBody({ branch, files, task }) {
+// The files in a few lines: each one when there are only a handful, else
+// counts by kind and by top folder. A big change (a vendored kit) would
+// otherwise bury the description under hundreds of paths.
+const PR_FILE_LIST_MAX = 10;
+export function changeOverview(files) {
+  if (!files.length) return ['- (no file changes yet)'];
+  if (files.length <= PR_FILE_LIST_MAX) return files.map(file => `- ${describeChange(file)}`);
+  const kinds = ['new file', 'changed', 'deleted', 'renamed'].map(kind => [kind, files.filter(f => f.change === kind).length]).filter(([, n]) => n)
+    .map(([kind, n]) => `${n} ${kind === 'new file' ? 'new' : kind}`);
+  const folders = new Map();
+  for (const { path } of files) {
+    const top = path.includes('/') ? `${path.slice(0, path.lastIndexOf('/')).split('/').slice(0, 2).join('/')}/` : '(project root)';
+    folders.set(top, (folders.get(top) || 0) + 1);
+  }
+  const ranked = [...folders].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  return [`${files.length} files: ${kinds.join(', ')}.`, '',
+    ...ranked.slice(0, 6).map(([folder, n]) => `- ${folder}: ${n} file${n === 1 ? '' : 's'}`),
+    ...(ranked.length > 6 ? [`- and ${ranked.length - 6} more folders`] : []), '',
+    'The full list is on the "Files changed" tab.'];
+}
+
+export function prBody({ branch, files, task, review }) {
   return [
     '## What changed',
     task ? `Task: ${task}` : null,
     '',
-    ...(files.length ? files.map(file => `- ${file}`) : ['- (no file changes yet)']),
+    ...changeOverview(files),
+    '',
+    '## Review',
+    '',
+    review || 'Ask a teammate to review.',
     '',
     '## How to see it locally',
     '',
@@ -754,15 +852,21 @@ export function pr(ctx, { title, message } = {}) {
   if (count(ctx, `${ORIGIN_TRUNK}..HEAD`) === 0) fail(`${branch} has no changes compared with ${TRUNK} yet, so there is nothing to review.`, 'TEAM_NOTHING_TO_REVIEW');
   const files = changedSinceMain(ctx);
   const login = ctx.login().toLowerCase();
-  const reviewers = [...new Set(areaOwners(ctx.project().areas, files.map(f => f.path)).flatMap(hit => hit.owners))]
-    .filter(owner => owner.toLowerCase() !== login);
+  const { areas } = ctx.project();
+  const hits = areaOwners(areas, files.map(f => f.path));
+  const reviewers = [...new Set(hits.flatMap(hit => hit.owners))].filter(owner => owner.toLowerCase() !== login);
+  // Why nobody is asked automatically, in plain words.
+  const noReviewer = reviewers.length ? null : !areas.length ? `this project has no areas map in ${PROJECT_MARKER}`
+    : !hits.length ? `no area in ${PROJECT_MARKER} covers the changed files` : 'you own every area these changes touch';
   let existing = findPr(ctx, branch);
   let url;
   if (existing) url = existing.url;
   else {
     const task = ctx.tryGit(['config', '--get', `branch.${branch}.figmaCliTask`]).stdout.trim() || null;
+    const review = noReviewer ? `No reviewer was requested automatically: ${noReviewer}. Ask a teammate to review.`
+      : `Review requested from ${reviewers.map(r => `@${r}`).join(', ')} (from the areas map).`;
     const out = ctx.gh(['pr', 'create', '--repo', ctx.repo(), '--base', TRUNK, '--head', branch,
-      '--title', (title || titleFrom(task, branch)).trim(), '--body', prBody({ branch, files: files.map(describeChange), task })], 'Opening the pull request');
+      '--title', (title || titleFrom(task, branch)).trim(), '--body', prBody({ branch, files, task, review })], 'Opening the pull request');
     url = out.split('\n').reverse().find(line => /^https:\/\//.test(line)) || out;
   }
   const requested = [];
@@ -772,11 +876,14 @@ export function pr(ctx, { title, message } = {}) {
     (result.status === 0 ? requested : notRequested).push(reviewer);
   }
   if (notRequested.length) ctx.warn(`Could not ask ${notRequested.map(r => `@${r}`).join(', ')} to review; mention them on the pull request instead.`);
-  return { verb: 'pr', branch, url, created: !existing, files: files.map(describeChange), synced: synced.broughtIn,
-    ...(requested.length ? { reviewers: requested.map(r => `@${r}`) } : {}),
+  const reviewNote = requested.length ? ` Asked ${requested.map(r => `@${r}`).join(', ')} to review.`
+    : noReviewer ? ` No reviewer was requested, because ${noReviewer}. Ask a teammate to review it.`
+      : ' No reviewer could be requested. Ask a teammate to review it.';
+  return { verb: 'pr', branch, url, created: !existing, fileCount: files.length, files: files.slice(0, PR_FILE_LIST_MAX).map(describeChange),
+    ...(files.length > PR_FILE_LIST_MAX ? { moreFiles: files.length - PR_FILE_LIST_MAX } : {}), synced: synced.broughtIn,
+    ...(requested.length ? { reviewers: requested.map(r => `@${r}`) } : { reviewers: [], noReviewerRequested: noReviewer || 'every request failed' }),
     ...(notRequested.length ? { reviewersNotRequested: notRequested.map(r => `@${r}`) } : {}),
-    summary: `${existing ? 'Your pull request is up to date' : 'Opened your pull request'}: ${url}.` +
-      `${requested.length ? ` Asked ${requested.map(r => `@${r}`).join(', ')} to review.` : ' Ask a teammate to review it.'}` };
+    summary: `${existing ? 'Your pull request is up to date' : 'Opened your pull request'}: ${url}.${reviewNote}` };
 }
 
 // The review state of a pull request from each reviewer's latest review. An
@@ -817,11 +924,50 @@ export function checkState(pull) {
   return { state, failing: checks.filter(c => c.result === 'fail').map(c => c.name), pending: checks.filter(c => c.result === 'pending').map(c => c.name) };
 }
 
+// A force merge skips only the non-author approval. It needs an explicit
+// flag, a reason that is recorded, and a repo admin; everything else (up to
+// date, green build, no request for changes) still applies.
+export const forceReceiptDir = (home = homedir()) => join(home, '.figma-cli', 'merge-receipts');
+
+function forceReason(reason) {
+  const text = typeof reason === 'string' ? reason.trim().replace(/\s+/g, ' ') : '';
+  if (text.length < 5) {
+    fail('A force merge needs a reason in plain words (--reason "…"), for example "urgent fix for the demo, nobody else is available". ' +
+      'It goes into the merge commit and the receipt. Nothing was merged.', 'TEAM_FORCE_NO_REASON');
+  }
+  if (text.length > 500) fail('Keep the force-merge reason under 500 characters. Nothing was merged.', 'TEAM_FORCE_NO_REASON');
+  const secret = SECRET_CONTENT.find(([, pattern]) => pattern.test(text));
+  if (secret) fail(`The force-merge reason looks like it holds ${secret[0]}; it would be public in the merge commit. Nothing was merged.`, 'TEAM_FORCE_NO_REASON');
+  return text;
+}
+
+function requireRepoAdmin(ctx) {
+  const permissions = ctx.ghJson(['api', `repos/${ctx.repo()}`, '--jq', '.permissions'], 'Reading your permission on the repo');
+  if (permissions?.admin !== true) {
+    fail(`Only admins of ${ctx.repo()} may merge without an approval, and @${ctx.login()} is not one. ` +
+      'Ask a teammate to review and approve it instead. Nothing was merged.', 'TEAM_FORCE_NOT_ADMIN');
+  }
+}
+
+function writeForceReceipt(receipt, home) {
+  const dir = forceReceiptDir(home);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = join(dir, `${receipt.at.replace(/[:.]/g, '-')}-${receipt.repo.replace('/', '-')}-pr${receipt.number}.json`);
+  writeFileSync(path, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  return path;
+}
+
 // Merge: only the caller's own PR into main, approved by someone else, with
 // a green build and up to date with main. The build is GitHub's checks, or,
 // when the PR has none, the project's build script run here on the exact head
 // being merged. Squash, delete the branch, return to an updated main.
-export function merge(ctx, { buildCheck = true } = {}) {
+// --force (with a reason, admins only) merges without that approval.
+export function merge(ctx, { buildCheck = true, force = false, reason, home, now = () => new Date() } = {}) {
+  if (!force && reason != null) fail('--reason goes with --force (merge without an approval). Nothing was merged.', 'TEAM_FORCE_NO_REASON');
+  const why = force ? forceReason(reason) : null;
+  if (force && !buildCheck) {
+    fail('A force merge still needs a passing build, so it cannot be combined with --no-build-check. Nothing was merged.', 'TEAM_FORCE_NEEDS_BUILD');
+  }
   requireNoOperation(ctx);
   const branch = requireOwnBranch(ctx);
   const unsaved = listChanges(ctx);
@@ -843,7 +989,10 @@ export function merge(ctx, { buildCheck = true } = {}) {
   if (reviews.changesRequestedBy.length) {
     fail(`${reviews.changesRequestedBy.map(r => `@${r.who}`).join(', ')} asked for changes on ${pull.url}. Make them, save, and ask for another review.`, 'TEAM_CHANGES_REQUESTED');
   }
-  if (!reviews.approvedBy.length) {
+  const forced = force && !reviews.approvedBy.length;
+  if (force) requireRepoAdmin(ctx);
+  if (force && !forced) ctx.warn(`${pull.url} already has an approval of its latest changes, so it is merged normally; the force reason is not used.`);
+  if (!reviews.approvedBy.length && !forced) {
     const stale = reviews.staleApprovals.map(r => `@${r.who}`);
     fail(`${pull.url} has no approval of its latest changes from someone other than its author (@${pull.author?.login || login}), so it was not merged. ` +
       (stale.length ? `${stale.join(', ')} approved an earlier version; ask them to look again.` : 'Ask a teammate to review and approve it, then ask again.'),
@@ -867,9 +1016,19 @@ export function merge(ctx, { buildCheck = true } = {}) {
         'Add a build script or CI checks, or ask again with --no-build-check to merge without a build.', 'TEAM_NO_BUILD_CHECK', { url: pull.url });
     } else localBuild = 'skipped';
   }
-  ctx.gh(['pr', 'merge', String(pull.number), '--repo', ctx.repo(), '--squash', '--match-head-commit', head], 'Merging the pull request');
+  const forcedBody = forced ? `Force-merged by @${login} without an approval from someone other than the author.\n\nReason: ${why}` : null;
+  ctx.gh(['pr', 'merge', String(pull.number), '--repo', ctx.repo(), '--squash', '--match-head-commit', head, ...(forced ? ['--body', forcedBody] : [])],
+    'Merging the pull request');
   const after = ctx.ghJson(['pr', 'view', String(pull.number), '--repo', ctx.repo(), '--json', 'state,mergeCommit'], 'Confirming the merge');
   if (after?.state !== 'MERGED') fail(`GitHub did not report ${pull.url} as merged (state ${after?.state || 'unknown'}). Nothing else was changed.`, 'TEAM_MERGE_FAILED');
+  let receipt = null;
+  if (forced) {
+    receipt = { schema: 'figma-cli/team-force-merge@1', at: now().toISOString(), repo: ctx.repo(), number: pull.number, url: pull.url,
+      by: `@${login}`, reason: why, head, mergeCommit: after.mergeCommit?.oid || null, checks: checks.state, ...(localBuild ? { localBuild } : {}),
+      staleApprovals: reviews.staleApprovals.map(r => `@${r.who}`) };
+    try { receipt.path = writeForceReceipt(receipt, home); }
+    catch (error) { ctx.warn(`The merge happened, but its local receipt could not be written: ${error.message}. The reason is in the merge commit.`); }
+  }
   const newMain = fetchMain(ctx);
   ctx.git(['switch', '--quiet', TRUNK], `Returning to ${TRUNK}`);
   ctx.git(['merge', '--ff-only', '--quiet', newMain], `Updating ${TRUNK}`);
@@ -879,7 +1038,10 @@ export function merge(ctx, { buildCheck = true } = {}) {
   if (ctx.tryGit(['branch', '-D', '--', branch]).status === 0) cleanup.push('deleted the local branch');
   return { verb: 'merge', branch, url: pull.url, approvedBy: reviews.approvedBy.map(r => `@${r.who}`), checks: checks.state,
     ...(localBuild ? { localBuild } : {}), mergeCommit: after.mergeCommit?.oid || null, [TRUNK]: newMain, cleanup,
-    summary: `Merged ${pull.url} into ${TRUNK} (approved by ${reviews.approvedBy.map(r => `@${r.who}`).join(', ')}). You are back on an up-to-date ${TRUNK}.` };
+    ...(forced ? { forced: true, reason: why, receipt } : {}),
+    summary: forced
+      ? `Merged ${pull.url} into ${TRUNK} without an approval (force merge by @${login}, reason recorded in the merge commit and the receipt). You are back on an up-to-date ${TRUNK}.`
+      : `Merged ${pull.url} into ${TRUNK} (approved by ${reviews.approvedBy.map(r => `@${r.who}`).join(', ')}). You are back on an up-to-date ${TRUNK}.` };
 }
 
 // Status: where the caller is, what is unsaved, the PR and how far behind main.

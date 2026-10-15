@@ -400,6 +400,21 @@ describe('make deploy dry run, apply and verify', () => {
     assert.deepEqual(s.p.tags().sort(), ['make-deploy/0', 'make-deploy/1']);
   });
 
+  it('skips the repo-only _vaults/ notes, applies the rest and then reads as nothing to deploy', async t => {
+    const s = setup(t, { marker: false });
+    const sha = landChange(s, { 'src/App.tsx': 'export const App = () => "v2";\n', '_vaults/proto/wiki/index.md': '# vault\n',
+      '_vaults/proto/wiki/make/deploy.md': '# deploy notes\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    assert.deepEqual(plan.files, [{ path: 'src/App.tsx', op: 'modify' }]);
+    assert.deepEqual(plan.excluded.filter(entry => entry.path.startsWith('_vaults/')).map(entry => [entry.path, entry.reason]),
+      [['_vaults/proto/wiki/index.md', 'never deployed: project vault notes stay in the repo'], ['_vaults/proto/wiki/make/deploy.md', 'never deployed: project vault notes stay in the repo']]);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.outcome, 'ok');
+    assert.equal(applied.mainCommit, sha);
+    assert.ok(![...s.make.saved.keys()].some(path => path.startsWith('_vaults')), 'Make never gets a _vaults/ folder');
+    const again = await deployPlan(s.make, s.opts, s.deps);
+    assert.equal(again.counts.add + again.counts.modify + again.counts.delete, 0);
+  });
   it('writes the lockfile first and package.json last, so Make\'s own reinstall finds them consistent', async t => {
     const s = setup(t);
     landChange(s, { 'package.json': { ...PKG, dependencies: { react: '^19.0.0' } }, 'pnpm-lock.yaml': 'lockfileVersion: 9.0\nreact: 19\n', 'src/App.tsx': 'v2\n' });

@@ -12,6 +12,12 @@ export const PROJECT_MARKER = '.figma-cli/project.json';
 // sandbox's .git/info/exclude: Make's registry config (secret-bearing, never
 // read) and Figma's design context. Tracked paths never override these.
 export const PROJECT_EXCLUDES = Object.freeze(['/.npmrc', '/.figma/design-context/']);
+// Repo-only paths: project vault notes live in the GitHub repo and never in
+// Make (which cannot create a new top-level folder anyway). make deploy and
+// make status leave them out of the comparison, like PROJECT_EXCLUDES.
+// Paths are repo-relative tree paths, so a top-level folder prefix is exact.
+export const REPO_ONLY = Object.freeze(['_vaults']);
+export const isRepoOnly = path => REPO_ONLY.some(top => path === top || String(path).startsWith(`${top}/`));
 export const MAKE_BOT = 'figma[bot]';
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SHA = /^[a-f0-9]{40}$/;
@@ -320,6 +326,9 @@ export function buildStatus({ fileKey, make, marker, repo, linked, github, githu
     const joined = new Set(lfs);
     const markerOutsideMain = !github.main.flat.has(PROJECT_MARKER) && !!make.makeFlat?.has(PROJECT_MARKER);
     if (markerOutsideMain) joined.add(PROJECT_MARKER);
+    for (const flat of [github.main.flat, github.base?.flat, make.makeFlat].filter(Boolean)) {
+      for (const path of flat.keys()) if (isRepoOnly(path)) joined.add(path);
+    }
     const compared = flat => flat && treeOf(flat, joined);
     const makeCompared = compared(make.makeFlat);
     const mainCompared = compared(github.main.flat);

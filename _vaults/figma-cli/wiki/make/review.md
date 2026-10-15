@@ -4,6 +4,8 @@ description: How figma-cli team reviews/review/comment/approve/request-changes/f
 date: 2026-10-14
 ---
 
+Updated 2026-10-15: review copies ignored by their own `.gitignore`, empty files counted, author comments reported, and the auto listener.
+
 # Cross-review between designers
 
 The review half of the team layer ([team.md](team.md)) lives in `src/make-team-review.js`; the CLI wiring is at the end of `src/commands/team.js`. Phrases map to verbs in `skills/figma-make-team/SKILL.md` ("Reviewing each other's work"). Nothing here reads or writes Figma.
@@ -17,7 +19,19 @@ The review half of the team layer ([team.md](team.md)) lives in `src/make-team-r
 
 ## Review copy
 
-`review` fetches `+refs/heads/<head>:refs/remotes/origin/<head>` and requires it to equal `headRefOid` (`fetchHead`), so the copy is exactly what GitHub shows. `excludeReviews` adds `/.figma-cli/reviews/` to the clone's `info/exclude`; without it `team save`'s `git add --all` would stage the nested worktree. A rerun moves the copy to the new head unless it has edits outside `.lavish/` (`TEAM_REVIEW_DIRTY`); `--remove` runs `git worktree remove --force`. Install reuses `install` from `src/make-local.js` (frozen, `--ignore-scripts`, kit refusal) with `ignorePnpmfile`, since pnpm runs a repo's `.pnpmfile.cjs` even with `--ignore-scripts`; a failure only warns. No code from the pull request runs unless the reviewer asks: `make dev`, or `--app`, which runs its Vite config.
+`review` fetches `+refs/heads/<head>:refs/remotes/origin/<head>` and requires it to equal `headRefOid` (`fetchHead`), so the copy is exactly what GitHub shows. `ignoreReviews` (`src/make-team-review.js:385`) writes `.figma-cli/reviews/.gitignore` containing `*`, which also ignores itself; without it `team save`'s `git add --all` would stage the nested worktree. The clone's `.git/info/exclude` is shared by every worktree and is never written (older clones may still hold the line an earlier version added; it is harmless and left alone). A rerun moves the copy to the new head unless it has edits outside `.lavish/` (`TEAM_REVIEW_DIRTY`); `--remove` runs `git worktree remove --force`. Install reuses `install` from `src/make-local.js` (frozen, `--ignore-scripts`, kit refusal) with `ignorePnpmfile`, since pnpm runs a repo's `.pnpmfile.cjs` even with `--ignore-scripts`; a failure only warns. No code from the pull request runs unless the reviewer asks: `make dev`, or `--app`, which runs its Vite config.
+
+## Change summary
+
+An empty new or deleted file, or a mode-only change, has no `---`/`+++` lines, so `parseDiff` takes its path from the `diff --git` header (`headerPath`, `src/make-team-review.js:101`). Without a rename both halves are the same path, which makes the split exact even with spaces; a quoted header is unquoted. The Hinge review reported 277 of 278 files before this.
+
+## Author comments
+
+`feedbackOf` counts the author's own review bodies and comments (`src/make-team-review.js:534`); `feedback` and `address` return `authorCommentsHidden` and say they are not listed, instead of "No comments from reviewers yet". One account testing alone only ever has its own comments.
+
+## Auto listener
+
+Lavish delivers notes only to a running `lavish-axi poll <page>`, and its help forbids detached `nohup`/`&` pollers: only a harness-tracked background job may poll in the background (`lavish-axi --help`, checked 2026-10-15). So figma-cli does not poll. `openPages` (`src/lavish-listen.js:30`) opens each page and returns `listen` (`auto`, the poll commands, the rule); `team` prints it on stderr too. The figma-make-team skill makes the agent start the polls as tracked background jobs at once and restart them until the designer ends the session. The review page shows `NOT_LISTENING_HELP` (`src/lavish-listen.js:18`): the phrase to type if Lavish shows that nobody is listening. Any later page (for example `make start`) should go through `openPages`.
 
 ## Lavish mapping
 

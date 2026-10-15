@@ -4,6 +4,8 @@ description: The repo-admin deploy of main into a team-mode Make file; guards, p
 date: 2026-10-15
 ---
 
+Updated 2026-10-15: `_vaults/` is repo-only and never deployed.
+
 # make deploy
 
 `make deploy` (`src/make-deploy.js`, wired at `src/commands/make.js`) is the one Make write team mode allows. A repo admin runs it in a local clone of `main`. It skips the team-mode write gate and runs its own guards instead (`prepare`, `src/make-deploy.js:376`). Command details are in REFERENCE.md, "Deploying main to Make".
@@ -20,7 +22,7 @@ date: 2026-10-15
 ## Plan
 
 - `buildPlan` (`src/make-deploy.js:273`) compares `main`'s tree with Make's saved tree **by blob, ignoring mode**. Listing exposes no file mode, and Make keeps or sets modes its own way. Mode-only differences are listed as `modeOnly`.
-- `.npmrc` and `.figma/design-context/` are never deployed. The marker is excluded when `main` has none, so Make keeps its own. `make status` uses the same exclusion (`markerOutsideMain`, `src/make-project.js`).
+- `.npmrc`, `.figma/design-context/` and the repo-only `_vaults/` are never deployed (`alwaysExcluded`, `src/make-deploy.js:43`; `isRepoOnly`, `src/make-project.js:20`). Before, a vault in `main` was refused with `DEPLOY_UNSUPPORTED_PATH` as a new top-level folder (the Hinge deploy). `make status` adds `_vaults/` paths to its out-of-relation set the same way (`src/make-project.js:330`). The marker is excluded when `main` has none, so Make keeps its own. `make status` uses the same exclusion (`markerOutsideMain`, `src/make-project.js`).
 - Refused: binary content or files over 2 MiB; LFS paths that differ; new or deleted root files; new top-level folders (the bridge cannot prove absence there; see [persistence.md](persistence.md)); submodules and symbolic links.
 - Write order: lockfiles first, then other files, then the root `package.json` last. Make reinstalls when `package.json` changes. In the live run, writing `package.json` first made Make's own install rewrite `pnpm-lock.yaml` mid-write, and the write's pre-check timed out.
 - The digest covers everything except the plan path. Apply re-plans, and the digest, the commit and the free tag number must all still match.

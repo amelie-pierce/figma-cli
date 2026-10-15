@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative } from 'node:path';
+import { NOT_LISTENING_HELP, openPages } from './lavish-listen.js';
 import { install } from './make-local.js';
 import { count, currentBranch, fail, fetchMain, findPr, isReviewCopy, listChanges, ORIGIN_TRUNK, PR_FIELDS, readReviews, remoteBranchSha,
   requireNoOperation, requireOwnBranch, REVIEWS_DIR, revOf, reviewState, teamContext, TRUNK } from './make-team.js';
@@ -94,6 +95,21 @@ function fetchHead(ctx, pull) {
 
 const unquote = path => path.startsWith('"') ? JSON.parse(path) : path;
 
+// The path from a `diff --git a/<p> b/<p>` header. An empty new or deleted
+// file, or a mode-only change, has no ---/+++ lines, so this is its only name.
+// Without a rename both sides are the same path, which makes the split exact.
+export function headerPath(line) {
+  const rest = line.slice('diff --git '.length);
+  const quoted = /^"((?:\\.|[^"\\])*)" "((?:\\.|[^"\\])*)"$/.exec(rest);
+  if (quoted) return unquote(`"${quoted[2]}"`).replace(/^b\//, '');
+  if (rest.length % 2 === 1) {
+    const half = (rest.length - 1) / 2;
+    const [a, b] = [rest.slice(0, half), rest.slice(half + 1)];
+    if (a.startsWith('a/') && b.startsWith('b/') && a.slice(2) === b.slice(2)) return b.slice(2);
+  }
+  return null;
+}
+
 // git diff → [{ path, from?, change, binary, added, removed, hunks: [{ header, lines: [{ kind, old, new, text }] }] }]
 export function parseDiff(text) {
   const files = [];
@@ -103,7 +119,7 @@ export function parseDiff(text) {
   let newLine = 0;
   for (const line of String(text).split('\n')) {
     if (line.startsWith('diff --git ')) {
-      file = { path: null, change: 'changed', binary: false, added: 0, removed: 0, hunks: [] };
+      file = { path: null, headerPath: headerPath(line), change: 'changed', binary: false, added: 0, removed: 0, hunks: [] };
       files.push(file);
       hunk = null;
       continue;
@@ -135,7 +151,7 @@ export function parseDiff(text) {
     else if (line.startsWith('-')) { hunk.lines.push({ kind: '-', old: oldLine++, text: line.slice(1) }); file.removed++; }
     else if (line.startsWith(' ')) hunk.lines.push({ kind: ' ', old: oldLine++, new: newLine++, text: line.slice(1) });
   }
-  return files.filter(f => f.path);
+  return files.map(({ headerPath: fallback, ...f }) => ({ ...f, path: f.path ?? fallback })).filter(f => f.path);
 }
 
 function readDiff(ctx, base, head) {
@@ -202,7 +218,8 @@ h2 { margin: 0; padding: 8px 12px; font-size: 14px; border-bottom: 1px solid var
 <body><header><h1>${escapeHtml(pull.title)}</h1>
 <p>${escapeHtml(summary)}</p>
 <p>${escapeHtml(pull.url)} · saves: ${commits.map(c => escapeHtml(c.subject)).join(' · ')}</p>
-<p>Click a line and leave a note: it becomes a comment on that line of the pull request.</p></header>
+<p>Click a line and leave a note: it becomes a comment on that line of the pull request.</p>
+<p class="listen">${escapeHtml(NOT_LISTENING_HELP)}</p></header>
 ${body}
 </body></html>
 `;
@@ -258,13 +275,6 @@ function appPage(ctx, dir, { build = false } = {}) {
   return { page: index, how: 'a Vite build of the app' };
 }
 
-function openLavish(ctx, page) {
-  const result = ctx.run('lavish-axi', [page], { cwd: dirname(page) });
-  if (result.status === 127) { ctx.warn(`lavish-axi is not installed; open ${page} in a browser instead.`); return false; }
-  if (result.status !== 0) { ctx.warn(`lavish-axi could not open ${page}: ${(result.stderr || result.stdout).trim().split('\n').pop()}`); return false; }
-  return true;
-}
-
 // --- reviewer verbs ----------------------------------------------------------
 
 // What needs my review: open pull requests into main by someone else, not
@@ -316,7 +326,7 @@ export function review(ctx, ref, { install: doInstall = true, lavish = false, ap
   const own = same(pull.author?.login, ctx.login());
   const base = fetchMain(ctx);
   const head = fetchHead(ctx, pull);
-  excludeReviews(ctx, root);
+  ignoreReviews(root);
   let refreshed = false;
   if (existsSync(dir)) {
     const copy = teamContext({ dir, run: ctx.run, warn: ctx.warn });
@@ -342,7 +352,7 @@ export function review(ctx, ref, { install: doInstall = true, lavish = false, ap
   const warnings = [];
   let installed = null;
   if (doInstall && existsSync(join(dir, 'package.json'))) {
-    try { installFn(dir, { run: ctx.run, ignorePnpmfile: true, warn: message => { warnings.push(message); ctx.warn(message); } }); installed = true; }
+    try { installFn(dir, { run: ctx.run, ignorePnpmfile: true, notices: ctx.notices || null, warn: message => { warnings.push(message); ctx.warn(message); } }); installed = true; }
     catch (error) { installed = false; warnings.push(`Not installed, so the app cannot run yet: ${error.message}`); ctx.warn(warnings[warnings.length - 1]); }
   }
   if (own) warnings.push('This is your own pull request: you can look at it here, but someone else has to approve it.');
@@ -358,24 +368,25 @@ export function review(ctx, ref, { install: doInstall = true, lavish = false, ap
     writeFileSync(join(pageDir, 'source-map.json'), `${JSON.stringify({ url: pull.url, head, lines: map }, null, 2)}\n`);
     const built = appPage(ctx, dir, { build: app });
     const pages = [{ page, shows: 'the change, line by line' }, ...(built ? [{ page: built.page, shows: `the app (${built.how})` }] : [])];
-    const opened = pages.filter(p => openLavish(ctx, p.page));
-    result.lavish = { pages, opened: opened.length, poll: pages.map(p => `lavish-axi poll ${JSON.stringify(p.page)}`) };
+    result.lavish = openPages(pages, { run: ctx.run, warn: ctx.warn });
+    if (result.lavish.listen) result.listen = result.lavish.listen;
   }
   if (warnings.length) result.warnings = warnings;
   result.summary = `${summary} Review copy: ${relative(root, dir)}${refreshed ? ' (updated to the latest version)' : ''}.` +
     (installed === false ? ' It is not installed, so the app cannot run yet.' : '') +
-    (result.lavish ? ` Opened ${plural(result.lavish.opened, 'page')} in Lavish.` : '');
+    (result.lavish ? ` Opened ${plural(result.lavish.opened, 'page')} in Lavish${result.listen ? '; notes left there reach the agent automatically' : ''}.` : '');
   return result;
 }
 
-// The review copies stay out of the clone's own saves.
-function excludeReviews(ctx, root) {
-  const path = resolve(root, ctx.git(['-C', root, 'rev-parse', '--git-path', 'info/exclude']));
-  const line = `/${REVIEWS_DIR}/`;
-  const text = existsSync(path) ? readFileSync(path, 'utf8') : '';
-  if (text.split('\n').includes(line)) return;
+// The review copies stay out of the clone's own saves through a .gitignore
+// of `*` inside the reviews folder, which also ignores itself. The clone's
+// .git/info/exclude is shared by every worktree and is never written.
+export const REVIEWS_IGNORE = '# figma-cli review copies: never saved or sent to GitHub.\n*\n';
+export function ignoreReviews(root) {
+  const path = join(root, REVIEWS_DIR, '.gitignore');
+  if (existsSync(path) && readFileSync(path, 'utf8') === REVIEWS_IGNORE) return;
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${text}${text && !text.endsWith('\n') ? '\n' : ''}${line}\n`);
+  writeFileSync(path, REVIEWS_IGNORE);
 }
 
 // The commit the reviewer actually looked at: their review copy's, when they
@@ -518,19 +529,28 @@ function feedbackOf(ctx, pull) {
     ...lineComments.filter(c => !same(c.who, author)).map(c => ({ who: at(c.who), kind: 'line', where: `${c.path}:${c.line}`, ...(c.outdated ? { outdated: true } : {}), says: short(c.body), url: c.url })),
     ...general.filter(c => !same(c.who, author)).map(c => ({ who: at(c.who), kind: 'comment', says: short(c.body), url: c.url })),
   ];
-  return { items, state };
+  // The author's own notes are not feedback, but saying "no comments" when
+  // there are some (one account testing alone, or notes to self) misleads.
+  const own = reviewList.filter(r => short(r.body) && same(r.who, author)).length +
+    lineComments.filter(c => same(c.who, author)).length + general.filter(c => same(c.who, author)).length;
+  return { items, state, own };
 }
+
+const ownNote = (own, author) => own
+  ? `${plural(own, 'comment')} by ${at(author)} (the pull request's author) ${own === 1 ? 'is' : 'are'} not listed, because this shows only what other people said.`
+  : null;
 
 // Feedback: what reviewers said on the caller's pull request.
 export function feedback(ctx, ref) {
   const pull = ownPr(ctx, ref);
-  const { items, state } = feedbackOf(ctx, pull);
+  const { items, state, own } = feedbackOf(ctx, pull);
   const asked = state.changesRequestedBy.map(r => at(r.who));
   const approved = state.approvedBy.map(r => at(r.who));
   return { verb: 'feedback', url: pull.url, approvedBy: approved, changesRequestedBy: asked, ...(state.staleApprovals.length ? { approvedEarlierVersionBy: state.staleApprovals.map(r => at(r.who)) } : {}),
-    feedback: items,
+    feedback: items, ...(own ? { authorCommentsHidden: own } : {}),
     summary: [`${pull.url}:`, approved.length ? `approved by ${approved.join(', ')}.` : 'not approved yet.', asked.length ? `${asked.join(', ')} asked for changes.` : null,
-      items.length ? `${plural(items.length, 'comment')} from reviewers.` : 'No comments from reviewers yet.'].filter(Boolean).join(' ') };
+      items.length ? `${plural(items.length, 'comment')} from reviewers.` : own ? 'No comments from other people yet.' : 'No comments from reviewers yet.',
+      ownNote(own, pull.author?.login)].filter(Boolean).join(' ') };
 }
 
 // Address: back on the caller's own branch (fast-forwarded to GitHub's copy
@@ -562,10 +582,11 @@ export function address(ctx, ref) {
     if (behind && !ahead && !listChanges(ctx).length) { ctx.git(['merge', '--ff-only', '--quiet', remote], 'Bringing in your newer saves'); notes.push('Brought in your newer saves from GitHub.'); }
     else if (behind) notes.push('GitHub has saves this computer lacks; say "get the latest" before saving.');
   }
-  const { items, state } = feedbackOf(ctx, pull);
+  const { items, state, own } = feedbackOf(ctx, pull);
   const todo = items.filter(item => item.kind !== 'approved');
-  return { verb: 'address', url: pull.url, branch, todo, changesRequestedBy: state.changesRequestedBy.map(r => at(r.who)),
+  return { verb: 'address', url: pull.url, branch, todo, changesRequestedBy: state.changesRequestedBy.map(r => at(r.who)), ...(own ? { authorCommentsHidden: own } : {}),
     next: ['Make each change in the to-do list', 'figma-cli team save -m "Address review comments"', 'figma-cli team sync', 'Ask the reviewers to look again'],
     summary: `${(notes.length ? notes : [`On ${branch}.`]).join(' ')} ${todo.length ? `${plural(todo.length, 'comment')} to work through from ${[...new Set(todo.map(t => t.who))].join(', ')}.`
-      : 'No reviewer comments to work through.'} When done, save and get the latest, then ask for another look.` };
+      : own ? 'No comments from other people to work through.' : 'No reviewer comments to work through.'}${own ? ` ${ownNote(own, pull.author?.login)}` : ''} ` +
+      'When done, save and get the latest, then ask for another look.' };
 }

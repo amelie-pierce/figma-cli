@@ -2,6 +2,8 @@ import { resolve } from 'node:path';
 import { program } from '../lib/cli-core.js';
 import { conflicts, merge, pr, save, start, status, sync, TEAM_CODES, teamContext } from '../make-team.js';
 import { address, approve, comment, feedback, requestChanges, review, reviews } from '../make-team-review.js';
+import { listenNotice } from '../lavish-listen.js';
+import { noticeStore } from '../make-local.js';
 
 // The plain-language git layer for a team-mode project's local clone. Each
 // verb is deterministic: an agent picks the verb from the person's words and
@@ -11,11 +13,17 @@ const team = program.command('team')
   .description('Plain-language git for a team-mode Make project clone: start, save, sync, conflicts, pr, merge, status, and cross-review')
   .addHelpText('after', '\nRun inside the project clone (or pass --dir). Work happens only on your own <gh-login>/<task> branch.' +
     '\nNever pushes to or force-pushes main; merges only your own pull request into main, after an approval' +
-    '\nfrom someone other than its author. Reviewers look at a pull request in a detached review copy, never on the' +
+    '\nfrom someone other than its author (or, for repo admins, merge --force with a recorded --reason). Reviewers look at a pull request in a detached review copy, never on the' +
     '\nauthor\'s branch, and approve or ask for changes as themselves; nobody approves their own.' +
     '\nResults are JSON with a plain-language "summary".');
 
-const report = value => console.log(JSON.stringify(value, null, 2));
+// A result that opened a page for the designer also tells the agent, on
+// stderr, to start listening to it (lavish-listen.js).
+const report = value => {
+  console.log(JSON.stringify(value, null, 2));
+  const notice = listenNotice(value?.listen);
+  if (notice) console.error(notice);
+};
 const warn = message => console.error(`warning: ${message}`);
 function failure(error) {
   console.error(JSON.stringify({ error: error.message,
@@ -31,7 +39,7 @@ function failure(error) {
 const verb = (command, fn) => command.option('--dir <path>', 'The project clone (default: current folder)')
   .action((...args) => {
     const options = args[args.length - 2];
-    try { report(fn(teamContext({ dir: resolve(options.dir || '.'), warn }), ...args.slice(0, -2), options)); }
+    try { report(fn(Object.assign(teamContext({ dir: resolve(options.dir || '.'), warn }), { notices: noticeStore() }), ...args.slice(0, -2), options)); }
     catch (error) { failure(error); }
   });
 
@@ -56,8 +64,10 @@ verb(team.command('pr').description('Ready for review: sync, save, then open (or
 (ctx, options) => pr(ctx, { title: options.title, message: options.message }));
 
 verb(team.command('merge').description('Merge it: squash-merge your own approved pull request into main after a green build, delete the branch, return to main')
-  .option('--no-build-check', 'Merge even when the pull request has no GitHub checks and the project has no build script'),
-(ctx, options) => merge(ctx, { buildCheck: options.buildCheck !== false }));
+  .option('--no-build-check', 'Merge even when the pull request has no GitHub checks and the project has no build script')
+  .option('--force', 'Merge it anyway, without an approval from someone else (repo admins only; needs --reason; still needs an up-to-date branch and a passing build)')
+  .option('--reason <text>', 'Why it is merged without an approval; recorded in the merge commit and a local receipt'),
+(ctx, options) => merge(ctx, { buildCheck: options.buildCheck !== false, force: options.force === true, reason: options.reason }));
 
 verb(team.command('status').description('What\'s going on: branch, unsaved files, pull request and review state, and how far behind main')
   .option('--no-fetch', 'Do not fetch main from GitHub first'),
