@@ -53,7 +53,12 @@ test('release archive and HTTPS client verify the complete chain through a local
 
 test('large archive and source use configurable bounded base64 parts', async () => {
   const { source } = fixture();
-  const large = Buffer.from(Array.from({ length: 700000 }, (_, i) => String.fromCharCode(33 + i % 90)).join(''));
+  let seed = 0x7a00b00b;
+  const large = Buffer.alloc(700000);
+  for (let index = 0; index < large.length; index++) {
+    seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+    large[index] = 33 + (seed >>> 0) % 90;
+  }
   source.set('src/large.ts', large);
   const vendor = Buffer.from(JSON.stringify({ schema: 1, name: 'atomic-aui', files: [...source].map(([path, bytes]) =>
     ({ path, bytes: bytes.length, sha256: hash(bytes) })) }));
@@ -61,6 +66,7 @@ test('large archive and source use configurable bounded base64 parts', async () 
   const inventory = new Map([...contents].map(([path, bytes]) => [path, { path, bytes: bytes.length, sha256: hash(bytes) }]));
   const release = buildRelease({ contents, inventory, version: '7.0.0' });
   assert.equal(release.manifest.partBase64Bytes, DEFAULT_PART_BASE64_BYTES);
+  assert.ok(release.manifest.archive.parts.length > 1);
   assert.ok(release.manifest.files.find(item => item.path === 'src/large.ts').parts.length > 1);
   for (const [path, bytes] of release.output) if (!path.endsWith('manifest.json')) {
     assert.ok(bytes.length <= DEFAULT_PART_BASE64_BYTES, path);
