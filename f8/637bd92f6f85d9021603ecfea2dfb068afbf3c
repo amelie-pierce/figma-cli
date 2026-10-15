@@ -1,0 +1,21 @@
+tests/make-team-review.test.js
+  s_61b30d38004d3a::t_2e65d2b83425a8 37
+REFERENCE.md
+  s_61b30d38004d3a::t_f62e730e113ca5 431-433
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f8637bd92f6f85d9021603ecfea2dfb068afbf3c",
+  "prompts": {},
+  "sessions": {
+    "s_61b30d38004d3a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "696be668-9655-487c-860d-de84578fc54b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
