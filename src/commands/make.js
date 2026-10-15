@@ -13,6 +13,7 @@ import { DEPLOY_CODES, deployAbort, deployApply, deployPlan, deployResume, deplo
 import { cloneProject, install, LOCAL_CODES, noticeStore, pullProject, repoRoot, resolveCloneRepo, runDev } from '../make-local.js';
 import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, planSync, validatePlanDigest, VENDOR_ROOT,
   writeApplyOutputs } from '../make-sync.js';
+import { registerAtomicaui } from './make-atomicaui.js';
 
 const make = program.command('make')
   .description('Experimental direct source-file editing in Figma Make Desktop')
@@ -40,6 +41,7 @@ function failure(error) {
     ...(error.sessionWrites ? { sessionWrites: error.sessionWrites, requestedPaths: error.requestedPaths, observedWrites: error.observedWrites } : {}) }));
   process.exitCode = 1;
 }
+registerAtomicaui(make, report, failure);
 function sourceBytes(path) {
   if (path === '-' || path === '/dev/stdin') {
     process.stdin._handle?.setBlocking(true);
