@@ -426,9 +426,12 @@ next tag number and a digest; it is written to `~/.figma-cli/deploys/plans/`.
 plan, `origin/main` must still be the planned commit (`DEPLOY_MAIN_MOVED`) and
 the tag number must be free (`DEPLOY_TAG_CLASH`). It then writes each path with
 the durable client-VFS write (backups under `~/.figma-cli/deploys/backups/`).
-The root dependency files go last (lockfiles, then `package.json`), because
-Make runs its own install when they change, and that install can rewrite the
-lockfile and the pending list while the deploy writes. After each dependency
+The root dependency files go last (`package.json`, then the lockfiles), because
+Make runs its own install when they change, and that install rewrites the
+lockfile while the deploy writes. A version keeps a lockfile only when Make's
+client wrote it, so each lockfile is written through the client even when
+Make's install already holds main's content, and its start content is backed
+up first for `--abort`. After each dependency
 write, and whenever Make's state moves under a write, the deploy waits until
 Make is idle, checks that every unsaved path is planned and holds its before or
 planned content (only a planned dependency file may hold what Make's install
