@@ -1,0 +1,24 @@
+tests/bare-cli.test.js
+  s_f10e5348f6674c::t_0839c218803d14 5,8,11-28,30-31,40-42,44-46,54,57,60
+src/make-team.js
+  s_f10e5348f6674c::t_a9e908e3baff0d 1020-1029
+tests/make-team.test.js
+  s_f10e5348f6674c::t_a9e908e3baff0d 71,144-146,823-831
+  s_f10e5348f6674c::t_54efe18d00edf4 832
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "35df8408d8076b459109455e98952ae5d77d9efe",
+  "prompts": {},
+  "sessions": {
+    "s_f10e5348f6674c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "28957238-d646-4743-aeef-f849b2be051d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
