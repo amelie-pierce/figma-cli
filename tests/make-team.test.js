@@ -68,7 +68,7 @@ function project(t, { areas, files = {} } = {}) {
 
 // gh and pnpm fakes. Pull requests live in memory; "merging" squashes the
 // branch onto origin main through a scratch working copy, the way GitHub would.
-function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0, failLeasePushes = 0, admin = false } = {}) {
+function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0, failLeasePushes = 0, admin = false, protectedMain = false } = {}) {
   const calls = [];
   const prs = [];
   const run = (command, args, options = {}) => {
@@ -141,6 +141,9 @@ function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0, 
     if (args[0] === 'pr' && args[1] === 'merge') {
       const target = prs.find(x => String(x.number) === args[2]);
       assert.ok(args.includes('--squash'));
+      if (protectedMain && !target.reviews.some(r => r.state === 'APPROVED')) {
+        return { status: 1, stdout: '', stderr: `X Pull request ${REPO}#${target.number} is not mergeable: the base branch policy prohibits the merge.\n` };
+      }
       const head = p.originSha(`refs/heads/${target.headRefName}`);
       assert.equal(flag('--match-head-commit'), head);
       const server = join(p.root, `server-${target.number}`);
@@ -816,6 +819,16 @@ describe('team merge --force', () => {
     assert.deepEqual({ ...saved }, { schema: 'figma-cli/team-force-merge@1', at: '2026-10-15T10:00:00.000Z', repo: REPO, number: 1,
       url: `https://github.com/${REPO}/pull/1`, by: '@alice', reason, head, mergeCommit: p.originSha('main'), checks: 'none', localBuild: 'passed', staleApprovals: [] });
     assert.equal(sh(p.clone, 'branch', '--show-current'), 'main');
+  });
+  it('stops with a plain message, and no receipt, when GitHub protection requires an approval', t => {
+    const { p, f, home } = opened(t, { admin: true, protectedMain: true });
+    const mainBefore = p.originSha('main');
+    assert.throws(() => merge(f.ctx(), { force: true, reason, home }), error => error.code === 'TEAM_FORCE_PROTECTED' &&
+      /protection requires an approving review, and a force merge does not override it\. Ask a reviewer to approve it/.test(error.message));
+    assert.ok(f.calls.some(c => c.command === 'gh' && c.args[1] === 'merge'));
+    assert.equal(p.originSha('main'), mainBefore);
+    assert.ok(!existsSync(forceReceiptDir(home)));
+    assert.equal(sh(p.clone, 'branch', '--show-current'), 'alice/hotfix');
   });
   it('merges normally, without a receipt, when the PR is already approved', t => {
     const { p, f, home } = opened(t, { admin: true });

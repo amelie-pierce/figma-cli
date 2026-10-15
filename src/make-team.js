@@ -1017,8 +1017,16 @@ export function merge(ctx, { buildCheck = true, force = false, reason, home, now
     } else localBuild = 'skipped';
   }
   const forcedBody = forced ? `Force-merged by @${login} without an approval from someone other than the author.\n\nReason: ${why}` : null;
-  ctx.gh(['pr', 'merge', String(pull.number), '--repo', ctx.repo(), '--squash', '--match-head-commit', head, ...(forced ? ['--body', forcedBody] : [])],
-    'Merging the pull request');
+  try {
+    ctx.gh(['pr', 'merge', String(pull.number), '--repo', ctx.repo(), '--squash', '--match-head-commit', head, ...(forced ? ['--body', forcedBody] : [])],
+      'Merging the pull request');
+  } catch (error) {
+    if (forced && /base branch policy|protected branch|rule violation|approving review/i.test(error.message)) {
+      fail(`GitHub refused to merge ${pull.url}: the repo's GitHub protection requires an approving review, and a force merge does not override it. ` +
+        'Ask a reviewer to approve it, then ask to merge again. Nothing was merged.', 'TEAM_FORCE_PROTECTED', { url: pull.url });
+    }
+    throw error;
+  }
   const after = ctx.ghJson(['pr', 'view', String(pull.number), '--repo', ctx.repo(), '--json', 'state,mergeCommit'], 'Confirming the merge');
   if (after?.state !== 'MERGED') fail(`GitHub did not report ${pull.url} as merged (state ${after?.state || 'unknown'}). Nothing else was changed.`, 'TEAM_MERGE_FAILED');
   let receipt = null;
