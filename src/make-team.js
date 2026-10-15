@@ -13,7 +13,7 @@ import { PROJECT_MARKER, repoName } from './make-project.js';
 
 export const TRUNK = 'main';
 const TRUNK_REF = `refs/heads/${TRUNK}`;
-const ORIGIN_TRUNK = `refs/remotes/origin/${TRUNK}`;
+export const ORIGIN_TRUNK = `refs/remotes/origin/${TRUNK}`;
 const LOCKFILE = 'pnpm-lock.yaml';
 export const LARGE_FILE_BYTES = 50 * 1024 * 1024;
 const SCAN_BYTES = 2 * 1024 * 1024;
@@ -21,9 +21,10 @@ export const TEAM_CODES = Object.freeze(['TEAM_NOT_A_CLONE', 'TEAM_NO_REPO', 'TE
   'TEAM_BRANCH_EXISTS', 'TEAM_MAIN_AHEAD', 'TEAM_SWITCH_FAILED', 'TEAM_ON_MAIN', 'TEAM_NOT_YOUR_BRANCH', 'TEAM_DETACHED',
   'TEAM_OPERATION_IN_PROGRESS', 'TEAM_SECRET', 'TEAM_LARGE_FILE', 'TEAM_FORMAT_FAILED', 'TEAM_BUILD_FAILED', 'TEAM_PUSH_REJECTED',
   'TEAM_PUSH_BLOCKED', 'TEAM_PUSH_REFUSED', 'TEAM_CONFLICT', 'TEAM_NOTHING_TO_REVIEW', 'TEAM_NO_PR', 'TEAM_PR_NOT_READY', 'TEAM_NOT_APPROVED',
-  'TEAM_CHANGES_REQUESTED', 'TEAM_CHECKS_PENDING', 'TEAM_CHECKS_FAILED', 'TEAM_BEHIND_MAIN', 'TEAM_OUT_OF_DATE', 'TEAM_NO_BUILD_CHECK', 'TEAM_MERGE_FAILED']);
+  'TEAM_CHANGES_REQUESTED', 'TEAM_CHECKS_PENDING', 'TEAM_CHECKS_FAILED', 'TEAM_BEHIND_MAIN', 'TEAM_OUT_OF_DATE', 'TEAM_NO_BUILD_CHECK', 'TEAM_MERGE_FAILED',
+  'TEAM_PR_NOT_FOUND', 'TEAM_AMBIGUOUS', 'TEAM_PR_CLOSED', 'TEAM_SELF_REVIEW', 'TEAM_REVIEW_COPY', 'TEAM_REVIEW_DIRTY', 'TEAM_REVIEW_OUTDATED', 'TEAM_BAD_COMMENT']);
 
-function fail(message, code, extra = {}) {
+export function fail(message, code, extra = {}) {
   const error = new Error(message);
   if (code) error.code = code;
   Object.assign(error, extra);
@@ -173,6 +174,7 @@ export function currentBranch(ctx) {
 
 // The branch the verb may change: the caller's own task branch, never main.
 export function requireOwnBranch(ctx, branch = currentBranch(ctx)) {
+  requireNotReviewCopy(ctx);
   if (branch == null) fail('You are not on a task branch (detached HEAD). Say "start a task" to make one.', 'TEAM_DETACHED');
   if (branch === TRUNK) fail(`You are on ${TRUNK}, which only changes through reviewed pull requests. Say "start a task: <name>" first.`, 'TEAM_ON_MAIN');
   const login = ctx.login();
@@ -185,6 +187,7 @@ export function requireOwnBranch(ctx, branch = currentBranch(ctx)) {
 // Every push goes through here: an explicit refspec to the caller's own
 // branch, never main, and a force only as --force-with-lease on an exact sha.
 export function pushBranch(ctx, branch, { lease, setUpstream = false, deleteRemote = false } = {}) {
+  requireNotReviewCopy(ctx);
   if (typeof branch !== 'string' || !branch || branch === TRUNK || branch.startsWith('refs/') || branch.includes(':') || branch.startsWith('-')) {
     fail(`Refusing to push ${JSON.stringify(branch)}: figma-cli pushes only your own task branch, never ${TRUNK}.`, 'TEAM_PUSH_REFUSED');
   }
@@ -216,23 +219,23 @@ export function pushBranch(ctx, branch, { lease, setUpstream = false, deleteRemo
   return true;
 }
 
-function revOf(ctx, ref) {
+export function revOf(ctx, ref) {
   const result = ctx.tryGit(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
   return result.status === 0 ? result.stdout.trim() : null;
 }
 
-function fetchMain(ctx) {
+export function fetchMain(ctx) {
   ctx.git(['fetch', '--quiet', 'origin', `+${TRUNK_REF}:${ORIGIN_TRUNK}`], `Getting the latest ${TRUNK} from GitHub`);
   return revOf(ctx, ORIGIN_TRUNK);
 }
 
-function remoteBranchSha(ctx, branch) {
+export function remoteBranchSha(ctx, branch) {
   const out = ctx.git(['ls-remote', '--heads', 'origin', `refs/heads/${branch}`], 'Reading your branch on GitHub');
   const line = out.split('\n').find(row => row.endsWith(`\trefs/heads/${branch}`));
   return line ? line.split('\t')[0] : null;
 }
 
-function count(ctx, range) { return Number(ctx.git(['rev-list', '--count', range])); }
+export function count(ctx, range) { return Number(ctx.git(['rev-list', '--count', range])); }
 
 export function operationInProgress(ctx) {
   for (const [name, label] of [['rebase-merge', 'rebase'], ['rebase-apply', 'rebase'], ['MERGE_HEAD', 'merge'], ['CHERRY_PICK_HEAD', 'cherry-pick'], ['REVERT_HEAD', 'revert']]) {
@@ -242,9 +245,22 @@ export function operationInProgress(ctx) {
   return null;
 }
 
+// A review copy (`team review`) is a detached worktree of someone else's pull
+// request under .figma-cli/reviews/; no verb that commits, switches or pushes
+// runs inside it, so a reviewer has no path to the author's branch.
+export const REVIEWS_DIR = '.figma-cli/reviews';
+export const isReviewCopy = root => /[\\/]\.figma-cli[\\/]reviews[\\/]pr-\d+[\\/]?$/.test(String(root));
+export function requireNotReviewCopy(ctx) {
+  if (isReviewCopy(ctx.root)) {
+    fail('This folder is a review copy of a pull request, so nothing here is saved, synced or sent to GitHub. ' +
+      'Comment, approve or ask for changes instead, and work on your own tasks in the project clone.', 'TEAM_REVIEW_COPY');
+  }
+}
+
 // figma-cli always finishes or undoes its own rebases, so an unfinished one
 // was started by something else; it is never continued, skipped or pushed.
-function requireNoOperation(ctx) {
+export function requireNoOperation(ctx) {
+  requireNotReviewCopy(ctx);
   const op = operationInProgress(ctx);
   if (op) fail(`A git ${op} that figma-cli did not start is unfinished in this clone, so nothing was changed. Ask a developer for help with it.`, 'TEAM_OPERATION_IN_PROGRESS');
 }
@@ -671,9 +687,9 @@ export function conflicts(ctx) {
 
 // --- pull requests -----------------------------------------------------------
 
-const PR_FIELDS = 'number,url,state,isDraft,isCrossRepository,author,headRefName,headRefOid,baseRefName,reviewRequests,statusCheckRollup,title';
+export const PR_FIELDS = 'number,url,state,isDraft,isCrossRepository,author,headRefName,headRefOid,baseRefName,reviewRequests,statusCheckRollup,title';
 
-function findPr(ctx, branch, { state = 'open' } = {}) {
+export function findPr(ctx, branch, { state = 'open' } = {}) {
   const list = ctx.ghJson(['pr', 'list', '--repo', ctx.repo(), '--head', branch, '--state', state, '--json', PR_FIELDS, '--limit', '5'],
     'Looking up your pull request');
   // A fork's pull request can share the branch name; only this repo's counts.
@@ -682,7 +698,7 @@ function findPr(ctx, branch, { state = 'open' } = {}) {
 
 // Reviews in submission order, with the commit each one reviewed. gh's
 // latestReviews leaves that commit empty, so the REST endpoint is read.
-function readReviews(ctx, number) {
+export function readReviews(ctx, number) {
   const out = ctx.gh(['api', '--paginate', `repos/${ctx.repo()}/pulls/${number}/reviews`, '--jq', '.[] | {login: .user.login, state: .state, commit: .commit_id}'],
     'Reading the reviews');
   return out.split('\n').filter(Boolean).map(line => { try { return JSON.parse(line); } catch { fail('gh returned unreadable reviews.', 'TEAM_GH_FAILED'); } });

@@ -329,6 +329,13 @@ request approved by someone other than its author. The `figma-make-team` skill
 maps phrases such as "save my progress" or "merge it" to these verbs. See
 [team git workflow](REFERENCE.md#team-git-workflow-team).
 
+Designers also review each other's pull requests without git: `team reviews`
+("what needs my review"), `team review <pr|login>` (a detached review copy,
+installed without scripts, optionally opened in Lavish for line and element
+notes), `team comment`, `team approve` and `team request-changes` (as the
+reviewer's own GitHub login, never on their own pull request), and on the
+author's side `team feedback` and `team address`.
+
 `make export-delta` writes an explicit saved-version Make delta for workspace
 `atomic-cli intake-make-delta --from`. `make sync` accepts a committed
 `package-make-kit` artifact, a trusted VENDOR.json baseline and a recorded

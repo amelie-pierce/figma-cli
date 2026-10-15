@@ -99,6 +99,13 @@ figma-cli team conflicts
 figma-cli team pr [--title "<title>"]
 figma-cli team merge [--no-build-check]
 figma-cli team status [--no-fetch]
+figma-cli team reviews
+figma-cli team review <pr|login> [--lavish] [--app] [--no-install] [--remove]
+figma-cli team comment <pr> -m "<text>" [--file <path> --line <n> [--old]] [--selector "<css>"] [--source <file:line>] [--text "<element text>"]
+figma-cli team approve <pr> [-m "<note>"]
+figma-cli team request-changes <pr> -m "<what should change>"
+figma-cli team feedback [pr]
+figma-cli team address [pr]
 figma-cli make export-delta --file <make-file-key> --manifest VENDOR.json --who engineer --candidate-dir candidates --out delta.json
 figma-cli make sync --file <make-file-key> --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --plan-out plan.json
 figma-cli make sync --file <make-file-key> --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --apply plan.json --receipt-out receipt.json
@@ -456,6 +463,69 @@ convention, not a server-side guarantee.
   rebase, commits behind and ahead of `main`, and the pull request's state,
   approvals, requested changes, pending reviewers and checks, with nudges
   (sync when `main` has been ahead for over a day).
+
+**Cross-review** (`src/make-team-review.js`). A `<pr>` is a number, `#n`, a pull
+request link of this repo, or the author's GitHub login when they have exactly
+one open pull request (`TEAM_AMBIGUOUS` lists them otherwise;
+`TEAM_PR_NOT_FOUND`). Only open (`TEAM_PR_CLOSED`), same-repo pull requests
+into `main` are reviewed (`TEAM_PR_NOT_READY`).
+
+- `team reviews` lists open, non-draft pull requests into `main` by someone
+  else where you are a requested reviewer or your latest review is not of the
+  current head (`needsReview`, requested first), the rest you reviewed, and
+  your own open pull requests with their approvals and pending reviewers
+  (`yours`).
+- `team review <pr>` (your own pull request too, with a warning that someone
+  else has to approve it) fetches its head (it must equal GitHub's `headRefOid`), and checks it out
+  **detached** in a git worktree at `.figma-cli/reviews/pr-<n>` under the main
+  clone, adding `/.figma-cli/reviews/` to the clone's `info/exclude`. It then
+  installs with `make install` plus `--ignore-pnpmfile` (`pnpm install
+  --frozen-lockfile --ignore-scripts --ignore-pnpmfile`, so none of the pull
+  request's code runs; a failure only warns) and reports the files with +/- line
+  counts, the saves and the `make dev` command. A rerun moves the copy to the
+  newer head, refusing when it has edits outside `.lavish/`
+  (`TEAM_REVIEW_DIRTY`); `--remove` deletes it with `git worktree remove
+  --force`. `--lavish` writes `.lavish/review/index.html` in the copy (every
+  diff line an element with an `id` and `data-source="<file>:<line>"`) and
+  `source-map.json` (id → file, line, side), plus the copy's `make start`
+  design build at `.lavish/prototype/index.html` when present; then
+  `lavish-axi <page>` for each (a missing `lavish-axi` only warns). `--app`
+  (implies `--lavish`) also runs `pnpm exec vite build --base ./` into
+  `.lavish/review/app/` and inlines its entry script and stylesheets (Lavish's
+  sandboxed frame blocks module loads). That runs the pull request's own build
+  config on your computer, as `make dev` does, so it is never automatic; a
+  failed build only warns.
+- `team comment <pr> -m` posts a line comment (`gh api POST
+  repos/<repo>/pulls/<n>/comments`, on the reviewed commit) when the target is
+  a line inside the pull request's diff: `--file`/`--line` (`--old` for a
+  removed line), a `--selector` whose last `#id` is in the review page's source
+  map (only a map made for the commit being commented on; an older page's
+  note becomes a general comment), or `--source file:line` read from an app
+  element's `data-source` in Lavish's DOM snapshot. Anything else, including
+  a line GitHub rejects, is a general comment (`issues/<n>/comments`) that
+  quotes the target and any `--text` (`TEAM_BAD_COMMENT` for an empty message
+  or half a target).
+- `team approve <pr>` and `team request-changes <pr> -m` refuse your own pull
+  request (`TEAM_SELF_REVIEW`) before calling GitHub, refuse approving a draft,
+  and post a review (`gh api POST repos/<repo>/pulls/<n>/reviews`) as your own
+  gh login with `commit_id` set to your review copy's commit, or GitHub's head
+  with a warning when there is no copy. A copy older than GitHub's head is
+  refused (`TEAM_REVIEW_OUTDATED`), so you approve only what you looked at.
+  `team merge` still counts only approvals of the current head from someone
+  other than the author.
+- Every verb that commits, switches or pushes (`start`, `save`, `sync`,
+  `conflicts`, `pr`, `merge`, `address`) refuses to run inside a review copy
+  (`TEAM_REVIEW_COPY`), and the copy is detached, so a reviewer never pushes to
+  the author's branch.
+- `team feedback [pr]` (default: your current branch's pull request) shows
+  current-head approvals, requested changes, and every review body, line
+  comment (`path:line`, `outdated`) and general comment from someone other than
+  the author.
+- `team address [pr]` requires your own branch (`TEAM_NOT_YOUR_BRANCH`) and no
+  unsaved files elsewhere (`TEAM_UNSAVED`), switches to it (creating it from
+  GitHub's copy when missing), fast-forwards to GitHub's copy when that is
+  only ahead, and returns the reviewers' comments as `todo`, with the next
+  steps: make the changes, `team save`, `team sync`, ask for another look.
 
 The repo comes from the `origin` GitHub URL, or from `repo` in
 `.figma-cli/project.json` (they must agree). Its optional `areas` map names
