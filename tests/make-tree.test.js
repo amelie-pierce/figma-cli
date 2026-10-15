@@ -43,9 +43,11 @@ function folder(name, children, expanded = false) { return { name, kind: 'folder
 
 /** Minimal DOM fixture: execute the production scripts against real virtualized
  * behavior, rather than replacing their return values with hand-authored rows. */
-function fixture(nodes, { clientHeight = 64, skipPath, onAction, rejectSelection = false } = {}) {
+function fixture(nodes, { clientHeight = 64, skipPath, onAction, rejectSelection = false,
+  missingRootReadsAfterClick = 0 } = {}) {
   let selectedPath = null;
   let position = 0;
+  let missingRootReads = 0;
   const actions = [];
   const clicks = [];
   function flatten(children = nodes, prefix = '', level = 1) {
@@ -77,6 +79,7 @@ function fixture(nodes, { clientHeight = 64, skipPath, onAction, rejectSelection
         })[name] ?? null,
         click: () => {
           clicks.push(path);
+          missingRootReads = missingRootReadsAfterClick;
           if (node.kind === 'folder') node.expanded = !node.expanded;
           else if (!rejectSelection) selectedPath = path;
         },
@@ -94,7 +97,7 @@ function fixture(nodes, { clientHeight = 64, skipPath, onAction, rejectSelection
     }),
   };
   viewport.parentElement = root;
-  const context = { document: { querySelectorAll: () => [root] },
+  const context = { document: { querySelectorAll: () => missingRootReads-- > 0 ? [] : [root] },
     getComputedStyle: (element) => element.style,
     setTimeout: (callback) => { callback(); return 1; } };
   return {
@@ -138,6 +141,12 @@ describe('Make virtualized DOM traversal', () => {
     });
     assert.equal(transport.selectedPath, 'tests/App.tsx');
     assert.equal(transport.clicks.at(-1), 'tests/App.tsx');
+  });
+
+  it('waits for a transient Make tree remount after one selection click', async () => {
+    const transport = fixture([file('App.tsx')], { missingRootReadsAfterClick: 2 });
+    assert.equal((await selectMakeFile(transport, 'App.tsx')).path, 'App.tsx');
+    assert.deepEqual(transport.clicks, ['App.tsx']);
   });
 
   it('fails closed on a virtualization gap', async () => {

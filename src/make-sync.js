@@ -1,6 +1,6 @@
 import { lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
-import { digest, sourcePath, vendorManifest, verifyGeneratedManifest } from './make-drift.js';
+import { digest, isAtomicauiReleasePath, sourcePath, vendorManifest, verifyGeneratedManifest } from './make-drift.js';
 import { requireGitMode } from './make-durable.js';
 
 const HASH = /^[a-f0-9]{64}$/;
@@ -150,7 +150,8 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
   const currentTokens = new Map([...inventory].filter(([path]) => path.startsWith(GENERATED)));
   const scope = new Set(request.files.map(file => relativePath(file.path)));
   const outOfScopeDrift = [...new Set([...baseline.files.keys(), ...inventory.keys()])]
-    .filter(path => path !== 'VENDOR.json' && !scope.has(path) && !same(baseline.files.get(path), inventory.get(path)))
+    .filter(path => !isAtomicauiReleasePath(path) && path !== 'VENDOR.json' && !scope.has(path) &&
+      !same(baseline.files.get(path), inventory.get(path)))
     .sort();
   const tokenScope = [...scope].some(path => path.startsWith(GENERATED) || path === GENERATION_MANIFEST);
   if (tokenScope) {
@@ -169,7 +170,9 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
     for (const [path, expected] of packaged) if (!same(currentTokens.get(path), expected)) {
       throw new Error(`Generated tokens differ from Core package: ${path}`);
     }
-    const manifest = contents.get(GENERATION_MANIFEST);
+    // Older kits carry the generated tree but not its manifest file. The
+    // committed package may supply that exact manifest for read-only proof.
+    const manifest = contents.get(GENERATION_MANIFEST) || generationManifestBytes;
     if (!manifest || digest(manifest) !== packageData.manifest.generationManifest.sha256) {
       throw new Error('Make generated.manifest.json differs from Core package.');
     }
@@ -224,7 +227,8 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
       diff: reviewDiff(contents.get(path) || null, resultBytes) });
   }
   const finalTokens = new Map([...expected].filter(([path]) => path.startsWith(GENERATED)));
-  const manifestBytes = scope.has(GENERATION_MANIFEST) ? generationManifestBytes : contents.get(GENERATION_MANIFEST);
+  const manifestBytes = scope.has(GENERATION_MANIFEST) ? generationManifestBytes :
+    (contents.get(GENERATION_MANIFEST) || generationManifestBytes);
   if (!unresolved.length) verifyGeneratedManifest(manifestBytes, finalTokens);
   const sameBaseline = expected.size === baseline.files.size && [...expected]
     .every(([path, entry]) => same(entry, baseline.files.get(path)));
@@ -235,7 +239,8 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
   const plan = { schema: 'figma-cli/make-sync-plan@1', fileKey, requestId: request.requestId, who: request.who,
     requestedAt: request.requestedAt, direction: request.direction, workspaceCommit: packageData.manifest.source.commit,
     makeVersion: state.savedVersion, requestSha256, packageSha256: packageData.sha256,
-    baselineManifestSha256: digest(baselineBytes), beforeInventory: [...inventory.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+    baselineManifestSha256: digest(baselineBytes), beforeInventory: [...inventory.values()]
+      .filter(file => !isAtomicauiReleasePath(file.path)).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
     candidateDir: resolve(candidateDir), scope: request.files.map(file => ({ ...file })), actions, unresolved, outOfScopeDrift,
     vendorBefore: inventory.get('VENDOR.json'), vendorAfter, generatedTreeDigest: packageData.manifest.tree.digest };
   plan.digest = digest(JSON.stringify(plan));
@@ -265,7 +270,7 @@ export function exportDelta({ inventory, contents, baselineBytes, candidateDir, 
   if (!same(inventory.get('VENDOR.json'), fileInfo(baselineBytes))) throw new Error('Make VENDOR.json differs from trusted baseline.');
   const selected = paths?.length ? new Set(paths.map(relativePath)) : null;
   const dependencies = new Set(dependencyPaths.map(relativePath));
-  const all = new Set([...baseline.files.keys(), ...inventory.keys()]);
+  const all = new Set([...baseline.files.keys(), ...inventory.keys()].filter(path => !isAtomicauiReleasePath(path)));
   all.delete('VENDOR.json');
   const files = [];
   for (const path of [...all].sort()) {
