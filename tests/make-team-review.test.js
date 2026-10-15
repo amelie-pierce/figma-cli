@@ -34,7 +34,8 @@ const code = (fn, expected) => assert.throws(fn, error => { assert.equal(error.c
 
 // A bare origin, alice's clone and bob's clone, and the GitHub both talk to.
 function world(t) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'figma-cli-review-')));
+  // .native expands Windows 8.3 short names (RUNNER~1), as git's toplevel does.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'figma-cli-review-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const origin = join(root, 'origin.git');
   const seed = join(root, 'seed');
