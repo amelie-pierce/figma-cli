@@ -567,6 +567,10 @@ convention, not a server-side guarantee.
   request, who, reason, head, merge commit, checks) is written to
   `~/.figma-cli/merge-receipts/` (mode 0600) and returned as `receipt`. A pull
   request that already has a current approval merges normally, with a warning.
+  When GitHub's own protection on `main` requires an approving review, GitHub
+  refuses the merge and figma-cli stops with `TEAM_FORCE_PROTECTED` and no
+  receipt; force merge does not override it (no `--admin`), so ask a reviewer
+  to approve.
 - `team status [--no-fetch]` reports the branch, unsaved files, any unfinished
   rebase, commits behind and ahead of `main`, and the pull request's state,
   approvals, requested changes, pending reviewers and checks, with nudges

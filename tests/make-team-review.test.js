@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { defaultRun, merge, pr, save, start, sync, teamContext } from '../src/make-team.js';
+import { defaultRun, merge, pr, save, start, sync, TEAM_CODES, teamContext } from '../src/make-team.js';
 import { address, approve, comment, commentable, feedback, headerPath, inlineBuild, parseDiff, requestChanges, review, reviewPage, reviews,
   sourceFromSelector } from '../src/make-team-review.js';
 import { NOT_LISTENING_HELP } from '../src/lavish-listen.js';
@@ -31,7 +31,11 @@ function write(dir, files) {
   }
 }
 const lines = n => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
-const code = (fn, expected) => assert.throws(fn, error => { assert.equal(error.code, expected, error.message); return true; });
+const code = (fn, expected) => assert.throws(fn, error => {
+  assert.equal(error.code, expected, error.message);
+  assert.ok(TEAM_CODES.includes(expected), `${expected} is not in TEAM_CODES, so the CLI would drop it`);
+  return true;
+});
 
 // A bare origin, alice's clone and bob's clone, and the GitHub both talk to.
 function world(t) {

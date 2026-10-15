@@ -131,6 +131,7 @@ On failure the CLI prints `{error, code}` on stderr and exits 1:
 | `TEAM_FORCE_NO_REASON` | Merging without a review needs their reason in plain words; ask for it |
 | `TEAM_FORCE_NOT_ADMIN` | Only repo admins can merge without a review; a teammate has to approve it |
 | `TEAM_FORCE_NEEDS_BUILD` | Even a merge without a review needs a passing build; do not combine it with `--no-build-check` |
+| `TEAM_FORCE_PROTECTED` | GitHub's protection on the repo requires an approving review, and a merge without a review does not override it; ask a reviewer to approve |
 | `TEAM_CHANGES_REQUESTED` | A reviewer asked for changes; help make them, then save |
 | `TEAM_CHECKS_PENDING` / `TEAM_CHECKS_FAILED` | Wait for, or fix, the named checks |
 | `TEAM_NO_BUILD_CHECK` | The pull request has no checks and the project no build script, so nothing proves it builds; ask whether to merge anyway |

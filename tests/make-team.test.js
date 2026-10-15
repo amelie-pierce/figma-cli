@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { areaOwners, checkState, commitMessage, conflicts, defaultRun, findSecrets, forceReceiptDir, globPattern, isOwnBranch, merge, parseAreas, pr,
-  prBody, pushBranch, repoFromUrl, resolveIdenticalHunks, reviewState, save, slugify, start, status, sync, teamContext, vendoredPaths } from '../src/make-team.js';
+  prBody, pushBranch, repoFromUrl, resolveIdenticalHunks, reviewState, save, slugify, start, status, sync, TEAM_CODES, teamContext, vendoredPaths } from '../src/make-team.js';
 
 // Local git only: a bare "origin" in a temp folder stands in for GitHub, gh
 // and pnpm are faked. Nothing here reaches Figma, GitHub or a registry.
@@ -167,7 +167,11 @@ function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0, 
 }
 // A review of the branch's current GitHub head unless a commit is given.
 const review = (p, pull, login, state = 'APPROVED', commit = p.originSha(`refs/heads/${pull.headRefName}`)) => pull.reviews.push({ login, state, commit });
-const code = (fn, expected) => assert.throws(fn, error => { assert.equal(error.code, expected, error.message); return true; });
+const code = (fn, expected) => assert.throws(fn, error => {
+  assert.equal(error.code, expected, error.message);
+  assert.ok(TEAM_CODES.includes(expected), `${expected} is not in TEAM_CODES, so the CLI would drop it`);
+  return true;
+});
 
 describe('team: pure helpers', () => {
   it('slugs task names and builds own-branch checks', () => {
@@ -823,6 +827,7 @@ describe('team merge --force', () => {
   it('stops with a plain message, and no receipt, when GitHub protection requires an approval', t => {
     const { p, f, home } = opened(t, { admin: true, protectedMain: true });
     const mainBefore = p.originSha('main');
+    assert.ok(TEAM_CODES.includes('TEAM_FORCE_PROTECTED'));
     assert.throws(() => merge(f.ctx(), { force: true, reason, home }), error => error.code === 'TEAM_FORCE_PROTECTED' &&
       /protection requires an approving review, and a force merge does not override it\. Ask a reviewer to approve it/.test(error.message));
     assert.ok(f.calls.some(c => c.command === 'gh' && c.args[1] === 'merge'));
