@@ -92,6 +92,13 @@ figma-cli make clone --file <make-file-key> [dir]
 figma-cli make install [dir]
 figma-cli make pull [dir]
 figma-cli make dev [dir]
+figma-cli team start "<task name>" [--save-first] [--dir <clone>]
+figma-cli team save [-m "<message>"]
+figma-cli team sync
+figma-cli team conflicts
+figma-cli team pr [--title "<title>"]
+figma-cli team merge [--no-build-check]
+figma-cli team status [--no-fetch]
 figma-cli make export-delta --file <make-file-key> --manifest VENDOR.json --who engineer --candidate-dir candidates --out delta.json
 figma-cli make sync --file <make-file-key> --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --plan-out plan.json
 figma-cli make sync --file <make-file-key> --package kit-package --manifest VENDOR.json --request request.json --candidate-dir candidates --apply plan.json --receipt-out receipt.json
@@ -345,7 +352,7 @@ Errors are JSON on stderr with a `code`; results are JSON on stdout.
 - `make pull [dir]` fetches `origin main` and fast-forwards local `main` only.
   It refuses when local `main` has commits that are not on GitHub
   (`MAKE_PULL_LOCAL_COMMITS`; that work belongs on a task branch, which the
-  planned `team sync` will handle) and when checked-out `main` has uncommitted
+  `team` verbs never move commits off `main`) and when checked-out `main` has uncommitted
   tracked changes (`MAKE_PULL_DIRTY`). On another branch only the local `main`
   ref moves. It reinstalls only when `pnpm-lock.yaml` changed, with the same checks.
 - `make dev [dir]` runs `pnpm run dev` (the same command as Make's
@@ -356,6 +363,109 @@ Errors are JSON on stderr with a `code`; results are JSON on stdout.
   server's code. It runs until stopped: **agents start it as a background job
   and poll the printed URL** (for example `curl -sf http://localhost:5173/`)
   instead of waiting for it to return.
+
+### Team git workflow (`team`)
+
+`figma-cli team <verb>` is the plain-language git layer for designers working in
+a team-mode project's local clone. The verbs hold all the git logic, so an
+agent (skill `figma-make-team`) only maps words to a verb and explains the
+result. They use your own `git` and `gh` logins, store no tokens and never read
+or write Figma. Results are JSON on stdout with a plain-language `summary`;
+errors are JSON on stderr with a `TEAM_*` `code`, exit 1. Every verb runs in
+the clone, or takes `--dir <clone>`.
+
+Hard rules, enforced in code (`src/make-team.js`): work happens only on your own
+`<gh-login>/<slug>` branch (`TEAM_ON_MAIN`, `TEAM_NOT_YOUR_BRANCH`,
+`TEAM_DETACHED`); every push names an explicit `refs/heads/<branch>` refspec,
+never `main` (`TEAM_PUSH_REFUSED`); the only forced push is
+`--force-with-lease=<ref>:<exact sha>` to your own branch; `main` is always
+fetched and targeted explicitly; and a merge needs an approval from someone
+other than the author. GitHub `main` stays unprotected, so this is the review
+convention, not a server-side guarantee.
+
+- `team start "<name>"` requires a clean tree (`TEAM_UNSAVED`; `--save-first`
+  saves your own branch first, or carries changes made on `main` onto the new
+  branch, running the secret, large-file, format and build checks before
+  anything is created; if the save still fails after the branch exists, the
+  error says the branch was started and whether the changes are still unsaved
+  or saved on this computer only), fetches `main`, refuses local commits on `main` (`TEAM_MAIN_AHEAD`)
+  and an existing branch (`TEAM_BRANCH_EXISTS`), creates `<login>/<slug>` from
+  `origin/main`, fast-forwards the local `main` ref and pushes the branch with
+  upstream. It lists the `areas` owners.
+- `team save [-m msg]` lists changes in plain words, refuses secret-like files
+  (`.npmrc`, `.env*` except `.env.example`/`.sample`/`.template`, private keys,
+  `.netrc`) and token-looking content (GitHub, npm, Figma, AWS, Slack, API keys,
+  registry `_authToken=`), reporting path and line only (`TEAM_SECRET`), and
+  files over 50 MB (`TEAM_LARGE_FILE`). It then runs `package.json` `format`
+  and `build` scripts when present (pnpm, or npm with only a `package-lock.json`;
+  `TEAM_FORMAT_FAILED`/`TEAM_BUILD_FAILED` save nothing), commits everything with
+  your message or a generated one, and pushes. Changes in another person's
+  area produce a warning. The push is plain: a GitHub branch with commits this
+  clone lacks refuses (`TEAM_PUSH_REJECTED`, only for git's `stale info`,
+  `non-fast-forward` and `fetch first`; the commit stays local and `team sync`
+  brings that work in). A push GitHub's server refuses (`[remote rejected]`:
+  push protection, pre-receive hooks, rulesets) is `TEAM_PUSH_BLOCKED` with
+  GitHub's own `remote: error:` line. Because the flagged content would stay in
+  an unsent commit, `save` and `sync` then undo your unsent commits with
+  `git reset --soft` (back to GitHub's copy of your branch, or to where the
+  branch left `main` when that is newer, as after a sync), keeping every change in
+  the files; nothing GitHub already has, `main` or anyone else's branch is
+  touched. Remove what GitHub flagged and save again. When that sync had
+  rebased saves GitHub already has, their rebased copies are undone locally
+  too (GitHub keeps the originals) and the message says to "get the latest"
+  (`team sync`) instead, since a plain save would be refused as out of date.
+- `team sync` commits locally (the same checks as `save`, no push), fetches
+  your branch from GitHub and rebases local commits onto any newer saves there
+  (commits already present in rewritten form, after an earlier sync whose push
+  failed, are not replayed), then fetches `main`, rebases onto `origin/main` and
+  pushes with `--force-with-lease` on the GitHub sha it brought in. Conflicts
+  in either step are handled as below.
+- `team conflicts` (also run by `sync`) resolves only `pnpm-lock.yaml` (takes
+  `main`'s, then `pnpm install --lockfile-only --ignore-scripts`) and conflict
+  blocks whose two sides are identical. Anything else runs `rebase --abort`,
+  checks the branch is back at its old commit and reports `TEAM_CONFLICT` with
+  `conflicts[{path, changedBy[{author, pr, commit}]}]`, taken from `gh api
+  repos/<repo>/commits/<sha>/pulls` or the squash subject's `(#n)`. figma-cli
+  always finishes or undoes its own rebases, so a rebase (or merge,
+  cherry-pick, revert) already unfinished in the clone was started by something
+  else: every verb that changes the branch refuses with
+  `TEAM_OPERATION_IN_PROGRESS` and never continues, skips or pushes it.
+- `team pr [--title]` syncs, saves, refuses a branch with no changes
+  (`TEAM_NOTHING_TO_REVIEW`), then reuses the open pull request for the branch
+  or runs `gh pr create --base main` with a template (what changed, how to see
+  it locally, a screenshot slot). It requests reviews from `areas` owners of the
+  changed files, except you; a failed request only warns.
+- `team merge` requires your own branch with no unsaved files, an open,
+  non-draft pull request into `main` whose head equals your local and GitHub
+  branch (`TEAM_OUT_OF_DATE`) and is not from a fork, no outstanding requested
+  changes, and an approval of that exact head commit from someone who is
+  neither the author nor you (`TEAM_NOT_APPROVED`; reviews are read from
+  `gh api repos/<repo>/pulls/<n>/reviews`, whose `commit_id` gh's
+  `latestReviews` leaves empty; an approval of an earlier commit is named as
+  stale and does not count), a green build and a branch containing
+  `origin/main`. When `main` moved, it syncs and refuses (`TEAM_BEHIND_MAIN`)
+  so checks and review can run again. The green build is the pull request's
+  GitHub checks (`TEAM_CHECKS_FAILED`/`TEAM_CHECKS_PENDING`); when it has none,
+  the project's `build` script runs locally on the exact head being merged
+  (`TEAM_BUILD_FAILED`), and with no `build` script either it refuses
+  (`TEAM_NO_BUILD_CHECK`) unless `--no-build-check` is passed. Then `gh pr merge
+  --squash --match-head-commit <sha>`, a check that GitHub reports `MERGED`,
+  `main` checked out and fast-forwarded, and the branch deleted on GitHub (with
+  a lease) and locally.
+- `team status [--no-fetch]` reports the branch, unsaved files, any unfinished
+  rebase, commits behind and ahead of `main`, and the pull request's state,
+  approvals, requested changes, pending reviewers and checks, with nudges
+  (sync when `main` has been ahead for over a day).
+
+The repo comes from the `origin` GitHub URL, or from `repo` in
+`.figma-cli/project.json` (they must agree). Its optional `areas` map names
+owners per path glob (`**` crosses folders, `*` does not, a trailing `/` means
+everything below):
+
+```json
+{ "fileKey": "…", "repo": "owner/repo", "trunk": "main",
+  "areas": { "src/components/**": ["alice"], "src/index.css": ["bob"] } }
+```
 
 ### Make delta and sync
 

@@ -321,6 +321,14 @@ lockfile changed; `make dev` starts the dev server and prints its local URL
 (agents run it in the background). See
 [running locally](REFERENCE.md#running-a-team-mode-project-locally).
 
+Designers never need git: `figma-cli team start "<task>"`, `team save`,
+`team sync`, `team conflicts`, `team pr`, `team merge` and `team status` do the
+branching, saving, syncing, pull requests and merges on their own
+`<login>/<task>` branch. They never push to `main`, and merge only a pull
+request approved by someone other than its author. The `figma-make-team` skill
+maps phrases such as "save my progress" or "merge it" to these verbs. See
+[team git workflow](REFERENCE.md#team-git-workflow-team).
+
 `make export-delta` writes an explicit saved-version Make delta for workspace
 `atomic-cli intake-make-delta --from`. `make sync` accepts a committed
 `package-make-kit` artifact, a trusted VENDOR.json baseline and a recorded
