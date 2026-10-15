@@ -428,7 +428,9 @@ saves one version `deploy <sha7>` whose saved tree must equal the checked workin
 tree (Make may list only planned paths as pending), checks the whole project
 root against `main`, and pushes the annotated tag `make-deploy/<n>` on the
 deployed commit. The tag message ends with the receipt's public JSON (no local
-paths), which `make status` and the next deploy read as the base.
+paths). `make status` and the next deploy take the tagged commit's tree as the
+base; a receipt `mainTree` that differs from it is refused by deploy and flagged
+by `make status` as `receiptMismatch`.
 
 The receipt, `figma-cli/make-deploy-receipt@1` in `~/.figma-cli/deploys/`
 (mode 0600), holds `deployId`, `who`, `at`, `repo`, `mainCommit`, `mainTree`,
