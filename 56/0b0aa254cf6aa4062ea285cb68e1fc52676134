@@ -1,0 +1,19 @@
+tests/make-atomicaui.test.js
+  s_2ac1da875b83e9::t_29dd6b3fbfbc83 56-61,69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "560b0aa254cf6aa4062ea285cb68e1fc52676134",
+  "prompts": {},
+  "sessions": {
+    "s_2ac1da875b83e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a13e5c-4710-7b12-b24e-010bb9bffce1",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
