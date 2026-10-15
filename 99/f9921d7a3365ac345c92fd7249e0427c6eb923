@@ -1,0 +1,104 @@
+src/make-team.js
+  s_c02a8b3c9db6c8::t_b7dc83b1d8cede 791
+  s_c02a8b3c9db6c8::t_7f7bae63a64b21 6
+  s_c02a8b3c9db6c8::t_8fd845c737561a 855-860,866-867,869,879-884,886
+  s_c02a8b3c9db6c8::t_26f4215708eb97 472-473,477,480-482,486
+  s_c02a8b3c9db6c8::t_91cab8321d1dfa 389-449
+  s_c02a8b3c9db6c8::t_88bccb6705e9f2 1019-1021,1024-1031
+  s_c02a8b3c9db6c8::t_2cf2d2196acf9e 547-548
+  s_c02a8b3c9db6c8::t_b23814318bbd11 780-790,792-801,806-810
+  s_c02a8b3c9db6c8::t_fe45bf189d3bbe 507
+  s_c02a8b3c9db6c8::t_4b812536807bbd 927-959,964-970
+  s_c02a8b3c9db6c8::t_779667a04b4c99 992-995
+  s_c02a8b3c9db6c8::t_77c05f61222c5c 40
+  s_c02a8b3c9db6c8::t_071425e675f55a 535
+  s_c02a8b3c9db6c8::t_f46a2a4e318608 27-28
+  s_c02a8b3c9db6c8::t_d1f0df4d6c02b6 2-3
+  s_c02a8b3c9db6c8::t_6b2941008c1f07 493,495-498
+  s_c02a8b3c9db6c8::t_a1d027c90e7c57 1041-1044
+README.md
+  s_c02a8b3c9db6c8::t_4381cc3f47c674 328-332,341-347
+tests/bare-cli.test.js
+  s_c02a8b3c9db6c8::t_164b0763bd45fd 1-59
+src/commands/setup.js
+  s_c02a8b3c9db6c8::t_9308c47ae96eff 182-185,188-189,203-205,207
+src/tool-env.js
+  s_c02a8b3c9db6c8::t_7f7bae63a64b21 1-5
+src/make-team-review.js
+  s_c02a8b3c9db6c8::t_7afe97af87a972 532-536,539-541
+  s_c02a8b3c9db6c8::t_0e9839091b0709 585,587,590-591
+  s_c02a8b3c9db6c8::t_d2ecd74c28b60e 221-222
+  s_c02a8b3c9db6c8::t_aaa729d461182c 2
+  s_c02a8b3c9db6c8::t_4ec59110f8e6a1 154
+  s_c02a8b3c9db6c8::t_ffa2696e74bfa2 371-372
+  s_c02a8b3c9db6c8::t_434db7fdea1e79 377
+  s_c02a8b3c9db6c8::t_718f607bebe62c 98-112
+  s_c02a8b3c9db6c8::t_e1b512928dceff 122
+  s_c02a8b3c9db6c8::t_597afa30fc0377 381-387,389
+  s_c02a8b3c9db6c8::t_0713dcb4381e3c 329
+  s_c02a8b3c9db6c8::t_1c64edf9badad0 546,550,552-553
+  s_c02a8b3c9db6c8::t_61eed71157f2f8 355
+  s_c02a8b3c9db6c8::t_861d20d64f021a 3
+  s_c02a8b3c9db6c8::t_d2e21200d6219a 542
+src/make-local.js
+  s_c02a8b3c9db6c8::t_2a01ba11738e6b 2-4,7,174-195,199,225-226,235-236,244-246,250,262,283,319
+src/lavish-listen.js
+  s_c02a8b3c9db6c8::t_214a9ed9f4bd2f 1-38
+_vaults/figma-cli/wiki/make/review.md
+  s_c02a8b3c9db6c8::t_5ec3fcf67e6e50 7-8,22-34
+_vaults/figma-cli/wiki/make/team.md
+  s_c02a8b3c9db6c8::t_5ec3fcf67e6e50 7-8,23-25,37-48,59
+tests/make-project.test.js
+  s_c02a8b3c9db6c8::t_d86d68aa54ef1f 195-201
+src/make-project.js
+  s_c02a8b3c9db6c8::t_8c352db128366a 15-17
+  s_c02a8b3c9db6c8::t_480aa364b562f9 18-20
+  s_c02a8b3c9db6c8::t_07f52fe680a940 329-331
+src/commands/team.js
+  s_c02a8b3c9db6c8::t_61eed71157f2f8 5-6,16,20-26,42,67-70
+tests/make-local.test.js
+  s_c02a8b3c9db6c8::t_2f072e71807e5d 7-9,141-167
+REFERENCE.md
+  s_c02a8b3c9db6c8::t_2a354599dc583d 101,414-415,495-500,534-540,558-569,589-591,595-596,603-609,640-642
+CHANGELOG.md
+  s_c02a8b3c9db6c8::t_e698b069983381 21-22
+  s_c02a8b3c9db6c8::t_4381cc3f47c674 7-14
+_vaults/figma-cli/wiki/make/deploy.md
+  s_c02a8b3c9db6c8::t_5ec3fcf67e6e50 7-8,25
+tests/make-team.test.js
+  s_c02a8b3c9db6c8::t_285a48cc3d2798 385-386
+  s_c02a8b3c9db6c8::t_2454384be0cec2 395,646-657,760-829
+  s_c02a8b3c9db6c8::t_feaa9aeec84597 3,359-369,371-384,387-394
+  s_c02a8b3c9db6c8::t_817af95f97757e 370
+  s_c02a8b3c9db6c8::t_472fb0d48b8d41 6-7,71,94-97,110-113,149,230-242
+  s_c02a8b3c9db6c8::t_846af63c37ee09 830-831
+tests/make-team-review.test.js
+  s_c02a8b3c9db6c8::t_f1390a576d2c8d 7,9,179-187,240-241,245-251,309-313,322
+  s_c02a8b3c9db6c8::t_7d31cf075742e1 466-484
+skills/figma-make-team/SKILL.md
+  s_c02a8b3c9db6c8::t_0ea9c05a89a1a2 3,22-24,50,67,70-81,130-133,159-163
+tests/make-deploy.test.js
+  s_c02a8b3c9db6c8::t_de3db29d5ec735 403-417
+src/make-deploy.js
+  s_c02a8b3c9db6c8::t_cb58f9ff6972fb 285-288
+  s_c02a8b3c9db6c8::t_c93700841f00f6 10
+  s_c02a8b3c9db6c8::t_50329dacb217df 43
+src/commands/make.js
+  s_c02a8b3c9db6c8::t_61eed71157f2f8 13,433,442,451
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "99f9921d7a3365ac345c92fd7249e0427c6eb923",
+  "prompts": {},
+  "sessions": {
+    "s_c02a8b3c9db6c8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d5b1a7e-e80a-4b10-9b48-1fe97c765e42",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
