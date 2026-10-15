@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { MakeClient } from '../make-client.js';
 import { checkWriteMode } from '../make-project.js';
-import { teamContext, readProject, start, save, pr } from '../make-team.js';
+import { teamContext, start, save, pr } from '../make-team.js';
 import { digest, vendorManifest } from '../make-drift.js';
 import { ATOMICAUI_ROOT, ATOMICAUI_SITE, RELEASE_ROOT, buildRelease, changeReport, downloadRelease,
   installRelease, installedStatus, latestRelease, nextPatch, planBreakingFixes, version } from '../make-atomicaui.js';
@@ -10,9 +10,11 @@ import { ATOMICAUI_ROOT, ATOMICAUI_SITE, RELEASE_ROOT, buildRelease, changeRepor
 const format = value => `${JSON.stringify(value, null, 2)}\n`;
 const decode = bytes => new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
 const PUBLISH = [
-  'Open the AtomicAUI 7.0 kit in Figma Make and click Publish.',
-  'Set Who can view to Anyone with the link. Leave password protection off.',
-  'Keep the existing sienna-khaki-58053801.figma.site address, publish, then close the dialog.',
+  'After the release is saved, open the kit in Figma Make > Make settings > General.',
+  'If the site is already Published, click Unpublish, then Publish to rebuild the site.',
+  'Set Who can view to Anyone on the web and leave password protection off. Keep the existing site address.',
+  'Complete Publish and close the dialog. The address can return 404 for about a minute during republishing.',
+  'Update kit and Publish kit update the kit package; they do not rebuild the site.',
 ];
 
 function requireClean(state, allowedPending = null) {
@@ -164,10 +166,23 @@ function reviewHtml(report) {
   const list = (heading, paths) => `<section><h2>${heading} <small>${paths.length}</small></h2><ul>${paths.map(path => `<li>${escape(path)}</li>`).join('')}</ul></section>`;
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AtomicAUI ${escape(report.to)} review</title><style>body{font:16px system-ui;margin:0;background:#f4f6f9;color:#17212e}main{max-width:1100px;margin:auto;padding:48px 24px}h1{font-size:2rem;margin:0 0 8px}p{color:#526071}.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:32px 0}.cards div,section{background:white;border:1px solid #dbe2e9;border-radius:12px;padding:20px}.cards strong{display:block;font-size:2rem}section{margin:16px 0}small{color:#526071}ul{columns:2;overflow-wrap:anywhere;padding-left:22px}li{padding:3px 0}@media(max-width:700px){.cards{grid-template-columns:1fr}ul{columns:1}}</style><main><h1>AtomicAUI ${escape(report.to)}</h1><p>Library change review from ${escape(report.from || 'no installation')} to ${escape(report.to)}. Compare app screens in the pull request before merging.</p><div class="cards"><div><strong>${report.added.length}</strong>added files</div><div><strong>${report.changed.length}</strong>changed files</div><div><strong>${report.removed.length}</strong>removed files</div></div>${list('Added', report.added)}${list('Changed', report.changed)}${list('Removed', report.removed)}<section><h2>Breaking changes</h2><ul>${report.breakingChanges.map(item => `<li>${escape(typeof item === 'string' ? item : item.note)}</li>`).join('')}</ul></section></main></html>\n`;
 }
+function prepareTeamVendor(ctx, root) {
+  // Formatting all app files would alter the release bytes. Format only the
+  // wiring file, then keep the ordinary team build gate for save and PR.
+  const manager = existsSync(join(root, 'pnpm-lock.yaml')) ? 'pnpm' : 'npm';
+  const args = manager === 'pnpm' ? ['install', '--ignore-scripts', '--no-frozen-lockfile'] : ['install', '--ignore-scripts'];
+  const installed = ctx.run(manager, args, { cwd: root });
+  if (installed.status !== 0) throw new Error(`AtomicAUI dependency install failed: ${(installed.stderr || installed.stdout).trim().split('\n').pop()}`);
+  if (JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).scripts?.format?.startsWith('oxfmt')) {
+    const formatted = ctx.run(manager, manager === 'pnpm' ? ['exec', 'oxfmt', 'src/main.tsx'] : ['exec', '--', 'oxfmt', 'src/main.tsx'], { cwd: root });
+    if (formatted.status !== 0) throw new Error(`AtomicAUI wiring format failed: ${(formatted.stderr || formatted.stdout).trim().split('\n').pop()}`);
+  }
+  ctx.verifiedVendor = true;
+}
 export async function installTeamRelease(directory, release, { mode } = {}) {
   const root = resolve(directory);
-  const project = readProject(root);
-  if (!project.repo) throw new Error('No team-mode project marker in this clone. Use --file for a solo Make file.');
+  const ctx = teamContext({ dir: root });
+  ctx.repo(); // A GitHub origin is sufficient when a team marker has not been created yet.
   const vendorDir = join(root, ATOMICAUI_ROOT);
   const preflight = installedStatus(vendorDir);
   if (preflight.localEdits.length) throw new Error(`Local AtomicAUI edits refuse ${mode}: ${preflight.localEdits.join(', ')}`);
@@ -178,7 +193,6 @@ export async function installTeamRelease(directory, release, { mode } = {}) {
   }
   const readSource = async path => existsSync(join(root, path)) ? readFileSync(join(root, path), 'utf8') : null;
   await planBreakingFixes(release.manifest, readSource);
-  const ctx = teamContext({ dir: root });
   const started = start(ctx, `atomicaui-${mode}-${release.manifest.version}`);
   const afterStart = installedStatus(vendorDir);
   if (afterStart.localEdits.length || (mode === 'add' ? afterStart.installed : !afterStart.installed)) {
@@ -195,8 +209,14 @@ export async function installTeamRelease(directory, release, { mode } = {}) {
   const reviewPath = join(root, 'docs/atomicaui-review.html');
   mkdirSync(join(root, 'docs'), { recursive: true });
   writeFileSync(reviewPath, reviewHtml(report));
-  const saved = save(ctx, { message: `Add AtomicAUI ${release.manifest.version} (${report.added.length} added, ${report.changed.length} changed, ${report.removed.length} removed)` });
-  const pullRequest = pr(ctx, { title: `AtomicAUI ${release.manifest.version} ${mode}` });
+  prepareTeamVendor(ctx, root);
+  const saved = save(ctx, { message: `Update ${report.added.length + report.changed.length + report.removed.length} files under ${ATOMICAUI_ROOT}` });
+  const pullRequest = pr(ctx, {
+    title: `${mode === 'add' ? 'Add' : 'Upgrade'} ${ATOMICAUI_ROOT} (${report.added.length + report.changed.length + report.removed.length} files)`,
+    body: [`- ${ATOMICAUI_ROOT}/: ${report.added.length} added, ${report.changed.length} changed, ${report.removed.length} removed`,
+      '- src/main.tsx: 1 file', '- package.json: 1 file', '- pnpm-lock.yaml: 1 file',
+      '- .gitignore: 1 file', '- docs/atomicaui-review.html: 1 file'].join('\n'),
+  });
   return { mode: 'team', branch: started.branch, report, reviewPath: 'docs/atomicaui-review.html', saved: saved.saved,
     pullRequest: pullRequest.url };
 }
@@ -321,7 +341,7 @@ export function registerAtomicaui(make, report, failure) {
         const latest = await latestRelease();
         if (!options.file) {
           const root = resolve(options.dir || '.');
-          if (!readProject(root).repo) throw new Error('No team project marker here. Pass --file for a solo Make file.');
+          teamContext({ dir: root }).repo();
           const local = installedStatus(join(root, ATOMICAUI_ROOT));
           report({ mode: 'team', installedVersion: local.version, localEdits: local.localEdits, latestVersion: latest.version });
         } else report(await withMake(options.file, async client => {

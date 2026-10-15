@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { program } from '../lib/cli-core.js';
 import { conflicts, merge, pr, save, start, status, sync, TEAM_CODES, teamContext } from '../make-team.js';
@@ -60,8 +61,14 @@ verb(team.command('conflicts').description('Fix the conflict: auto-resolve only 
 
 verb(team.command('pr').description('Ready for review: sync, save, then open (or reuse) a pull request into main and request reviews from the areas map')
   .option('--title <text>', 'Pull request title (default: the task name)')
-  .option('-m, --message <text>', 'Commit message for any unsaved changes'),
-(ctx, options) => pr(ctx, { title: options.title, message: options.message }));
+  .option('-m, --message <text>', 'Commit message for any unsaved changes')
+  .option('--body-file <path>', 'Review body in a local file')
+  .option('--verified-vendor', 'Build without formatting already verified vendor source'),
+(ctx, options) => {
+  if (options.verifiedVendor) ctx.verifiedVendor = true;
+  return pr(ctx, { title: options.title, message: options.message,
+    body: options.bodyFile ? readFileSync(resolve(options.bodyFile), 'utf8') : undefined });
+});
 
 verb(team.command('merge').description('Merge it: squash-merge your own approved pull request into main after a green build, delete the branch, return to main')
   .option('--no-build-check', 'Merge even when the pull request has no GitHub checks and the project has no build script')
