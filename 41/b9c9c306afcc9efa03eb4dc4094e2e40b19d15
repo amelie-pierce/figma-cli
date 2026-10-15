@@ -1,0 +1,19 @@
+REFERENCE.md
+  s_61b30d38004d3a::t_5f06fdc9e918c1 431-433
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "41b9c9c306afcc9efa03eb4dc4094e2e40b19d15",
+  "prompts": {},
+  "sessions": {
+    "s_61b30d38004d3a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "696be668-9655-487c-860d-de84578fc54b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
