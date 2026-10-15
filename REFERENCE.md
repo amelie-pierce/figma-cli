@@ -675,6 +675,24 @@ everything below):
   "areas": { "src/components/**": ["alice"], "src/index.css": ["bob"] } }
 ```
 
+### AtomicAUI site releases and installs
+
+`make atomicaui release --file KEY [--version X.Y.Z]` snapshots the exact
+saved vendor tree from the AtomicAUI kit, writes an immutable
+`public/atomicaui/<version>/` folder plus `latest.json`, checks the exact
+pending path set, saves one Make version, and verifies the written files.
+Without `--version`, it uses the next patch version. Publishing remains a
+manual Figma Make click; the command prints the steps.
+
+`make atomicaui add [--version X.Y.Z]`, `upgrade [--to X.Y.Z]`, and `status`
+use the public site over credential-free HTTPS. Pass `--file KEY` for a solo
+Make file. In a team clone, run from its root or use `--dir CLONE`; add and
+upgrade use the `team` branch, save, and pull request flow. The downloader
+rejects HTML fallbacks and redirects, verifies the manifest, every archive
+part, and every source file, then checks local vendor edits before installing.
+The change report lists added, changed, and removed paths and any breaking
+notes carried by the manifest.
+
 ### Make delta and sync
 
 `make export-delta` requires a clean saved git-mode Make file, a trusted

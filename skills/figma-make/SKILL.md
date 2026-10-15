@@ -12,6 +12,16 @@ commands rather than assuming an upstream installation includes it.
 
 ## Choose the saving mode
 
+For the AtomicAUI library, use the `make atomicaui` command group. “Release a new
+AtomicAUI version” maps to `release --file KEY` (optionally `--version X.Y.Z`);
+the release command saves the files but the user still clicks Publish in Make.
+“Add AtomicAUI to this app” maps to `add`, “update AtomicAUI in this app” to
+`upgrade`, and “is AtomicAUI up to date?” to `status`. Direct solo Make writes
+always require the exact `--file KEY`; team clone commands use `--dir` or the
+current clone and open a normal review PR. These commands verify the public
+HTTPS release before installation. See `src/commands/make-atomicaui.js` for
+the command contract and `src/make-atomicaui.js` for the release format.
+
 The original writes (`replace`, `create`, `import`, `remove`) reach only the open
 session's working copy. It is lost when the Make file is reopened unless Make
 creates a saved version. Git-mode files create versions through Make's version
