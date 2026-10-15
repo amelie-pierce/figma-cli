@@ -36,6 +36,20 @@ const BLOCKING = Object.freeze(['writing', 'written', 'saving', 'save-uncertain'
 const KNOWN_BASE = Object.freeze(['saved-drift', 'tag-clash']);
 const BEFORE_SAVE = Object.freeze(['writing', 'written']);
 
+// Make runs its own install when one of these root files changes, and that
+// install can rewrite the lockfile and the pending list while a deploy writes.
+// They are written last (lockfiles, then package.json), Make is waited on
+// until idle after each, and a planned one Make regenerated is written again.
+const DEPENDENCY_FILES = Object.freeze(['pnpm-lock.yaml', 'package-lock.json', 'package.json']);
+export const isDependency = path => DEPENDENCY_FILES.includes(path);
+const writeRank = path => (path === 'package.json' ? 2 : isDependency(path) ? 1 : 0);
+const byWriteOrder = (a, b) => writeRank(a.path) - writeRank(b.path) || (a.path < b.path ? -1 : 1);
+// How many times one path is tried, and how many settle-and-check rounds run.
+const ROUNDS = 3;
+// Idle means: no busy editor, no loading state, and the persistence state and
+// dependency hashes unchanged for quietMs.
+const SETTLE = Object.freeze({ quietMs: 5000, pollMs: 1000, timeoutMs: 180000 });
+
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const short = sha => String(sha).slice(0, 7);
 const SHA = /^[a-f0-9]{40}$/;
@@ -318,10 +332,7 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes }) {
     if (k && !/^[a-f0-9]{64}$/.test(beforeSha256 || '')) fail(`Make's content hash for ${path} is unavailable.`, 'DEPLOY_MAKE_STATE');
     files.push({ path, op, beforeBlob: k?.blob ?? null, afterBlob: m?.blob ?? null, beforeSha256, afterSha256, bytes });
   }
-  // Make reinstalls when the root package.json changes, so the lockfile goes
-  // first and package.json last; the install then finds them consistent.
-  const rank = path => (path === 'pnpm-lock.yaml' || path === 'package-lock.json' ? 0 : path === 'package.json' ? 2 : 1);
-  files.sort((a, b) => rank(a.path) - rank(b.path) || (a.path < b.path ? -1 : 1));
+  files.sort(byWriteOrder);
   if (refused.marker.length) fail(`main's ${PROJECT_MARKER} would change this file's team mode (${refused.marker[0]}). Fix it in main through a pull request.`, 'DEPLOY_MARKER');
   if (refused.binary.length) {
     fail(`Deploy writes UTF-8 text only (at most 2 MiB a file); main has binary or large files that differ from Make: ${JSON.stringify(refused.binary)}. ` +
@@ -356,7 +367,8 @@ function defaults(deps = {}) {
   return { run, gh: deps.gh || ghRunner(), home: deps.home, now: deps.now || (() => new Date()), warn: deps.warn || (() => {}),
     readBlob: deps.readBlob || defaultReadBlob,
     install: deps.install || (ctx => installProject(ctx.root, { run, warn: deps.warn || (() => {}) })),
-    build: deps.build || defaultBuild };
+    build: deps.build || defaultBuild, settle: { ...SETTLE, ...deps.settle },
+    sleep: deps.sleep || (ms => new Promise(done => setTimeout(done, ms))) };
 }
 
 // The team mode the Make file is in. Solo has nothing to deploy from.
@@ -463,28 +475,127 @@ function stop(receipt, error, stage, message, code) {
   fail(`${message} Receipt: ${receipt.receiptPath}.`, code, { receiptPath: receipt.receiptPath, ...(receipt.makeAfter ? { version: receipt.makeAfter } : {}) });
 }
 
-async function writeFiles(client, receipt, todo, { mainBytes, home }) {
-  for (const file of todo) {
-    let result;
-    try {
-      if (file.op === 'delete') result = await client.deleteDurable(file.path, { expectedSha256: file.beforeSha256, backupDir: backupDir(receipt, home) });
-      else {
-        const bytes = mainBytes(file.afterBlob);
-        if (sha256(bytes) !== file.afterSha256) fail(`main's ${file.path} no longer has its planned content.`);
-        result = await client.writeDurable(file.path, decode(bytes), { expectedSha256: file.beforeSha256 ?? undefined, backupDir: backupDir(receipt, home) });
-      }
-    } catch (error) {
-      if (error.backupPath) receipt.completedWrites.push({ path: file.path, op: file.op, backupPath: error.backupPath, uncertain: true });
-      stop(receipt, error, 'writing', `Deploy stopped while writing ${file.path}: ${error.message} ` +
-        `No version was saved. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
+// Wait until Make is idle: its own install after a dependency write rewrites
+// files and the pending list for a while.
+async function waitIdle(client, receipt, deps) {
+  const { quietMs, pollMs, timeoutMs } = deps.settle;
+  const paths = receipt.plan.files.map(file => file.path).filter(isDependency);
+  const start = Date.now();
+  let last = null;
+  let since = 0;
+  for (;;) {
+    const probe = await client.idleState(paths);
+    const idle = !probe.busy && !probe.offline && probe.state && !probe.state.isLoading && !probe.state.error;
+    const key = idle ? JSON.stringify(probe) : null;
+    if (key && key === last && Date.now() - since >= quietMs) return;
+    if (key !== last) { last = key; since = Date.now(); }
+    if (Date.now() - start > timeoutMs) {
+      stop(receipt, null, receipt.stage, `Make did not become idle within ${Math.round(timeoutMs / 1000)}s. No version was saved. ` +
+        `Run ${recovery(receipt)} once it is idle.`, 'DEPLOY_MAKE_BUSY');
     }
-    receipt.completedWrites.push({ path: file.path, op: file.op, backupPath: result?.backupPath ?? null });
-    const entry = receipt.files.find(item => item.path === file.path);
-    if (entry && result?.backupPath) entry.backupPath = result.backupPath;
-    saveReceipt(receipt);
+    await deps.sleep(pollMs);
+  }
+}
+
+async function settledStatus(client, receipt, deps) {
+  for (let attempt = 1; ; attempt++) {
+    await waitIdle(client, receipt, deps);
+    try { return await client.projectStatus(); }
+    catch (error) {
+      if (attempt >= ROUNDS) stop(receipt, error, receipt.stage, `Make could not be read once idle: ${error.message} Run ${recovery(receipt)}.`, 'DEPLOY_MAKE_STATE');
+    }
+  }
+}
+
+// Every path Make holds unsaved must be planned and hold its before or
+// planned content; only a planned dependency file may hold what Make's own
+// install regenerated. Returns { problem, code } or { files } (classified).
+function plannedState(receipt, status) {
+  const state = status.persistence;
+  if (state?.savedVersion !== receipt.makeBefore.versionGitSha) {
+    return { problem: `Make's saved version is ${state?.savedVersion ?? 'unknown'}, not ${receipt.makeBefore.versionGitSha} where the deploy started`, code: 'DEPLOY_RECEIPT' };
+  }
+  const planned = new Set(receipt.plan.files.map(file => file.path));
+  const others = [...new Set([...contentDiff(status.workingFlat, status.makeFlat), ...(state.pendingPaths || [])])].filter(path => !planned.has(path));
+  if (others.length) return { problem: `Make has unsaved changes outside the deploy ${JSON.stringify(others)}`, code: 'DEPLOY_MAKE_AHEAD' };
+  const files = classify(receipt, status);
+  const odd = files.filter(file => file.state === 'other').map(file => file.path);
+  if (odd.length) return { problem: `Make holds content the deploy neither started from nor planned in ${JSON.stringify(odd)}`, code: 'DEPLOY_RECEIPT' };
+  return { files };
+}
+
+const recordWrite = (receipt, file, backupPath, extra = {}) => {
+  receipt.completedWrites.push({ path: file.path, op: file.op, backupPath: backupPath ?? null, ...extra });
+  const entry = receipt.files.find(item => item.path === file.path);
+  if (entry && backupPath && !extra.uncertain) entry.backupPath = backupPath;
+  saveReceipt(receipt);
+};
+
+// Write each file to main's content. A file starts from its planned before
+// content, or from file.expectedSha256 (Make's regenerated dependency file).
+// When Make's state moves under a write, wait until it is idle, re-check
+// every unsaved path against the plan, then try that path again.
+async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
+  for (const file of [...todo].sort(byWriteOrder)) {
+    let content = null;
+    if (file.op !== 'delete') {
+      const bytes = mainBytes(file.afterBlob);
+      if (sha256(bytes) !== file.afterSha256) {
+        stop(receipt, null, 'writing', `main's ${file.path} no longer has its planned content. No version was saved. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
+      }
+      content = decode(bytes);
+    }
+    let expected = file.expectedSha256 !== undefined ? file.expectedSha256 : file.beforeSha256;
+    for (let attempt = 1; ; attempt++) {
+      let result;
+      try {
+        if (file.op === 'delete') result = await client.deleteDurable(file.path, { expectedSha256: expected, backupDir: backupDir(receipt, home) });
+        else result = await client.writeDurable(file.path, content, { expectedSha256: expected ?? undefined, backupDir: backupDir(receipt, home) });
+      } catch (error) {
+        if (error.backupPath) recordWrite(receipt, file, error.backupPath, { uncertain: true });
+        if (attempt >= ROUNDS || (error.code !== 'MAKE_PENDING_CHANGED' && !isDependency(file.path))) {
+          stop(receipt, error, 'writing', `Deploy stopped while writing ${file.path}: ${error.message} No version was saved. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
+        }
+        const status = await settledStatus(client, receipt, deps);
+        const checked = plannedState(receipt, status);
+        if (checked.problem) {
+          stop(receipt, error, 'writing', `Deploy stopped while writing ${file.path}: ${error.message} Once Make was idle: ${checked.problem}. ` +
+            `No version was saved. Run ${recovery(receipt)}.`, checked.code === 'DEPLOY_MAKE_AHEAD' ? 'DEPLOY_MAKE_AHEAD' : 'DEPLOY_WRITE_FAILED');
+        }
+        if (checked.files.find(item => item.path === file.path).state === 'after') { recordWrite(receipt, file, null); break; }
+        expected = status.workingSha256.get(file.path) ?? null;
+        continue;
+      }
+      recordWrite(receipt, file, result?.backupPath);
+      break;
+    }
+    if (isDependency(file.path)) await waitIdle(client, receipt, deps);
   }
   receipt.stage = 'written';
   saveReceipt(receipt);
+}
+
+// Make's install can rewrite a dependency file after the deploy wrote it.
+// Once Make is idle every planned path must hold main's content; a dependency
+// file Make regenerated is written again, for at most ROUNDS rounds.
+async function reconcile(client, receipt, { mainBytes, home, deps }) {
+  if (!receipt.plan.files.some(file => isDependency(file.path))) return;
+  for (let round = 1; ; round++) {
+    const status = await settledStatus(client, receipt, deps);
+    const checked = plannedState(receipt, status);
+    if (checked.problem) {
+      stop(receipt, null, 'written', `Once Make was idle after the writes: ${checked.problem}. No version was saved. Run ${recovery(receipt)}.`,
+        checked.code === 'DEPLOY_MAKE_AHEAD' ? 'DEPLOY_MAKE_AHEAD' : 'DEPLOY_WRITE_FAILED');
+    }
+    const left = checked.files.filter(file => file.state !== 'after');
+    if (!left.length) return;
+    if (round > ROUNDS || left.some(file => !isDependency(file.path))) {
+      stop(receipt, null, 'written', `Make keeps changing ${JSON.stringify(left.map(file => file.path))} after the deploy wrote main's content, ` +
+        `so main cannot be saved as it is. No version was saved. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
+    }
+    receipt.stage = 'writing';
+    await writeFiles(client, receipt, left.map(file => ({ ...file, expectedSha256: status.workingSha256.get(file.path) ?? null })), { mainBytes, home, deps });
+  }
 }
 
 // The public part of a receipt, carried in the tag's message.
@@ -607,7 +718,8 @@ export async function deployApply(client, { dir, planPath } = {}, deps = {}) {
   receipt.planPath = resolve(planPath);
   saveReceipt(receipt);
   const mainBytes = blob => deps.readBlob(ctx.root, blob);
-  await writeFiles(client, receipt, plan.files, { mainBytes, home: deps.home });
+  await writeFiles(client, receipt, plan.files, { mainBytes, home: deps.home, deps });
+  await reconcile(client, receipt, { mainBytes, home: deps.home, deps });
   await finish(client, ctx, receipt, main.flat, deps.home);
   return result(receipt, `Deployed main ${short(plan.mainCommit)} to Make as version ${receipt.makeAfter.versionNumber} and tagged it ${receipt.tag.name}. ` +
     `Next: confirm it after a fresh reload with --verify ${receipt.receiptPath}.`);
@@ -619,11 +731,13 @@ const result = (receipt, summary) => ({ deployId: receipt.deployId, fileKey: rec
   receiptPath: receipt.receiptPath, summary });
 
 // Each planned path in Make's working copy: still as before, already as
-// planned, or something else (which stops resume and abort).
+// planned, a dependency file Make's own install regenerated, or something
+// else (which stops resume and abort).
 export function classify(receipt, status) {
   return receipt.plan.files.map(file => {
     const blob = status.workingFlat.get(file.path)?.blob ?? null;
-    return { ...file, state: blob === file.afterBlob ? 'after' : blob === file.beforeBlob ? 'before' : 'other' };
+    const state = blob === file.afterBlob ? 'after' : blob === file.beforeBlob ? 'before' : blob && isDependency(file.path) ? 'regenerated' : 'other';
+    return { ...file, state };
   });
 }
 
@@ -645,13 +759,9 @@ async function resumable(client, receipt, what) {
     fail(`Make's saved version is ${state.savedVersion}, not ${receipt.makeBefore.versionGitSha} where the deploy started, so a version was saved. ` +
       `Run figma-cli make deploy --file ${receipt.fileKey} --dir <clone> --verify ${receipt.receiptPath}.`, 'DEPLOY_RECEIPT');
   }
-  const planned = new Set(receipt.plan.files.map(file => file.path));
-  const others = [...new Set([...contentDiff(status.workingFlat, status.makeFlat), ...state.pendingPaths])].filter(path => !planned.has(path));
-  if (others.length) fail(`Make has unsaved changes outside the deploy ${JSON.stringify(others)}. Nothing was changed.`, 'DEPLOY_MAKE_AHEAD');
-  const files = classify(receipt, status);
-  const odd = files.filter(file => file.state === 'other').map(file => file.path);
-  if (odd.length) fail(`Make holds content the deploy neither started from nor planned in ${JSON.stringify(odd)}. Inspect it by hand. Nothing was changed.`, 'DEPLOY_RECEIPT');
-  return { status, files };
+  const checked = plannedState(receipt, status);
+  if (checked.problem) fail(`${checked.problem}. ${checked.code === 'DEPLOY_RECEIPT' ? 'Inspect it by hand. ' : ''}Nothing was changed.`, checked.code);
+  return { status, files: checked.files };
 }
 
 export async function deployResume(client, { dir, receiptPath } = {}, deps = {}) {
@@ -663,11 +773,14 @@ export async function deployResume(client, { dir, receiptPath } = {}, deps = {})
   const access = await requireAdmin(receipt.repo, deps.gh);
   if (!revOf(ctx, receipt.mainCommit)) fetchMain(ctx);
   if (!revOf(ctx, receipt.mainCommit)) fail(`The clone does not have main ${short(receipt.mainCommit)}.`, 'DEPLOY_RECEIPT');
-  const { files } = await resumable(client, receipt, 'resume');
-  const todo = files.filter(file => file.state === 'before');
+  const { status, files } = await resumable(client, receipt, 'resume');
+  const todo = files.filter(file => file.state === 'before' || file.state === 'regenerated')
+    .map(file => ({ ...file, expectedSha256: status.workingSha256.get(file.path) ?? null }));
   receipt.resumedBy = access.login;
+  receipt.stage = 'writing';
   const mainBytes = blob => deps.readBlob(ctx.root, blob);
-  await writeFiles(client, receipt, todo, { mainBytes, home: deps.home });
+  await writeFiles(client, receipt, todo, { mainBytes, home: deps.home, deps });
+  await reconcile(client, receipt, { mainBytes, home: deps.home, deps });
   await finish(client, ctx, receipt, lsTree(ctx, receipt.mainCommit), deps.home);
   return result(receipt, `Resumed: wrote ${todo.length} remaining file(s), saved version ${receipt.makeAfter.versionNumber} and tagged ${receipt.tag.name}. ` +
     `Next: --verify ${receipt.receiptPath}.`);
@@ -697,32 +810,53 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
   deps = defaults(deps);
   const receipt = readReceipt(receiptPath);
   await requireAdmin(receipt.repo, deps.gh);
-  const { files } = await resumable(client, receipt, 'abort');
-  const written = files.filter(file => file.state === 'after');
-  const restore = written.map(file => ({ file, content: file.op === 'add' ? null : backupContent(receipt, file, deps.home) }));
+  const { status: first, files } = await resumable(client, receipt, 'abort');
+  const restoreOf = file => (file.op === 'add' ? null : backupContent(receipt, file, deps.home));
+  // Every backup is read before anything changes.
+  const contents = new Map(files.filter(file => file.state === 'after' || file.state === 'regenerated').map(file => [file.path, restoreOf(file)]));
+  const touchesDependencies = files.some(file => contents.has(file.path) && isDependency(file.path));
   const restored = [];
-  try {
-    for (const { file, content } of restore) {
-      if (file.op === 'add') await client.deleteDurable(file.path, { expectedSha256: file.afterSha256, backupDir: backupDir(receipt, deps.home) });
-      else await client.writeDurable(file.path, content, { expectedSha256: file.afterSha256 ?? undefined, backupDir: backupDir(receipt, deps.home) });
+  let status = first;
+  let todo = files.filter(file => contents.has(file.path));
+  // Restore, then re-read Make. Make's own install can regenerate a restored
+  // dependency file, so those are restored again once Make is idle.
+  for (let round = 1; ; round++) {
+    let moved = false;
+    for (const file of [...todo].sort(byWriteOrder)) {
+      const current = status.workingSha256.get(file.path) ?? null;
+      try {
+        const content = contents.has(file.path) ? contents.get(file.path) : restoreOf(file);
+        if (file.op === 'add') await client.deleteDurable(file.path, { expectedSha256: current, backupDir: backupDir(receipt, deps.home) });
+        else await client.writeDurable(file.path, content, { expectedSha256: current ?? undefined, backupDir: backupDir(receipt, deps.home) });
+      } catch (error) {
+        if (round >= ROUNDS || (error.code !== 'MAKE_PENDING_CHANGED' && !isDependency(file.path))) {
+          receipt.restored = [...new Set(restored)];
+          stop(receipt, error, 'writing', `Abort stopped while restoring: ${error.message} Run --abort again.`, 'DEPLOY_WRITE_FAILED');
+        }
+        moved = true;
+        break;
+      }
       restored.push(file.path);
+      if (isDependency(file.path)) await waitIdle(client, receipt, deps);
     }
-  } catch (error) {
-    receipt.restored = restored;
-    stop(receipt, error, 'writing', `Abort stopped while restoring: ${error.message} Run --abort again.`, 'DEPLOY_WRITE_FAILED');
+    status = touchesDependencies || moved ? await settledStatus(client, receipt, deps) : await client.projectStatus();
+    const checked = plannedState(receipt, status);
+    const left = checked.problem ? [] : contentDiff(status.workingFlat, status.makeFlat);
+    todo = checked.problem ? [] : checked.files.filter(file => file.state !== 'before');
+    if (!checked.problem && !todo.length && !left.length) break;
+    if (checked.problem || round >= ROUNDS || todo.some(file => !isDependency(file.path) && !moved)) {
+      receipt.restored = [...new Set(restored)];
+      stop(receipt, null, 'writing', `Restored ${receipt.restored.length} file(s), but Make still differs from its saved version in ` +
+        `${checked.problem || JSON.stringify(left)}.`, 'DEPLOY_WRITE_FAILED');
+    }
   }
-  const status = await client.projectStatus();
-  const left = contentDiff(status.workingFlat, status.makeFlat);
-  if (left.length) {
-    receipt.restored = restored;
-    stop(receipt, null, 'writing', `Restored ${restored.length} file(s), but Make still differs from its saved version in ${JSON.stringify(left)}.`, 'DEPLOY_WRITE_FAILED');
-  }
-  receipt.restored = restored;
+  const restoredPaths = [...new Set(restored)];
+  receipt.restored = restoredPaths;
   receipt.stage = 'aborted';
   receipt.outcome = 'aborted';
   receipt.error = null;
   saveReceipt(receipt);
-  return { ...result(receipt, `Aborted: restored ${restored.length} file(s); Make is back at its saved version ${short(receipt.makeBefore.versionGitSha)} and nothing was saved.`),
+  return { ...result(receipt, `Aborted: restored ${restoredPaths.length} file(s); Make is back at its saved version ${short(receipt.makeBefore.versionGitSha)} and nothing was saved.`),
     ...(status.persistence?.pendingPaths?.length ? { stillListedPending: status.persistence.pendingPaths } : {}) };
 }
 

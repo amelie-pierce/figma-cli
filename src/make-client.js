@@ -26,6 +26,14 @@ function uncertainSave(message) {
   return error;
 }
 
+// Make's pending state moved between the pre-check and the write, so nothing
+// was written and the caller may retry once Make is idle again.
+function pendingChanged(what) {
+  const error = new Error(`Make version or pending files changed before the durable ${what}.`);
+  error.code = 'MAKE_PENDING_CHANGED';
+  return error;
+}
+
 function saveRequest(title, expectedPaths) {
   if (typeof title !== 'string' || !title.trim() || title.length > 160) throw new Error('Make version title must be 1–160 characters.');
   if (!Array.isArray(expectedPaths) || !expectedPaths.length || expectedPaths.length > 1000) throw new Error('Provide the exact expected changed-file set.');
@@ -334,6 +342,21 @@ export class MakeClient {
     return this._operation(async (deadline) => ({ fileKey: this.fileKey, ...await this._ensureCode(deadline) }));
   }
 
+  // A cheap probe for waiting until Make is idle: the editor flags, the
+  // persistence state and the client-VFS hash of each named path.
+  idleState(paths = []) {
+    return this._operation(async deadline => {
+      const ui = await this._ensureCode(deadline);
+      const state = (await this._driftState(deadline)).state;
+      const sha = {};
+      for (const path of paths) {
+        const entry = await this._durable({ type: 'read', path: sourcePath(path) }, deadline);
+        sha[path] = entry?.exists ? sha256(entry.content) : null;
+      }
+      return { busy: !!ui.busy, offline: !!ui.offline, state, sha };
+    });
+  }
+
   ui() {
     return this._operation(async deadline => ({ fileKey: this.fileKey,
       ...await this._evaluate(`(${makeUiSnapshot.toString()})()`, deadline) }));
@@ -575,7 +598,7 @@ export class MakeClient {
       }), deadline) : null;
       const immediate = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
       if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {
-        throw new Error('Make version or pending files changed before the durable write.');
+        throw pendingChanged('write');
       }
       let verification;
       try {
@@ -607,7 +630,7 @@ export class MakeClient {
       const backupPath = await this._bounded(() => this._backup(path, original.content, { backupDir, operation: 'durable-delete' }), deadline);
       const immediate = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
       if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {
-        throw new Error('Make version or pending files changed before the durable delete.');
+        throw pendingChanged('delete');
       }
       try {
         const accepted = await this._durable({ type: 'delete', path, expectedContent: original.content }, deadline);

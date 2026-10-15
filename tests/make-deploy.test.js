@@ -76,8 +76,15 @@ function project(t, { files = BASE, marker = true } = {}) {
   return { root, origin, upstream, clone, land, pull, tags, home };
 }
 
+// A lockfile that pnpm would write for this package.json.
+const lockFor = pkg => `lockfileVersion: 9.0\n# resolved for ${sha256(Buffer.isBuffer(pkg) ? pkg : text(pkg)).slice(0, 12)}\n`;
+
 // A stateful Make: saved and working files, the listed pending set (Make does
 // not list dot-folder paths), versions, private backups and failure hooks.
+// With `install` set, a write of package.json or the lockfile makes Make run
+// its own install, which lands at the next call: it rewrites the lockfile as
+// install(package.json) and, when that changes the pending list under a
+// write, the write refuses as the real client does.
 class FakeMake {
   constructor(files, { marker = true } = {}) {
     this.fileKey = KEY;
@@ -90,6 +97,30 @@ class FakeMake {
     this.hooks = {};
     this.hasBaseline = true;
     this.generating = false;
+    this.install = null;
+    this.installing = false;
+  }
+  land() {
+    if (!this.installing) return;
+    this.installing = false;
+    const result = typeof this.install === 'function' ? this.install(this.working.get('package.json')) : null;
+    for (const [path, content] of Object.entries(result || {})) this.working.set(path, Buffer.from(text(content)));
+  }
+  installAfter(path) { if (this.install && ['package.json', 'pnpm-lock.yaml'].includes(path)) this.installing = true; }
+  landUnder(what) {
+    const before = JSON.stringify(this.pending());
+    this.land();
+    if (JSON.stringify(this.pending()) !== before) {
+      const error = new Error(`Make version or pending files changed before the durable ${what}.`);
+      error.code = 'MAKE_PENDING_CHANGED';
+      throw error;
+    }
+  }
+  async idleState(paths) {
+    this.calls.push(['idle']);
+    if (this.installing) { this.land(); return { busy: true, offline: false, state: null, sha: {} }; }
+    const sha = Object.fromEntries(paths.map(path => [path, this.working.has(path) ? sha256(this.working.get(path)) : null]));
+    return { busy: false, offline: false, state: { mode: 'git', savedVersion: this.savedVersion, pendingPaths: this.pending(), isLoading: false, error: false }, sha };
   }
   flat(files) { return new Map([...files].map(([path, bytes]) => [path, { mode: '100644', blob: gitBlobSha(bytes) }])); }
   tree(files) { return gitTreeSha([...this.flat(files)].map(([path, entry]) => ({ path, ...entry }))); }
@@ -123,16 +154,19 @@ class FakeMake {
   async writeDurable(path, content, { expectedSha256, backupDir } = {}) {
     this.calls.push(['write', path]);
     this.hooks.beforeWrite?.(path);
+    this.landUnder('write');
     const current = this.working.get(path);
     if ((current != null) !== (expectedSha256 != null)) throw new Error('Expected SHA-256 is required for an existing file and forbidden for a new file.');
     if (current && sha256(current) !== expectedSha256) throw new Error('Make source changed; SHA-256 does not match.');
     const backupPath = current ? this.backup(path, current, backupDir) : null;
     this.working.set(path, Buffer.from(content));
+    this.installAfter(path);
     return { path, changed: true, backupPath };
   }
   async deleteDurable(path, { expectedSha256, backupDir } = {}) {
     this.calls.push(['delete', path]);
     this.hooks.beforeWrite?.(path);
+    this.landUnder('delete');
     const current = this.working.get(path);
     if (!current || sha256(current) !== expectedSha256) throw new Error('Make source is missing or changed; delete refused.');
     const backupPath = this.backup(path, current, backupDir);
@@ -216,7 +250,8 @@ function setup(t, { files = BASE, marker = true, makeFiles, make: makeOptions, g
   const make = new FakeMake(makeFiles ?? files, makeOptions);
   const gh = fakeGh(ghOptions);
   const run = fakeRun(runOptions);
-  const deps = { run: run.run, gh: gh.gh, home: p.home, install: install ?? (() => {}), now: () => new Date('2026-10-15T01:02:03.000Z') };
+  const deps = { run: run.run, gh: gh.gh, home: p.home, install: install ?? (() => {}), now: () => new Date('2026-10-15T01:02:03.000Z'),
+    settle: { quietMs: 0, pollMs: 0, timeoutMs: 5000 }, sleep: async () => {} };
   return { p, make, gh, run, deps, opts: { dir: p.clone } };
 }
 
@@ -415,13 +450,14 @@ describe('make deploy dry run, apply and verify', () => {
     const again = await deployPlan(s.make, s.opts, s.deps);
     assert.equal(again.counts.add + again.counts.modify + again.counts.delete, 0);
   });
-  it('writes the lockfile first and package.json last, so Make\'s own reinstall finds them consistent', async t => {
+  it('writes the dependency files last, the lockfile and then package.json, and waits for Make after each', async t => {
     const s = setup(t);
     landChange(s, { 'package.json': { ...PKG, dependencies: { react: '^19.0.0' } }, 'pnpm-lock.yaml': 'lockfileVersion: 9.0\nreact: 19\n', 'src/App.tsx': 'v2\n' });
     const plan = await deployPlan(s.make, s.opts, s.deps);
-    assert.deepEqual(plan.files.map(file => file.path), ['pnpm-lock.yaml', 'src/App.tsx', 'package.json']);
+    assert.deepEqual(plan.files.map(file => file.path), ['src/App.tsx', 'pnpm-lock.yaml', 'package.json']);
     await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
-    assert.deepEqual(s.make.writes.filter(([kind]) => kind === 'write').map(([, path]) => path), ['pnpm-lock.yaml', 'src/App.tsx', 'package.json']);
+    assert.deepEqual(s.make.calls.filter(([kind]) => ['write', 'idle'].includes(kind)).map(([kind, path]) => path ?? kind).filter((item, i, all) => item !== 'idle' || all[i - 1] !== 'idle'),
+      ['src/App.tsx', 'pnpm-lock.yaml', 'idle', 'package.json', 'idle']);
   });
 
   it('deploys a main marker for this file and team mode stays on', async t => {
@@ -740,5 +776,142 @@ describe('make deploy recovery', () => {
     s.make.commitVersion();
     await refuses(deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps), 'DEPLOY_VERIFY_FAILED', /no longer holds/);
     assert.equal(readReceipt(applied.receiptPath).outcome, 'ok');
+  });
+});
+
+describe('make deploy with dependency changes and Make\'s own install', () => {
+  const NEW_PKG = { ...PKG, dependencies: { react: '^19.0.0' } };
+  // Make holds a consistent lockfile; main changes package.json, its lockfile
+  // and one source file. Make's install rewrites the lockfile for whatever
+  // package.json it then holds, as `install(pkg)` decides.
+  const dependencyChange = (t, install = pkg => ({ 'pnpm-lock.yaml': lockFor(pkg) })) => {
+    const files = { ...BASE, 'pnpm-lock.yaml': lockFor(PKG) };
+    const s = setup(t, { files });
+    s.make.install = install;
+    landChange(s, { 'package.json': NEW_PKG, 'pnpm-lock.yaml': lockFor(NEW_PKG), 'src/App.tsx': 'v2\n' });
+    return s;
+  };
+  const lock = s => s.make.working.get('pnpm-lock.yaml').toString();
+
+  it('completes a deploy whose lockfile write makes Make reinstall and revert the lockfile', async t => {
+    const s = dependencyChange(t);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.outcome, 'ok');
+    assert.equal(s.make.saved.get('pnpm-lock.yaml').toString(), lockFor(NEW_PKG));
+    assert.equal(s.make.saved.get('package.json').toString(), text(NEW_PKG));
+    assert.deepEqual(s.make.calls.filter(([kind]) => kind === 'save').length, 1);
+    const verified = await deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps);
+    assert.match(verified.summary, /Verified after a fresh reload/);
+  });
+
+  it('waits and re-checks when Make\'s install lands under a write, then retries that path', async t => {
+    const s = dependencyChange(t);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    // An install lands while src/App.tsx is written and leaves a lockfile
+    // neither main's nor Make's saved one.
+    let once = true;
+    s.make.hooks.beforeWrite = path => {
+      if (path === 'src/App.tsx' && once) { once = false; s.make.install = () => ({ 'pnpm-lock.yaml': 'regenerated by Make\n' }); s.make.installing = true; }
+      else s.make.install = pkg => ({ 'pnpm-lock.yaml': lockFor(pkg) });
+    };
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.outcome, 'ok');
+    assert.deepEqual(s.make.writes.filter(([kind]) => kind === 'write').map(([, path]) => path),
+      ['src/App.tsx', 'src/App.tsx', 'pnpm-lock.yaml', 'pnpm-lock.yaml', 'package.json']);
+    assert.equal(s.make.saved.get('pnpm-lock.yaml').toString(), lockFor(NEW_PKG));
+  });
+
+  it('writes a regenerated lockfile again once Make is idle, and stops when Make keeps changing it', async t => {
+    // Make resolves the new package.json to a lockfile other than main's.
+    const s = dependencyChange(t, pkg => ({ 'pnpm-lock.yaml': pkg.equals(Buffer.from(text(NEW_PKG))) ? `${lockFor(pkg)}# make resolved\n` : lockFor(pkg) }));
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => {
+      assert.equal(error.code, 'DEPLOY_WRITE_FAILED', error.message);
+      assert.match(error.message, /keeps changing \["pnpm-lock\.yaml"\]/);
+      receiptPath = error.receiptPath;
+      return true;
+    });
+    assert.equal(s.make.calls.filter(([kind]) => kind === 'save').length, 0, 'never saves');
+    assert.ok(s.make.writes.filter(([, path]) => path === 'pnpm-lock.yaml').length > 2, 'the lockfile was written again');
+    assert.equal(readReceipt(receiptPath).stage, 'written');
+    // Abort restores everything, including the lockfile Make regenerated.
+    const aborted = await deployAbort(s.make, { receiptPath }, s.deps);
+    assert.equal(aborted.outcome, 'aborted');
+    for (const [path, bytes] of s.make.saved) assert.ok(s.make.working.get(path).equals(bytes), path);
+  });
+
+  // The Hinge failure: the lockfile was written, Make's install regenerated
+  // it, and a later write stopped. Nothing was saved.
+  const regeneratedAfterStop = async t => {
+    const s = dependencyChange(t, null);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.beforeWrite = path => {
+      if (path === 'package.json') {
+        s.make.working.set('pnpm-lock.yaml', Buffer.from('regenerated by Make\n'));
+        throw new Error('Make operation timed out.');
+      }
+    };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => {
+      assert.equal(error.code, 'DEPLOY_WRITE_FAILED', error.message);
+      receiptPath = error.receiptPath;
+      return true;
+    });
+    s.make.hooks.beforeWrite = null;
+    assert.equal(lock(s), 'regenerated by Make\n');
+    return { s, receiptPath };
+  };
+
+  it('aborts over a planned lockfile Make regenerated, restoring it from its backup', async t => {
+    const { s, receiptPath } = await regeneratedAfterStop(t);
+    const aborted = await deployAbort(s.make, { receiptPath }, s.deps);
+    assert.equal(aborted.outcome, 'aborted');
+    assert.deepEqual([...s.make.working.keys()].sort(), [...s.make.saved.keys()].sort());
+    for (const [path, bytes] of s.make.saved) assert.ok(s.make.working.get(path).equals(bytes), path);
+    assert.ok(readReceipt(receiptPath).restored.includes('pnpm-lock.yaml'));
+  });
+
+  it('resumes over a planned lockfile Make regenerated', async t => {
+    const { s, receiptPath } = await regeneratedAfterStop(t);
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath }, s.deps);
+    assert.equal(resumed.outcome, 'ok');
+    assert.equal(s.make.saved.get('pnpm-lock.yaml').toString(), lockFor(NEW_PKG));
+    assert.equal(s.make.saved.get('package.json').toString(), text(NEW_PKG));
+  });
+
+  it('still refuses unplanned content in a non-dependency file, a path outside the plan, or a lockfile with no backup', async t => {
+    const { s, receiptPath } = await regeneratedAfterStop(t);
+    s.make.working.set('src/App.tsx', Buffer.from('someone typed here\n'));
+    await refuses(deployAbort(s.make, { receiptPath }, s.deps), 'DEPLOY_RECEIPT', /neither started from nor planned in \["src\/App\.tsx"\]/);
+    await refuses(deployResume(s.make, { ...s.opts, receiptPath }, s.deps), 'DEPLOY_RECEIPT', /Inspect it by hand/);
+    s.make.working.set('src/App.tsx', Buffer.from('v2\n'));
+    s.make.working.set('src/main.tsx', Buffer.from('outside the plan\n'));
+    await refuses(deployAbort(s.make, { receiptPath }, s.deps), 'DEPLOY_MAKE_AHEAD');
+    await refuses(deployResume(s.make, { ...s.opts, receiptPath }, s.deps), 'DEPLOY_MAKE_AHEAD');
+
+    // The lockfile changed before this deploy ever wrote it: no backup holds
+    // its start, so abort refuses rather than guess.
+    const n = dependencyChange(t, null);
+    const plan = await deployPlan(n.make, n.opts, n.deps);
+    n.make.hooks.beforeWrite = path => { if (path === 'src/App.tsx') throw new Error('Make operation timed out.'); };
+    let early;
+    await assert.rejects(deployApply(n.make, { ...n.opts, planPath: plan.planPath }, n.deps), error => { early = error.receiptPath; return true; });
+    n.make.hooks.beforeWrite = null;
+    n.make.working.set('pnpm-lock.yaml', Buffer.from('regenerated by Make\n'));
+    const writes = n.make.writes.length;
+    await refuses(deployAbort(n.make, { receiptPath: early }, n.deps), 'DEPLOY_RECEIPT', /No backup of pnpm-lock\.yaml/);
+    assert.equal(n.make.writes.length, writes, 'nothing was changed');
+  });
+
+  it('stops when Make\'s reaction under a write changes a path outside the plan', async t => {
+    const s = dependencyChange(t);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.beforeWrite = path => {
+      if (path === 'src/App.tsx') { s.make.install = () => ({ 'src/main.tsx': 'changed by Make\n' }); s.make.installing = true; }
+    };
+    await refuses(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), 'DEPLOY_MAKE_AHEAD', /outside the deploy \["src\/main\.tsx"\]/);
+    assert.equal(s.make.calls.filter(([kind]) => kind === 'save').length, 0);
   });
 });
