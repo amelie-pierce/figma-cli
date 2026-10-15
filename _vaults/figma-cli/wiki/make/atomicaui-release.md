@@ -13,8 +13,12 @@ base64 parts; the manifest records hashes and sizes for files and decoded
 parts (`src/make-atomicaui.js:113`, `src/commands/make-atomicaui.js:32`). The
 save requires the exact release path set, and `verify-release` reads every
 saved path and hash from the Make filesystem bridge
-(`src/commands/make-atomicaui.js:106`). Publishing remains a manual Make
-action. The first saved release contained 265 source files in 270 release
+(`src/commands/make-atomicaui.js`). After saving, the manual site rebuild is
+**Make settings → General → Unpublish → Publish** (skip Unpublish when the site
+is not already published). Set **Who can view** to **Anyone on the web**, no
+password, and keep the address. The address can return 404 for about a minute
+during republishing. **Update kit** and **Publish kit** do not rebuild the site.
+The first saved release contained 265 source files in 270 release
 paths.
 
 `public/atomicaui/**` is kit-only data. Vendor drift, workspace-to-Make sync,

@@ -14,7 +14,11 @@ commands rather than assuming an upstream installation includes it.
 
 For the AtomicAUI library, use the `make atomicaui` command group. “Release a new
 AtomicAUI version” maps to `release --file KEY` (optionally `--version X.Y.Z`);
-the release command saves the files but the user still clicks Publish in Make.
+the release command saves the files; the user rebuilds the site in **Make
+settings → General** by clicking **Unpublish** (if already published) and then
+**Publish**. Set **Who can view** to **Anyone on the web**, use no password, and
+keep the existing address. The address can return 404 for about a minute.
+**Update kit** and **Publish kit** do not rebuild the site.
 After an interrupted unsaved release, use `release --version X.Y.Z --resume`;
 after a save, use `verify-release --file KEY --version X.Y.Z` for a read-only
 full path and hash check. Kit-only `public/atomicaui/**` files are excluded

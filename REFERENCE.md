@@ -678,8 +678,13 @@ everything below):
 saved vendor tree from the AtomicAUI kit, writes an immutable
 `public/atomicaui/<version>/` folder plus `latest.json`, checks the exact
 pending path set, saves one Make version, and verifies the written files.
-Without `--version`, it uses the next patch version. Publishing remains a
-manual Figma Make click; the command prints the steps. Archive and oversized
+Without `--version`, it uses the next patch version. Site publication remains a
+manual Figma Make action: after the saved release, open **Make settings →
+General**. If the site is already published, click **Unpublish**, then
+**Publish**. Set **Who can view** to **Anyone on the web**, leave the password
+off, and keep the same site address. The address can return 404 for about a
+minute during republishing. **Update kit** and **Publish kit** update the kit
+package; they do not rebuild the site. The command prints these steps. Archive and oversized
 source files use base64 parts of at most 512 KiB by default (configurable up to
 2 MiB with `--part-bytes`). After an interrupted, unsaved release, use
 `--version X.Y.Z --resume`; it checks every pending path and byte before

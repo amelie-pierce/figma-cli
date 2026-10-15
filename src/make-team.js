@@ -37,7 +37,8 @@ export function fail(message, code, extra = {}) {
 // Capture a command's output; nothing reaches the terminal unless asked.
 // Git never opens an editor or a credential prompt here.
 export function defaultRun(command, args, { cwd, stream = false } = {}) {
-  const env = { ...quietToolEnv(), GIT_EDITOR: 'true', GIT_TERMINAL_PROMPT: '0', GIT_MERGE_AUTOEDIT: 'no' };
+  const env = { ...quietToolEnv(), GIT_EDITOR: 'true', GIT_TERMINAL_PROMPT: '0', GIT_MERGE_AUTOEDIT: 'no',
+    COREPACK_ENABLE_AUTO_PIN: '0' };
   const result = spawnSync(command, args, { cwd, env, encoding: 'utf8', shell: false, maxBuffer: 64 * 1024 * 1024,
     stdio: stream ? ['ignore', process.stderr, process.stderr] : ['ignore', 'pipe', 'pipe'] });
   if (result.error?.code === 'ENOENT') return { status: 127, stdout: '', stderr: `${command}: not found` };
@@ -374,7 +375,7 @@ const tail = (text, lines = 15) => String(text).trim().split('\n').slice(-lines)
 
 function runScripts(ctx, { only = ['format', 'build'], outcome = 'Nothing was saved' } = {}) {
   const ran = [];
-  for (const { name, command, args } of projectScripts(ctx.root).filter(script => only.includes(script.name))) {
+  for (const { name, command, args } of projectScripts(ctx.root).filter(script => only.includes(script.name) && !(ctx.verifiedVendor && script.name === 'format'))) {
     const result = ctx.run(command, args, { cwd: ctx.root });
     if (result.status !== 0) {
       const code = name === 'build' ? 'TEAM_BUILD_FAILED' : 'TEAM_FORMAT_FAILED';
@@ -846,7 +847,7 @@ function changedSinceMain(ctx) {
 
 // PR: sync and save, then open (or reuse) the pull request into main and ask
 // the area owners to review.
-export function pr(ctx, { title, message } = {}) {
+export function pr(ctx, { title, message, body } = {}) {
   const synced = sync(ctx, { message });
   const saved = save(ctx);
   const branch = saved.branch;
@@ -867,7 +868,7 @@ export function pr(ctx, { title, message } = {}) {
     const review = noReviewer ? `No reviewer was requested automatically: ${noReviewer}. Ask a teammate to review.`
       : `Review requested from ${reviewers.map(r => `@${r}`).join(', ')} (from the areas map).`;
     const out = ctx.gh(['pr', 'create', '--repo', ctx.repo(), '--base', TRUNK, '--head', branch,
-      '--title', (title || titleFrom(task, branch)).trim(), '--body', prBody({ branch, files, task, review })], 'Opening the pull request');
+      '--title', (title || titleFrom(task, branch)).trim(), '--body', body || prBody({ branch, files, task, review })], 'Opening the pull request');
     url = out.split('\n').reverse().find(line => /^https:\/\//.test(line)) || out;
   }
   const requested = [];
