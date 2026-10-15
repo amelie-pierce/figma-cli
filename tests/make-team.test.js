@@ -142,7 +142,9 @@ function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0, 
       const target = prs.find(x => String(x.number) === args[2]);
       assert.ok(args.includes('--squash'));
       if (protectedMain && !target.reviews.some(r => r.state === 'APPROVED')) {
-        return { status: 1, stdout: '', stderr: `X Pull request ${REPO}#${target.number} is not mergeable: the base branch policy prohibits the merge.\n` };
+        return { status: 1, stdout: '', stderr: `X Pull request ${REPO}#${target.number} is not mergeable: the base branch policy prohibits the merge.\n` +
+          'To have the pull request merged after all the requirements have been met, add the `--auto` flag.\n' +
+          'To use administrator privileges to immediately merge the pull request, add the `--admin` flag.\n' };
       }
       const head = p.originSha(`refs/heads/${target.headRefName}`);
       assert.equal(flag('--match-head-commit'), head);
@@ -829,7 +831,8 @@ describe('team merge --force', () => {
     const mainBefore = p.originSha('main');
     assert.ok(TEAM_CODES.includes('TEAM_FORCE_PROTECTED'));
     assert.throws(() => merge(f.ctx(), { force: true, reason, home }), error => error.code === 'TEAM_FORCE_PROTECTED' &&
-      /protection requires an approving review, and a force merge does not override it\. Ask a reviewer to approve it/.test(error.message));
+      /protection requires an approving review, and a force merge does not override it\. Ask a reviewer to approve it/.test(error.message) &&
+      !/--admin/.test(error.message));
     assert.ok(f.calls.some(c => c.command === 'gh' && c.args[1] === 'merge'));
     assert.equal(p.originSha('main'), mainBefore);
     assert.ok(!existsSync(forceReceiptDir(home)));

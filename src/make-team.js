@@ -64,7 +64,8 @@ export function teamContext({ dir = process.cwd(), run = defaultRun, warn = () =
   ctx.gh = (args, what) => {
     const result = run('gh', args, { cwd: ctx.root });
     if (result.status === 127) fail('The GitHub CLI (gh) is not installed. Install it, run gh auth login, then retry.', 'TEAM_GH_FAILED');
-    if (result.status !== 0) fail(`${what || `gh ${args.slice(0, 2).join(' ')}`} failed: ${lastLine(result)}. Check gh auth status.`, 'TEAM_GH_FAILED');
+    if (result.status !== 0) fail(`${what || `gh ${args.slice(0, 2).join(' ')}`} failed: ${lastLine(result)}. Check gh auth status.`, 'TEAM_GH_FAILED',
+      { output: `${result.stdout}\n${result.stderr}` });
     return result.stdout.trim();
   };
   ctx.ghJson = (args, what) => {
@@ -1021,7 +1022,7 @@ export function merge(ctx, { buildCheck = true, force = false, reason, home, now
     ctx.gh(['pr', 'merge', String(pull.number), '--repo', ctx.repo(), '--squash', '--match-head-commit', head, ...(forced ? ['--body', forcedBody] : [])],
       'Merging the pull request');
   } catch (error) {
-    if (forced && /base branch policy|protected branch|rule violation|approving review/i.test(error.message)) {
+    if (forced && /base branch policy|protected branch|rule violation|approving review/i.test(error.output || '')) {
       fail(`GitHub refused to merge ${pull.url}: the repo's GitHub protection requires an approving review, and a force merge does not override it. ` +
         'Ask a reviewer to approve it, then ask to merge again. Nothing was merged.', 'TEAM_FORCE_PROTECTED', { url: pull.url });
     }
