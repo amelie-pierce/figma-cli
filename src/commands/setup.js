@@ -179,100 +179,14 @@ program.action(async () => {
     process.exit(1);
   }
 
+  // A bare `figma-cli` only reports. It never patches, quits or restarts
+  // Figma Desktop: someone may have unsaved work open, and an agent may run
+  // it just to see what the tool is. Connecting is always an explicit
+  // `figma-cli connect` (or `init`).
   const config = loadConfig();
-
-  // First time? Run init
-  if (!config.patched) {
-    showBanner();
-    console.log(chalk.white('  Welcome! Let\'s get you set up.\n'));
-    console.log(chalk.gray('  This takes about 30 seconds. No API key needed.\n'));
-
-    // Step 1: Check Node version
-    console.log(chalk.blue('Step 1/3: ') + 'Checking Node.js...');
-    const nodeVersion = process.version;
-    const nodeMajor = parseInt(nodeVersion.slice(1).split('.')[0]);
-    if (nodeMajor < 18) {
-      console.log(chalk.red(`  ✗ Node.js ${nodeVersion} is too old. Please upgrade to Node 18+`));
-      process.exit(1);
-    }
-    console.log(chalk.green(`  ✓ Node.js ${nodeVersion}`));
-
-    // Step 2: Patch Figma
-    console.log(chalk.blue('\nStep 2/3: ') + 'Patching Figma Desktop...');
-    if (config.patched) {
-      console.log(chalk.green('  ✓ Figma already patched'));
-    } else {
-      console.log(chalk.gray('  (This allows CLI to connect to Figma)'));
-      const spinner = ora('  Patching...').start();
-      try {
-        const patchStatus = isPatched();
-        if (patchStatus === true) {
-          config.patched = true;
-          saveConfig(config);
-          spinner.succeed('Figma already patched');
-        } else if (patchStatus === false) {
-          patchFigma();
-          config.patched = true;
-          saveConfig(config);
-          spinner.succeed('Figma patched');
-        } else {
-          // Can't determine - assume it's fine (old Figma version)
-          config.patched = true;
-          saveConfig(config);
-          spinner.succeed('Figma ready (no patch needed)');
-        }
-      } catch (error) {
-        spinner.fail('Patch failed: ' + error.message);
-        if ((error.message.includes('EPERM') || error.message.includes('permission') || error.message.includes('access') || error.message.includes('App Management')) && process.platform === 'darwin') {
-          console.log(chalk.yellow('\n  ⚠️  Your terminal needs "App Management" permission to patch Figma.\n'));
-          console.log(chalk.gray('  1. Open System Settings → Privacy & Security → App Management'));
-          console.log(chalk.gray('  2. Enable your terminal (Terminal, iTerm, etc.)'));
-          console.log(chalk.gray('  3. Quit the terminal completely (Cmd+Q)'));
-          console.log(chalk.gray('  4. Reopen it and try again'));
-          console.log(chalk.gray('  (If it still fails, also enable Full Disk Access — or just use Safe Mode: figma-cli connect --safe)\n'));
-        } else if (error.message.includes('EPERM') || error.message.includes('permission')) {
-          console.log(chalk.yellow('\n  Try running as administrator.\n'));
-        }
-      }
-    }
-
-    // Step 3: Start Figma
-    console.log(chalk.blue('\nStep 3/3: ') + 'Starting Figma...');
-    try {
-      killFigma();
-      await new Promise(r => setTimeout(r, 1000));
-      await startFigma();
-      console.log(chalk.green('  ✓ Figma started'));
-
-      // Wait for connection
-      const spinner = ora('  Waiting for connection...').start();
-      let connected = false;
-      for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 1000));
-        connected = await FigmaClient.isConnected();
-        if (connected) break;
-      }
-
-      if (connected) {
-        spinner.succeed('Connected to Figma');
-      } else {
-        spinner.warn('Connection pending - open a file in Figma');
-      }
-    } catch (error) {
-      console.log(chalk.yellow('  ! Could not start Figma automatically'));
-      console.log(chalk.gray('    Start manually: ' + getManualStartCommand()));
-    }
-
-    // Done!
-    console.log(chalk.green('\n  ✓ Setup complete!\n'));
-    showQuickStart();
-    return;
-  }
-
-  // Already set up - check connection and show status
   showBanner();
-
-  const connected = await FigmaClient.isConnected();
+  let connected = false;
+  try { connected = await FigmaClient.isConnected(); } catch { /* reported as not connected */ }
   if (connected) {
     console.log(chalk.green('  ✓ Connected to Figma\n'));
     try {
@@ -286,29 +200,11 @@ program.action(async () => {
     console.log();
     showQuickStart();
   } else {
-    console.log(chalk.yellow('  ⚠ Figma not connected\n'));
-    console.log(chalk.white('  Starting Figma...'));
-    try {
-      killFigma();
-      await new Promise(r => setTimeout(r, 500));
-      await startFigma();
-      console.log(chalk.green('  ✓ Figma started\n'));
-
-      const spinner = ora('  Waiting for connection...').start();
-      for (let i = 0; i < 8; i++) {
-        await new Promise(r => setTimeout(r, 1000));
-        if (await FigmaClient.isConnected()) {
-          spinner.succeed('Connected to Figma\n');
-          showQuickStart();
-          return;
-        }
-      }
-      spinner.warn('Open a file in Figma to connect\n');
-      showQuickStart();
-    } catch {
-      console.log(chalk.gray('  Start manually: ' + getManualStartCommand() + '\n'));
-    }
+    console.log(chalk.yellow('  ⚠ Figma is not connected. Nothing was started or restarted.\n'));
+    console.log(chalk.white(`  To connect, run: ${chalk.cyan(config.patched ? 'figma-cli connect' : 'figma-cli init')}`));
+    console.log(chalk.gray('  (connect may restart Figma Desktop; save your work first)\n'));
   }
+  console.log(chalk.gray('  All commands: ') + chalk.cyan('figma-cli --help\n'));
 });
 
 function showQuickStart() {

@@ -1,6 +1,6 @@
 ---
 name: figma-make-team
-description: Plain-language git for designers working on a team-mode Figma Make project's local clone. Maps phrases like "start a task", "save my progress", "get the latest", "fix the conflict", "I'm ready for review", "merge it", "what's going on?", the cross-review phrases "what needs my review", "review Bob's change", "approve it", "ask for changes", "show my review feedback" and "address the comments", and the admin deploy phrases "deploy", "what would deploy change" and "is the deploy done" to figma-cli team verbs and make deploy, and explains the result without git jargon. Use whenever a designer asks to branch, save, sync, review, merge, deploy or check the state of a prototype repo; never run raw git for them.
+description: Plain-language git for designers working on a team-mode Figma Make project's local clone. Maps phrases like "start a task", "save my progress", "get the latest", "fix the conflict", "I'm ready for review", "merge it", "what's going on?", "merge it anyway", the cross-review phrases "what needs my review", "review Bob's change", "approve it", "ask for changes", "show my review feedback" and "address the comments", and the admin deploy phrases "deploy", "what would deploy change" and "is the deploy done" to figma-cli team verbs and make deploy, and explains the result without git jargon. Use whenever a designer asks to branch, save, sync, review, merge, deploy or check the state of a prototype repo; never run raw git for them.
 ---
 
 # Figma Make team workflow
@@ -19,7 +19,9 @@ it in the clone, and explain the JSON result in plain language.
   `git diff`) to explain something are fine.
 - The verbs already refuse to push to `main`, force-push `main`, change another
   person's branch, or merge a pull request without an approval from someone
-  other than its author. Never try to get around a refusal; explain it.
+  other than its author. Never try to get around a refusal; explain it. The
+  one exception is a repo admin saying "merge it anyway" (below), never on your
+  own initiative.
 - Never approve or ask for changes on the person's own pull request, and never
   edit, save or push from a review copy (`.figma-cli/reviews/pr-<n>`); the
   verbs refuse both. A review is recorded under the person's own GitHub login.
@@ -45,6 +47,7 @@ Run each verb inside the clone, or pass `--dir <clone>`.
 | "I'm ready for review" | `figma-cli team pr [--title "<title>"]` | The pull request link (full URL) and who was asked to review |
 | "Merge it" | `figma-cli team merge` | The merged link, who approved, and that they are back on main |
 | … and `TEAM_NO_BUILD_CHECK`, after they confirm merging without any build | `figma-cli team merge --no-build-check` | That no build confirmed it, so they should check the app on main |
+| "Merge it anyway" / "merge without approval" (after `TEAM_NOT_APPROVED`) | First ask in plain words: "Why does this need to go in without a review? I'll record your reason in the history." Then `figma-cli team merge --force --reason "<their words>"` | That it was merged without a review, that their reason is recorded in the merge commit and the `receipt`, and that someone should still look at it afterwards. Only repo admins can; the build must still pass and the branch be up to date |
 | "What's going on?" | `figma-cli team status` | Branch, unsaved files, review state, and how far behind main |
 
 ## Reviewing each other's work
@@ -61,11 +64,21 @@ A `<pr>` is the pull request's number or link, or the author's GitHub login.
 | … on a file line | `figma-cli team comment <pr> -m "…" --file src/App.tsx --line 12` | Same; if it was not a changed line it became a general comment |
 | "Approve it" / "looks good" | `figma-cli team approve <pr> [-m "<note>"]` | Approved as them; the author can now merge |
 | "Ask for changes: …" | `figma-cli team request-changes <pr> -m "<what should change>"` | The author will see it in their feedback |
-| "Show my review feedback" | `figma-cli team feedback` | Who approved, who asked for changes, and each comment in plain words |
+| "Show my review feedback" | `figma-cli team feedback` | Who approved, who asked for changes, and each comment in plain words. Their own comments are not listed; `authorCommentsHidden` says how many there are |
 | "Address the comments" | `figma-cli team address` | They are back on their branch; work through `todo` with them, then `figma-cli team save` and `figma-cli team sync`, and ask the reviewer to look again |
 
-**Lavish notes.** After `team review <pr> --lavish`, poll each page the result
-lists (`lavish.poll`) and turn every note into one `team comment`:
+**Always listening.** Whenever a result has `listen` (any verb that opened a
+Lavish page for the person: `team review --lavish` or `--app` today, and any
+later preview page), start every command in `listen.commands` right away as a
+tracked background job of your harness, without asking: one that notifies you
+when it ends, never `nohup`, `&` or a detached terminal. The person never has
+to turn anything on. When a poll returns notes, act on them and start it again;
+if it stops, times out or is killed, start it again. Stop only when it says the
+person ended the session. If the person says "Listen to my review page again"
+(the page tells them to, should Lavish ever show that the agent is not
+listening), restart the poll for that page.
+
+**Lavish notes.** Turn every note a poll returns into one `team comment`:
 - A note on a line of the change page: pass its CSS locator,
   `--selector "<locator>"`; it maps to that file and line.
 - A note on the app: pass `--selector "<locator>" --text "<quoted text>"`, and
@@ -114,7 +127,11 @@ On failure the CLI prints `{error, code}` on stderr and exits 1:
 | `TEAM_CONFLICT` | Their branch is unchanged. For each file, name the person and the pull request link from `conflicts[].changedBy`, and suggest asking on the pull request |
 | `TEAM_PUSH_REJECTED` | GitHub has newer work on their branch (maybe another computer); their work is still saved here. Run `figma-cli team sync` to bring it in and send theirs |
 | `TEAM_PUSH_BLOCKED` | GitHub flagged something (for example a secret) and refused it; quote GitHub's reason. Their unsent saves were undone and every change is still in their files, so help remove what was flagged, then run `figma-cli team save` again, or `figma-cli team sync` when the message says "get the latest" (after a sync had rewritten saves GitHub already has). Syncing alone, without removing it, will not help |
-| `TEAM_NOT_APPROVED` | Someone other than them must approve the latest version of the pull request; share the link. A stale approval needs a fresh look |
+| `TEAM_NOT_APPROVED` | Someone other than them must approve the latest version of the pull request; share the link. A stale approval needs a fresh look. A repo admin may say "merge it anyway" |
+| `TEAM_FORCE_NO_REASON` | Merging without a review needs their reason in plain words; ask for it |
+| `TEAM_FORCE_NOT_ADMIN` | Only repo admins can merge without a review; a teammate has to approve it |
+| `TEAM_FORCE_NEEDS_BUILD` | Even a merge without a review needs a passing build; do not combine it with `--no-build-check` |
+| `TEAM_FORCE_PROTECTED` | GitHub's protection on the repo requires an approving review, and a merge without a review does not override it; ask a reviewer to approve |
 | `TEAM_CHANGES_REQUESTED` | A reviewer asked for changes; help make them, then save |
 | `TEAM_CHECKS_PENDING` / `TEAM_CHECKS_FAILED` | Wait for, or fix, the named checks |
 | `TEAM_NO_BUILD_CHECK` | The pull request has no checks and the project no build script, so nothing proves it builds; ask whether to merge anyway |
@@ -140,6 +157,10 @@ Always write pull request links as the full `https://` URL from the result.
   `pnpm-lock.yaml`) are best changed in their own small pull request, and only
   one dependency pull request should be open at a time.
 - Area owners come from the `areas` map in `.figma-cli/project.json`
-  (path glob → GitHub logins); `team pr` asks them to review.
+  (path glob → GitHub logins); `team pr` asks them to review. When nobody was
+  asked (`noReviewerRequested` says why, for example no areas map), tell them
+  to ask a teammate.
+- `team save` keeps vendored files (under a `VENDOR.json`, or listed in it)
+  exactly as they are, even when the project's format step would rewrite them.
 
 Exact options and behaviour: `figma-cli team --help` and REFERENCE.md.

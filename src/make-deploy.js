@@ -7,7 +7,7 @@ import { isIgnored, parseIgnore } from './git-tree.js';
 import { requireGitMode } from './make-durable.js';
 import { install as installProject } from './make-local.js';
 import { readRepoAccess } from './make-mode.js';
-import { detectMode, ghRunner, lfsMatcher, parseMarker, PROJECT_EXCLUDES, PROJECT_MARKER, repoName } from './make-project.js';
+import { detectMode, ghRunner, isRepoOnly, lfsMatcher, parseMarker, PROJECT_EXCLUDES, PROJECT_MARKER, repoName } from './make-project.js';
 import { currentBranch, defaultRun, fetchMain, projectScripts, requireNoOperation, revOf, teamContext, TRUNK } from './make-team.js';
 
 // `make deploy`: a repo admin deploys GitHub main, from a local clone, into
@@ -40,7 +40,7 @@ const sha256 = value => createHash('sha256').update(value).digest('hex');
 const short = sha => String(sha).slice(0, 7);
 const SHA = /^[a-f0-9]{40}$/;
 const hard = parseIgnore(PROJECT_EXCLUDES.join('\n'));
-const alwaysExcluded = path => isIgnored(hard, path, false);
+const alwaysExcluded = path => isIgnored(hard, path, false) || isRepoOnly(path);
 
 export function fail(message, code, extra = {}) {
   const error = new Error(message);
@@ -282,7 +282,10 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes }) {
   for (const path of [...new Set([...main.flat.keys(), ...status.makeFlat.keys()])].sort()) {
     const m = main.flat.get(path);
     const k = status.makeFlat.get(path);
-    if (alwaysExcluded(path)) { excluded.push({ path, reason: 'never deployed: Make manages it or it can hold secrets' }); continue; }
+    if (alwaysExcluded(path)) {
+      excluded.push({ path, reason: isRepoOnly(path) ? 'never deployed: project vault notes stay in the repo' : 'never deployed: Make manages it or it can hold secrets' });
+      continue;
+    }
     if (path === PROJECT_MARKER && !m) { excluded.push({ path, reason: 'main has no team marker; Make keeps its own' }); continue; }
     if (m && (m.type !== 'blob' || !['100644', '100755'].includes(m.mode))) { refused.unsupported.push(`${path} (${m.type === 'commit' ? 'submodule' : 'symbolic link'})`); continue; }
     if (m?.blob === k?.blob) {

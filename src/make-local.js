@@ -1,7 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { parseMarker, PROJECT_MARKER, repoName } from './make-project.js';
+import { quietToolEnv } from './tool-env.js';
 
 // Running a team-mode Make project locally: `make clone`, `make install`,
 // `make pull` and `make dev`. GitHub `main` is the source of truth; these
@@ -168,10 +171,32 @@ export function checkToolchain(expected, actual, pm) {
   return warnings;
 }
 
+// A toolchain notice is shown once per clone: the same version mismatch on
+// every install, review and pull is noise. Shown notices are remembered by a
+// hash of the clone folder and the text, in ~/.figma-cli/notices.json.
+export function noticeStore(home = homedir()) {
+  const path = join(home, '.figma-cli', 'notices.json');
+  let seen = {};
+  try { seen = JSON.parse(readFileSync(path, 'utf8')) || {}; } catch { /* first notice */ }
+  return {
+    fresh(dir, text) {
+      const key = createHash('sha256').update(`${resolve(dir)}\0${text}`).digest('hex').slice(0, 32);
+      if (seen[key]) return false;
+      seen[key] = new Date().toISOString();
+      try {
+        mkdirSync(join(home, '.figma-cli'), { recursive: true, mode: 0o700 });
+        writeFileSync(`${path}.${process.pid}.tmp`, `${JSON.stringify(seen, null, 2)}\n`, { mode: 0o600 });
+        renameSync(`${path}.${process.pid}.tmp`, path);
+      } catch { /* shown again next time, which is harmless */ }
+      return true;
+    },
+  };
+}
+
 // Run a command and capture its output. `stdio: 'stderr'` streams it to
 // stderr instead, so the JSON report on stdout stays clean.
 export function defaultRun(command, args, { cwd, stream = false } = {}) {
-  const result = spawnSync(command, args, { cwd, encoding: 'utf8', shell: false,
+  const result = spawnSync(command, args, { cwd, encoding: 'utf8', shell: false, env: quietToolEnv(),
     stdio: stream ? ['ignore', process.stderr, process.stderr] : ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
   if (result.error?.code === 'ENOENT') return { status: 127, stdout: '', stderr: `${command}: not found` };
   if (result.error) throw result.error;
@@ -197,7 +222,8 @@ function git(run, dir, args, what) {
 // (package.json, lockfile, toolchain, kits) still shows them.
 // ignorePnpmfile: a review copy holds someone else's unmerged code, and pnpm
 // runs a .pnpmfile.cjs even with --ignore-scripts.
-export function install(dir, { run = defaultRun, warn = () => {}, ignorePnpmfile = false } = {}) {
+// notices: a noticeStore(); without one every toolchain notice is shown.
+export function install(dir, { run = defaultRun, warn = () => {}, ignorePnpmfile = false, notices = null } = {}) {
   const tracked = run('git', ['ls-files', '-z'], { cwd: dir });
   const files = tracked.status === 0 ? tracked.stdout.split('\0').filter(Boolean) : ['.npmrc'];
   const warnings = npmrcTokenWarnings(dir, files);
@@ -206,7 +232,8 @@ export function install(dir, { run = defaultRun, warn = () => {}, ignorePnpmfile
   const pm = detectPackageManager(dir, pkg);
   const expected = toolchainExpectations(dir, pkg, pm);
   const toolchain = toolVersions(run, ['node', pm.name, ...expected.map(e => e.tool)], { cwd: dir });
-  const toolWarnings = checkToolchain(expected, toolchain, pm);
+  const allToolWarnings = checkToolchain(expected, toolchain, pm);
+  const toolWarnings = notices ? allToolWarnings.filter(text => notices.fresh(dir, text)) : allToolWarnings;
   toolWarnings.forEach(warn);
   warnings.push(...toolWarnings);
   requireNoKitDependencies(pkg);
@@ -214,11 +241,13 @@ export function install(dir, { run = defaultRun, warn = () => {}, ignorePnpmfile
   const args = ignorePnpmfile ? [...base, '--ignore-pnpmfile'] : base;
   const result = run(command, args, { cwd: dir, stream: true });
   if (result.status !== 0) fail(`${command} ${args.join(' ')} failed (exit ${result.status}); see its output above.`, 'MAKE_INSTALL_FAILED');
-  return { packageManager: pm.name, lockfile: pm.lockfile, command: [command, ...args].join(' '), toolchain, warnings };
+  const quieted = allToolWarnings.length - toolWarnings.length;
+  return { packageManager: pm.name, lockfile: pm.lockfile, command: [command, ...args].join(' '), toolchain, warnings,
+    ...(quieted ? { toolchainNoticesShownBefore: quieted } : {}) };
 }
 
 // gh repo clone with the caller's own gh login, always at main.
-export function cloneProject({ repo, dir, source = 'argument', fileKey }, { run = defaultRun, warn = () => {}, cwd = process.cwd() } = {}) {
+export function cloneProject({ repo, dir, source = 'argument', fileKey }, { run = defaultRun, warn = () => {}, cwd = process.cwd(), notices = null } = {}) {
   repoName(repo);
   const target = resolve(cwd, dir || repo.split('/')[1]);
   if (existsSync(target) && (!statSync(target).isDirectory() || readdirSync(target).length)) {
@@ -230,7 +259,7 @@ export function cloneProject({ repo, dir, source = 'argument', fileKey }, { run 
   if (branch !== TRUNK) fail(`The clone is on ${branch}, not ${TRUNK}.`);
   const head = git(run, target, ['rev-parse', 'HEAD']);
   const summary = { repo, source, ...(fileKey ? { fileKey } : {}), dir: target, branch, head };
-  try { return { ...summary, install: install(target, { run, warn }) }; }
+  try { return { ...summary, install: install(target, { run, warn, notices }) }; }
   catch (error) {
     error.message = `Cloned ${repo} to ${target} at ${TRUNK} ${head.slice(0, 7)}, but did not install. ${error.message}`;
     error.dir = target;
@@ -251,7 +280,7 @@ const blobAt = (run, dir, rev, path) => {
 
 // Fetch main and fast-forward the local main only. Refuses local commits on
 // main (they belong on a task branch) and a dirty checkout of main.
-export function pullProject(dir, { run = defaultRun, warn = () => {} } = {}) {
+export function pullProject(dir, { run = defaultRun, warn = () => {}, notices = null } = {}) {
   const root = repoRoot(dir, { run });
   git(run, root, ['fetch', '--quiet', 'origin', `+refs/heads/${TRUNK}:refs/remotes/origin/${TRUNK}`], `git fetch origin ${TRUNK}`);
   const remote = git(run, root, ['rev-parse', `refs/remotes/origin/${TRUNK}`]);
@@ -287,7 +316,7 @@ export function pullProject(dir, { run = defaultRun, warn = () => {} } = {}) {
     const note = existsSync(join(root, 'node_modules')) ? undefined : 'Nothing is installed yet; run figma-cli make install.';
     return { ...after, lockfileChanged: false, reinstalled: false, ...(note ? { note } : {}) };
   }
-  try { return { ...after, lockfileChanged: true, reinstalled: true, install: install(root, { run, warn }) }; }
+  try { return { ...after, lockfileChanged: true, reinstalled: true, install: install(root, { run, warn, notices }) }; }
   catch (error) {
     error.message = `Fast-forwarded ${TRUNK} by ${behind} commit(s); ${LOCKFILE} changed but the reinstall did not finish. ${error.message}`;
     throw error;

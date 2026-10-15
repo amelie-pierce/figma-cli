@@ -98,6 +98,7 @@ figma-cli team sync
 figma-cli team conflicts
 figma-cli team pr [--title "<title>"]
 figma-cli team merge [--no-build-check]
+figma-cli team merge --force --reason "<why it cannot wait for a review>"
 figma-cli team status [--no-fetch]
 figma-cli team reviews
 figma-cli team review <pr|login> [--lavish] [--app] [--no-install] [--remove]
@@ -410,7 +411,8 @@ Guards, each refusing with nothing written:
 
 The plan compares `main`'s tree with Make's saved tree by content (Make commits
 files it writes as `100644`, so mode-only differences are listed, not written).
-`.npmrc` and `.figma/design-context/` are never deployed; `.figma-cli/project.json`
+`.npmrc`, `.figma/design-context/` and the repo-only project vault `_vaults/`
+are never deployed (`make status` leaves `_vaults/` out of its comparison too); `.figma-cli/project.json`
 is kept in Make when `main` has none, and refused when `main`'s names another file
 or repo (`DEPLOY_MARKER`). Binary files and files over 2 MiB (`DEPLOY_BINARY`),
 LFS paths that differ (`DEPLOY_LFS`), and new or deleted files directly in the
@@ -490,7 +492,12 @@ convention, not a server-side guarantee.
   registry `_authToken=`), reporting path and line only (`TEAM_SECRET`), and
   files over 50 MB (`TEAM_LARGE_FILE`). It then runs `package.json` `format`
   and `build` scripts when present (pnpm, or npm with only a `package-lock.json`;
-  `TEAM_FORMAT_FAILED`/`TEAM_BUILD_FAILED` save nothing), commits everything with
+  `TEAM_FORMAT_FAILED`/`TEAM_BUILD_FAILED` save nothing). Vendored files (every
+  file in the folder of a `VENDOR.json`, and every file a `VENDOR.json` lists;
+  a root `VENDOR.json` pins only what it lists) are read before the scripts and
+  put back byte for byte, mode included, afterwards, also when a script fails,
+  so a formatter never rewrites them; `vendoredKept`/`vendoredRestored` count
+  them and a warning says when something was put back. It commits everything with
   your message or a generated one, and pushes. Changes in another person's
   area produce a warning. The push is plain: a GitHub branch with commits this
   clone lacks refuses (`TEAM_PUSH_REJECTED`, only for git's `stale info`,
@@ -524,9 +531,13 @@ convention, not a server-side guarantee.
   `TEAM_OPERATION_IN_PROGRESS` and never continues, skips or pushes it.
 - `team pr [--title]` syncs, saves, refuses a branch with no changes
   (`TEAM_NOTHING_TO_REVIEW`), then reuses the open pull request for the branch
-  or runs `gh pr create --base main` with a template (what changed, how to see
-  it locally, a screenshot slot). It requests reviews from `areas` owners of the
-  changed files, except you; a failed request only warns.
+  or runs `gh pr create --base main` with a short template: what changed (each
+  file when there are at most 10, otherwise counts by kind and by top folder),
+  who was asked to review, how to see it locally, a screenshot slot. It
+  requests reviews from `areas` owners of the changed files, except you; a
+  failed request only warns. When nobody is asked, `noReviewerRequested` and
+  the summary say why (no `areas` map, no area covers the files, or you own
+  them all). The result lists at most 10 `files`, with `fileCount`.
 - `team merge` requires your own branch with no unsaved files, an open,
   non-draft pull request into `main` whose head equals your local and GitHub
   branch (`TEAM_OUT_OF_DATE`) and is not from a fork, no outstanding requested
@@ -544,6 +555,22 @@ convention, not a server-side guarantee.
   --squash --match-head-commit <sha>`, a check that GitHub reports `MERGED`,
   `main` checked out and fast-forwarded, and the branch deleted on GitHub (with
   a lease) and locally.
+- `team merge --force --reason "<text>"` merges without the non-author approval,
+  for repo admins only (`gh api repos/<repo>` `.permissions.admin`;
+  `TEAM_FORCE_NOT_ADMIN`). The reason is required, 5 to 500 characters, and
+  must not look like a token (`TEAM_FORCE_NO_REASON`; `--reason` without
+  `--force` is refused the same way); `--no-build-check` is refused with it
+  (`TEAM_FORCE_NEEDS_BUILD`). Every other check still applies: own branch, an
+  open pull request at your exact head, no requested changes, a green build
+  and an up-to-date branch. The squash commit's body says who force-merged and
+  why, and a private receipt `figma-cli/team-force-merge@1` (repo, pull
+  request, who, reason, head, merge commit, checks) is written to
+  `~/.figma-cli/merge-receipts/` (mode 0600) and returned as `receipt`. A pull
+  request that already has a current approval merges normally, with a warning.
+  When GitHub's own protection on `main` requires an approving review, GitHub
+  refuses the merge and figma-cli stops with `TEAM_FORCE_PROTECTED` and no
+  receipt; force merge does not override it (no `--admin`), so ask a reviewer
+  to approve.
 - `team status [--no-fetch]` reports the branch, unsaved files, any unfinished
   rebase, commits behind and ahead of `main`, and the pull request's state,
   approvals, requested changes, pending reviewers and checks, with nudges
@@ -563,18 +590,27 @@ into `main` are reviewed (`TEAM_PR_NOT_READY`).
 - `team review <pr>` (your own pull request too, with a warning that someone
   else has to approve it) fetches its head (it must equal GitHub's `headRefOid`), and checks it out
   **detached** in a git worktree at `.figma-cli/reviews/pr-<n>` under the main
-  clone, adding `/.figma-cli/reviews/` to the clone's `info/exclude`. It then
+  clone. The copies stay out of the clone's saves through
+  `.figma-cli/reviews/.gitignore` (`*`, which ignores itself too); the clone's
+  shared `.git/info/exclude` is never written. It then
   installs with `make install` plus `--ignore-pnpmfile` (`pnpm install
   --frozen-lockfile --ignore-scripts --ignore-pnpmfile`, so none of the pull
   request's code runs; a failure only warns) and reports the files with +/- line
-  counts, the saves and the `make dev` command. A rerun moves the copy to the
+  counts (empty new or deleted files and mode-only changes included), the saves
+  and the `make dev` command. A rerun moves the copy to the
   newer head, refusing when it has edits outside `.lavish/`
   (`TEAM_REVIEW_DIRTY`); `--remove` deletes it with `git worktree remove
   --force`. `--lavish` writes `.lavish/review/index.html` in the copy (every
   diff line an element with an `id` and `data-source="<file>:<line>"`) and
   `source-map.json` (id → file, line, side), plus the copy's `make start`
   design build at `.lavish/prototype/index.html` when present; then
-  `lavish-axi <page>` for each (a missing `lavish-axi` only warns). `--app`
+  `lavish-axi <page>` for each (a missing `lavish-axi` only warns). When a page
+  opened, the result carries `listen`: `{auto: true, commands: ["lavish-axi poll
+  <page>", …], rule}`, and the CLI repeats it on stderr. The agent starts those
+  polls at once as tracked background jobs and restarts them until the person
+  ends the session (`src/lavish-listen.js`, skill `figma-make-team`), so the
+  designer never turns listening on. The review page says what to type to the
+  agent should Lavish ever show that nobody is listening. `--app`
   (implies `--lavish`) also runs `pnpm exec vite build --base ./` into
   `.lavish/review/app/` and inlines its entry script and stylesheets (Lavish's
   sandboxed frame blocks module loads). That runs the pull request's own build
@@ -605,7 +641,9 @@ into `main` are reviewed (`TEAM_PR_NOT_READY`).
 - `team feedback [pr]` (default: your current branch's pull request) shows
   current-head approvals, requested changes, and every review body, line
   comment (`path:line`, `outdated`) and general comment from someone other than
-  the author.
+  the author. The author's own comments are not listed; `authorCommentsHidden`
+  counts them and the summary says so, instead of "no comments" (`address`
+  does the same).
 - `team address [pr]` requires your own branch (`TEAM_NOT_YOUR_BRANCH`) and no
   unsaved files elsewhere (`TEAM_UNSAVED`), switches to it (creating it from
   GitHub's copy when missing), fast-forwards to GitHub's copy when that is

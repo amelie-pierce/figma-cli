@@ -10,7 +10,7 @@ import { buildStatus, checkWriteMode, linkedRepo, MODE_CODES, parseMarker, readG
   repoName, statusExitCode } from '../make-project.js';
 import { CONFIRM_FLAG, runModeChange } from '../make-mode.js';
 import { DEPLOY_CODES, deployAbort, deployApply, deployPlan, deployResume, deployVerify } from '../make-deploy.js';
-import { cloneProject, install, LOCAL_CODES, pullProject, repoRoot, resolveCloneRepo, runDev } from '../make-local.js';
+import { cloneProject, install, LOCAL_CODES, noticeStore, pullProject, repoRoot, resolveCloneRepo, runDev } from '../make-local.js';
 import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, planSync, validatePlanDigest, VENDOR_ROOT,
   writeApplyOutputs } from '../make-sync.js';
 
@@ -430,7 +430,7 @@ make.command('clone [repo] [dir]').description('Clone a team-mode project\'s Git
         client = null;
       }
       const resolved = resolveCloneRepo({ repo, fileKey, markerBytes });
-      report(cloneProject({ ...resolved, dir }, { warn: localWarning }));
+      report(cloneProject({ ...resolved, dir }, { warn: localWarning, notices: noticeStore() }));
     } catch (error) { failure(error); }
     finally { client?.close(); }
   });
@@ -439,7 +439,7 @@ make.command('install [dir]').description('Install a cloned project\'s dependenc
   .action(dir => {
     try {
       const root = repoRoot(resolve(dir || '.'));
-      report({ dir: root, ...install(root, { warn: localWarning }) });
+      report({ dir: root, ...install(root, { warn: localWarning, notices: noticeStore() }) });
     }
     catch (error) { failure(error); }
   });
@@ -448,7 +448,7 @@ make.command('pull [dir]').description('Fetch GitHub main and fast-forward local
   .addHelpText('after', '\nRefuses when local main has commits that are not on GitHub, or main has uncommitted tracked changes.' +
     '\nOn another branch, only the local main ref moves; your branch and node_modules stay as they are.')
   .action(dir => {
-    try { report(pullProject(resolve(dir || '.'), { warn: localWarning })); }
+    try { report(pullProject(resolve(dir || '.'), { warn: localWarning, notices: noticeStore() })); }
     catch (error) { failure(error); }
   });
 

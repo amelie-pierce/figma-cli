@@ -192,6 +192,13 @@ describe('make status', () => {
     assert.equal(edited.result.github.relation, 'make-ahead');
   });
 
+  it('leaves the repo-only _vaults/ notes out of the comparison, as make deploy does', async () => {
+    const withVault = flat({ 'src/App.tsx': 'a', '.figma-cli/project.json': 'm', '_vaults/proto/wiki/index.md': 'v' });
+    const { result } = await status({ make: makeSide({ saved: A }), routes: repoRoutes({ main: withVault, base: withVault, commits: [] }) });
+    assert.equal(result.github.relation, 'in-sync');
+    assert.deepEqual(result.github.differingPaths, []);
+  });
+
   it('reports make-ahead, git-ahead and diverged against the receipt base', async () => {
     const cases = [[B, A, A, 'make-ahead'], [A, B, A, 'git-ahead'], [B, C, A, 'diverged']];
     for (const [saved, main, base, relation] of cases) {

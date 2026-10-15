@@ -4,8 +4,9 @@ import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkToolchain, cloneProject, defaultRun, detectPackageManager, devCommand, findLocalUrl, kitRefusal,
-  makeKitDependencies, npmrcTokenWarnings, pullProject, resolveCloneRepo, runDev, satisfies, toolchainExpectations } from '../src/make-local.js';
+import { checkToolchain, cloneProject, defaultRun, detectPackageManager, devCommand, findLocalUrl, install, kitRefusal,
+  makeKitDependencies, noticeStore, npmrcTokenWarnings, pullProject, resolveCloneRepo, runDev, satisfies, toolchainExpectations } from '../src/make-local.js';
+import { quietToolEnv } from '../src/tool-env.js';
 import { markerContent } from '../src/make-mode.js';
 
 // Local git only: a bare "origin" in a temp folder stands in for GitHub, and
@@ -136,6 +137,33 @@ describe('make kits, .npmrc and toolchain checks', () => {
     assert.equal(warnings.length, 2);
     assert.match(warnings[0], /expects node 22; you have 24\.15\.0/);
     code(() => checkToolchain(expected, { node: '22.1.0', pnpm: null }, pm), 'MAKE_TOOLCHAIN_MISSING');
+  });
+  it('shows each .mise.toml version notice once per clone, not on every command', t => {
+    const { root, origin } = remote(t, { 'package.json': PKG, 'pnpm-lock.yaml': 'v\n', '.mise.toml': '[tools]\nnode = "22"\n"npm:pnpm" = "10.34.3"\n' });
+    const home = temp(t);
+    const fake = fakeRun({ origin, versions: { node: '24.15.0', pnpm: '10.33.2' } });
+    const shown = [];
+    const first = cloneProject({ repo: REPO, dir: 'work' }, { run: fake.run, cwd: root, warn: w => shown.push(w), notices: noticeStore(home) });
+    assert.equal(first.install.warnings.length, 2);
+    assert.equal(shown.length, 2);
+    for (let i = 0; i < 3; i++) {
+      const again = install(join(root, 'work'), { run: fake.run, warn: w => shown.push(w), notices: noticeStore(home) });
+      assert.deepEqual(again.warnings, []);
+      assert.equal(again.toolchainNoticesShownBefore, 2);
+    }
+    assert.equal(shown.length, 2, 'the notices appeared once');
+    const stored = readFileSync(join(home, '.figma-cli', 'notices.json'), 'utf8');
+    assert.ok(!stored.includes(root) && !stored.includes('24.15.0'), 'only hashes are stored');
+    const other = cloneProject({ repo: REPO, dir: 'second' }, { run: fake.run, cwd: root, notices: noticeStore(home) });
+    assert.equal(other.install.warnings.length, 2, 'another clone gets its own first notice');
+    assert.equal(install(join(root, 'work'), { run: fake.run }).warnings.length, 2, 'without a store every notice shows');
+  });
+  it('turns off mise\'s own repeated version notice for the processes figma-cli starts, unless set', () => {
+    assert.equal(quietToolEnv({ PATH: '/bin' }).MISE_STATUS_MESSAGE_MISSING_TOOLS, 'never');
+    assert.equal(quietToolEnv({ MISE_STATUS_MESSAGE_MISSING_TOOLS: 'always' }).MISE_STATUS_MESSAGE_MISSING_TOOLS, 'always');
+    assert.equal(quietToolEnv({ PATH: '/bin' }).PATH, '/bin');
+    const seen = defaultRun(process.execPath, ['-e', 'console.log(process.env.MISE_STATUS_MESSAGE_MISSING_TOOLS)']);
+    assert.equal(seen.stdout.trim(), process.env.MISE_STATUS_MESSAGE_MISSING_TOOLS ?? 'never');
   });
   it('understands the common version range forms', () => {
     const cases = [['22.1.0', '22', true], ['24.0.0', '22', false], ['22.1.0', '>=18', true], ['16.0.0', '>=18', false],
