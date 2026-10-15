@@ -47,6 +47,9 @@ const BEFORE_SAVE = Object.freeze(['writing', 'written']);
 const DEPENDENCY_FILES = Object.freeze([...TREE_HIDDEN_ROOT_FILES, 'package.json']);
 export const isDependency = path => DEPENDENCY_FILES.includes(path);
 const isLockfile = path => TREE_HIDDEN_ROOT_FILES.includes(path);
+// A lockfile Make's install already rewrote to main's content before the
+// deploy started: no original to back up or restore.
+const noOriginal = file => isLockfile(file.path) && file.beforeSha256 === file.afterSha256;
 const writeRank = path => (isLockfile(path) ? 2 : path === 'package.json' ? 1 : 0);
 const byWriteOrder = (a, b) => writeRank(a.path) - writeRank(b.path) || (a.path < b.path ? -1 : 1);
 // How many times one path is tried, and how many settle-and-check rounds run.
@@ -592,7 +595,7 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
 // Make's install rewrites a planned lockfile as soon as package.json is
 // written, so its start content is backed up first, for --abort.
 async function backupLockfiles(client, receipt, home) {
-  for (const file of receipt.plan.files.filter(item => isLockfile(item.path) && item.op === 'modify')) {
+  for (const file of receipt.plan.files.filter(item => isLockfile(item.path) && item.op === 'modify' && !noOriginal(item))) {
     if (receipt.completedWrites.some(write => write.path === file.path && write.backupPath)) continue;
     const { exists, content } = await client.readDurable(file.path);
     if (!exists || sha256(content) !== file.beforeSha256) continue;
@@ -804,7 +807,7 @@ export async function deployResume(client, { dir, receiptPath } = {}, deps = {})
   if (!revOf(ctx, receipt.mainCommit)) fetchMain(ctx);
   if (!revOf(ctx, receipt.mainCommit)) fail(`The clone does not have main ${short(receipt.mainCommit)}.`, 'DEPLOY_RECEIPT');
   const { status, files } = await resumable(client, receipt, 'resume');
-  const todo = files.filter(file => file.state === 'before' || file.state === 'regenerated')
+  const todo = files.filter(file => file.state === 'before' || file.state === 'regenerated' || (file.state === 'after' && isLockfile(file.path)))
     .map(file => ({ ...file, expectedSha256: status.workingSha256.get(file.path) ?? null }));
   receipt.resumedBy = access.login;
   receipt.stage = 'writing';
@@ -844,7 +847,7 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
   const { status: first, files } = await resumable(client, receipt, 'abort');
   const restoreOf = file => (file.op === 'add' ? null : backupContent(receipt, file, deps.home));
   // Every backup is read before anything changes.
-  const contents = new Map(files.filter(file => file.state === 'after' || file.state === 'regenerated').map(file => [file.path, restoreOf(file)]));
+  const contents = new Map(files.filter(file => !noOriginal(file) && (file.state === 'after' || file.state === 'regenerated')).map(file => [file.path, restoreOf(file)]));
   const touchesDependencies = files.some(file => contents.has(file.path) && isDependency(file.path));
   const restored = [];
   let status = first;
@@ -872,8 +875,9 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
     }
     status = touchesDependencies || moved ? await settledStatus(client, receipt, deps) : await client.projectStatus();
     const checked = plannedState(receipt, status);
-    const left = checked.problem ? [] : contentDiff(status.workingFlat, status.makeFlat);
-    todo = checked.problem ? [] : checked.files.filter(file => file.state !== 'before');
+    const left = checked.problem ? [] : contentDiff(status.workingFlat, status.makeFlat)
+      .filter(path => !receipt.plan.files.some(file => file.path === path && noOriginal(file) && status.workingFlat.get(path)?.blob === file.afterBlob));
+    todo = checked.problem ? [] : checked.files.filter(file => file.state !== 'before' && !noOriginal(file));
     if (!checked.problem && !todo.length && !left.length) break;
     if (checked.problem || round >= ROUNDS || todo.some(file => !isDependency(file.path) && !moved)) {
       receipt.restored = [...new Set(restored)];

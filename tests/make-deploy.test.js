@@ -903,6 +903,44 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     assert.equal(s.make.saved.get('package.json').toString(), text(NEW_PKG));
   });
 
+  it('resumes over a lockfile Make\'s install already set to main\'s, writing it through the client', async t => {
+    const s = dependencyChange(t);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.beforeWrite = path => { if (path === 'pnpm-lock.yaml') throw new Error('Make operation timed out.'); };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => {
+      assert.equal(error.code, 'DEPLOY_WRITE_FAILED', error.message);
+      receiptPath = error.receiptPath;
+      return true;
+    });
+    s.make.hooks.beforeWrite = null;
+    assert.equal(lock(s), lockFor(NEW_PKG));
+    assert.ok(!s.make.clientWrote.has('pnpm-lock.yaml'));
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath }, s.deps);
+    assert.equal(resumed.outcome, 'ok');
+    assert.equal(s.make.saved.get('pnpm-lock.yaml').toString(), lockFor(NEW_PKG));
+    assert.equal(s.make.saved.get('package.json').toString(), text(NEW_PKG));
+  });
+
+  it('aborts a deploy that started from a lockfile Make\'s install already set to main\'s, leaving it as Make holds it', async t => {
+    const s = dependencyChange(t);
+    s.make.saved.set('package.json', Buffer.from(text(NEW_PKG)));
+    s.make.working = new Map(s.make.saved);
+    s.make.working.set('pnpm-lock.yaml', Buffer.from(lockFor(NEW_PKG)));
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.beforeWrite = path => { if (path === 'pnpm-lock.yaml') throw new Error('Make operation timed out.'); };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => { receiptPath = error.receiptPath; return true; });
+    s.make.hooks.beforeWrite = null;
+    assert.ok(!readReceipt(receiptPath).completedWrites.some(write => write.path === 'pnpm-lock.yaml'), 'main\'s lockfile is not backed up as the original');
+    const aborted = await deployAbort(s.make, { receiptPath }, s.deps);
+    assert.equal(aborted.outcome, 'aborted');
+    assert.deepEqual(readReceipt(receiptPath).restored, ['src/App.tsx']);
+    assert.equal(lock(s), lockFor(NEW_PKG));
+    for (const [path, bytes] of s.make.saved) if (path !== 'pnpm-lock.yaml') assert.ok(s.make.working.get(path).equals(bytes), path);
+    assert.deepEqual((await deployPlan(s.make, s.opts, s.deps)).files.map(file => file.path), ['src/App.tsx', 'pnpm-lock.yaml']);
+  });
+
   it('still refuses unplanned content in a non-dependency file, a path outside the plan, or a lockfile with no backup', async t => {
     const { s, receiptPath } = await regeneratedAfterStop(t);
     s.make.working.set('src/App.tsx', Buffer.from('someone typed here\n'));
