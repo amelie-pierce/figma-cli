@@ -29,7 +29,7 @@ date: 2026-10-15
 
 - The save is `saveCheckedVersion(..., { listed: true })` (`src/make-client.js`). Make may list pending paths only from the plan. `createVersion` gets exactly Make's listed set. The saved tree must equal the checked working copy **by content**: in the live run, Make kept `100755` on the `pnpm-lock.yaml` it had rewritten, while the working-tree hash had guessed `100644`.
 - Root `pnpm-lock.yaml` and `package-lock.json` are missing from Make's rendered tree, the same as dotfiles. Their durable read-back therefore uses client-VFS plus sandbox agreement (`TREE_HIDDEN_ROOT_FILES`, `src/make-durable.js`).
-- After the save, a drift check runs over the whole root. Then comes the annotated tag `make-deploy/<n>` on the deployed commit (`pushTag`, `src/make-deploy.js:495`). Its message ends with the receipt's public JSON, which has no local paths. `readGithub` parses that JSON for `make status`.
+- After the save, a drift check runs over the whole root. Then comes the annotated tag `make-deploy/<n>` on the deployed commit (`pushTag`, `src/make-deploy.js:507`). Its message ends with the receipt's public JSON, which has no local paths. A remote tag under that number counts as this deploy's own, so as pushed, only when it tags the receipt's commit with the receipt's `deployId`; any other holder is a clash. This covers a push that reported failure after GitHub took the ref, and a `--verify` retry. `readGithub` parses that JSON for `make status`.
 
 ## Receipts and recovery
 
