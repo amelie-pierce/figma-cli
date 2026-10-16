@@ -613,6 +613,66 @@ describe('make deploy recovery', () => {
     assert.equal(next.counts.modify, 1);
   });
 
+  it('keeps the restored list across a partial abort and its retry', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'v2\n', 'src/Board.tsx': 'board\n', 'src/Card.tsx': 'card\n', 'src/old.ts': null });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.beforeWrite = path => { if (path === 'src/old.ts') throw new Error('Make operation timed out.'); };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => {
+      receiptPath = error.receiptPath;
+      return error.code === 'DEPLOY_WRITE_FAILED';
+    });
+    s.make.hooks.beforeWrite = path => { if (path === 'src/Card.tsx') throw new Error('Make operation timed out.'); };
+    await refuses(deployAbort(s.make, { receiptPath }, s.deps), 'DEPLOY_WRITE_FAILED');
+    assert.deepEqual(readReceipt(receiptPath).restored, ['src/App.tsx', 'src/Board.tsx']);
+    // A previous CLI release could replace this list on the next abort run.
+    const damaged = readReceipt(receiptPath);
+    damaged.restored = ['src/Board.tsx'];
+    writeFileSync(receiptPath, JSON.stringify(damaged));
+    s.make.hooks.beforeWrite = null;
+    const aborted = await deployAbort(s.make, { receiptPath }, s.deps);
+    assert.equal(aborted.outcome, 'aborted');
+    assert.deepEqual(new Set(readReceipt(receiptPath).restored), new Set(['src/App.tsx', 'src/Board.tsx', 'src/Card.tsx']));
+    assert.equal((await s.make.projectStatus()).workingTree, readReceipt(receiptPath).makeBefore.tree);
+  });
+
+  it('waits and rechecks the plan when Make changes pending files under an abort delete', async t => {
+    const s = setup(t);
+    landChange(s);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.beforeWrite = path => { if (path === 'src/old.ts') throw new Error('Make operation timed out.'); };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => {
+      receiptPath = error.receiptPath;
+      return error.code === 'DEPLOY_WRITE_FAILED';
+    });
+    let once = true;
+    s.make.hooks.beforeWrite = path => {
+      if (path === 'src/Card.tsx' && once) {
+        once = false;
+        s.make.install = () => ({ 'src/App.tsx': 'export const App = () => "v2";\n' });
+        s.make.installing = true;
+      }
+    };
+    const aborted = await deployAbort(s.make, { receiptPath }, s.deps);
+    assert.equal(aborted.outcome, 'aborted');
+    assert.equal(once, false);
+    assert.equal((await s.make.projectStatus()).workingTree, readReceipt(receiptPath).makeBefore.tree);
+    assert.ok(s.make.calls.filter(([kind, path]) => kind === 'delete' && path === 'src/Card.tsx').length >= 2);
+  });
+
+  it('reports a working-tree mismatch and leaves the abort unfinished', async t => {
+    const { s, receiptPath } = await interrupted(t);
+    const projectStatus = s.make.projectStatus.bind(s.make);
+    s.make.projectStatus = async () => ({ ...await projectStatus(), workingTree: 'f'.repeat(40) });
+    await refuses(deployAbort(s.make, { receiptPath }, s.deps), 'DEPLOY_WRITE_FAILED', /working tree f+ != saved tree/);
+    const receipt = readReceipt(receiptPath);
+    assert.equal(receipt.stage, 'writing');
+    assert.equal(receipt.outcome, 'uncertain');
+    assert.deepEqual(receipt.restored, ['src/App.tsx']);
+  });
+
   it('refuses to abort for a caller who is not a repo admin', async t => {
     const { s, receiptPath } = await interrupted(t);
     const writes = s.make.writes.length;
@@ -895,6 +955,25 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     assert.ok(readReceipt(receiptPath).restored.includes('pnpm-lock.yaml'));
   });
 
+  it('restores package.json before the lockfile and waits out both install reactions', async t => {
+    const s = dependencyChange(t);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.beforeWrite = path => { if (path === 'pnpm-lock.yaml') throw new Error('Make operation timed out.'); };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => {
+      receiptPath = error.receiptPath;
+      return error.code === 'DEPLOY_WRITE_FAILED';
+    });
+    s.make.hooks.beforeWrite = null;
+    const start = s.make.calls.length;
+    const aborted = await deployAbort(s.make, { receiptPath }, s.deps);
+    assert.equal(aborted.outcome, 'aborted');
+    assert.deepEqual(s.make.calls.slice(start).filter(([kind]) => kind === 'write').map(([, path]) => path),
+      ['src/App.tsx', 'package.json', 'pnpm-lock.yaml']);
+    assert.equal((await s.make.projectStatus()).workingTree, readReceipt(receiptPath).makeBefore.tree);
+    assert.equal(s.make.calls.filter(([kind]) => kind === 'save').length, 0);
+  });
+
   it('resumes over a planned lockfile Make regenerated', async t => {
     const { s, receiptPath } = await regeneratedAfterStop(t);
     const resumed = await deployResume(s.make, { ...s.opts, receiptPath }, s.deps);
@@ -922,7 +1001,7 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     assert.equal(s.make.saved.get('package.json').toString(), text(NEW_PKG));
   });
 
-  it('aborts a deploy that started from a lockfile Make\'s install already set to main\'s, leaving it as Make holds it', async t => {
+  it('refuses to finish when an unbacked lockfile keeps the working tree different from the saved tree', async t => {
     const s = dependencyChange(t);
     s.make.saved.set('package.json', Buffer.from(text(NEW_PKG)));
     s.make.working = new Map(s.make.saved);
@@ -933,12 +1012,12 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => { receiptPath = error.receiptPath; return true; });
     s.make.hooks.beforeWrite = null;
     assert.ok(!readReceipt(receiptPath).completedWrites.some(write => write.path === 'pnpm-lock.yaml'), 'main\'s lockfile is not backed up as the original');
-    const aborted = await deployAbort(s.make, { receiptPath }, s.deps);
-    assert.equal(aborted.outcome, 'aborted');
+    await refuses(deployAbort(s.make, { receiptPath }, s.deps), 'DEPLOY_WRITE_FAILED', /working tree .* != saved tree/);
+    assert.equal(readReceipt(receiptPath).stage, 'writing');
     assert.deepEqual(readReceipt(receiptPath).restored, ['src/App.tsx']);
     assert.equal(lock(s), lockFor(NEW_PKG));
     for (const [path, bytes] of s.make.saved) if (path !== 'pnpm-lock.yaml') assert.ok(s.make.working.get(path).equals(bytes), path);
-    assert.deepEqual((await deployPlan(s.make, s.opts, s.deps)).files.map(file => file.path), ['src/App.tsx', 'pnpm-lock.yaml']);
+    await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_UNFINISHED');
   });
 
   it('still refuses unplanned content in a non-dependency file, a path outside the plan, or a lockfile with no backup', async t => {
