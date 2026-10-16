@@ -146,9 +146,12 @@ session and were missing after a reopen.
 file requires `--expected-sha256`; a new file omits it. Replaced or deleted
 bytes receive a private backup. The CLI checks the client VFS, file tree, editor
 (for existing or newly written files), and session sandbox before reporting a
-pending write. Make shows Markdown as a preview without an editor; when a `.md`
-file shows no editor within a few seconds, the client VFS, sandbox and tree
-must agree instead (`verification: "tree-vfs-sandbox-matched"`). Every other file still needs its editor to match.
+pending write. Make shows Markdown as a preview and may leave an unopened
+source file without an editor; when no editor appears within a few seconds, the
+client VFS, sandbox and tree must agree instead
+(`verification: "tree-vfs-sandbox-matched"`). A path too deep to select in the
+tree takes the same fallback only while no editor, or another file's editor, is
+mounted. A mounted editor of the file must still match.
 If the views still disagree at the timeout, the error names each view's state.
 A new file must sit below an existing top-level folder: the write proves
 absence by listing an existing ancestor folder, never the project root, so a
