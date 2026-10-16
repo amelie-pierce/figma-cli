@@ -110,23 +110,6 @@ test('scoped sync ignores a stale or broader workspace VENDOR candidate', () => 
   } finally { f.dispose(); }
 });
 
-test('kit-only release paths stay out of sync plans and export deltas', () => {
-  const f = fixture({ make: 'changed', workspace: 'base' });
-  try {
-    for (const releasePath of ['public/atomicaui/latest.json', 'public/atomicaui/7.0.0/manifest.json']) {
-      const bytes = text('release');
-      f.args.contents.set(releasePath, bytes);
-      f.args.inventory.set(releasePath, { path: releasePath, ...info(bytes) });
-    }
-    const { plan } = planSync(f.args);
-    assert.deepEqual(plan.outOfScopeDrift, []);
-    assert.equal(plan.beforeInventory.some(file => file.path.startsWith('public/atomicaui/')), false);
-    assert.equal(plan.actions.some(action => action.path.startsWith('public/atomicaui/')), false);
-    const delta = exportDelta({ ...f.args, who: 'Engineer' });
-    assert.deepEqual(delta.files.map(file => file.path), [path]);
-  } finally { f.dispose(); }
-});
-
 test('older kit without generated.manifest accepts the matching committed package manifest for dry-run sync', () => {
   const f = fixture({ workspace: 'base' });
   try {

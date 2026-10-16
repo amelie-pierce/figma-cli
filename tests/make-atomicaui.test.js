@@ -177,6 +177,39 @@ test('fake Make client receives an immutable release folder and one exact save',
   await assert.rejects(releaseAtomicaui(client, { requestedVersion: '7.0.0' }), /immutable/);
 });
 
+test('an older release keeps its folder but leaves latest.json at the newest release', async () => {
+  const { inventory, contents } = fixture();
+  const files = new Map();
+  const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40), pendingPaths: [], isLoading: false, error: false, pendingCount: 0 };
+  const written = [];
+  const client = {
+    fileKey: 'atomicaui-latest-fixture', projectMarker: async () => null,
+    _driftState: async () => ({ state }),
+    files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
+    read: async path => ({ content: files.get(path).toString(), sha256: hash(files.get(path)) }),
+    inventoryVendor: async () => ({ inventory, contents, state }),
+    writeDurable: async (path, content, { expectedSha256 } = {}) => {
+      assert.equal(expectedSha256 || null, files.has(path) ? hash(files.get(path)) : null);
+      written.push(path); files.set(path, Buffer.from(content)); return { changed: true };
+    },
+    saveVersion: async () => ({ versionNumber: 1, gitSha: 'a'.repeat(40) }),
+    verifyFiles: async entries => ({ verification: 'remote-content-matched', files: entries }),
+  };
+  const latest = () => JSON.parse(files.get('public/atomicaui/latest.json')).version;
+  await releaseAtomicaui(client, { requestedVersion: '7.1.0' });
+  assert.equal(latest(), '7.1.0');
+  written.length = 0;
+  const backport = await releaseAtomicaui(client, { requestedVersion: '7.0.6' });
+  assert.equal(latest(), '7.1.0');
+  assert.equal(written.includes('public/atomicaui/latest.json'), false);
+  assert.ok(written.includes('public/atomicaui/7.0.6/manifest.json'));
+  assert.equal(backport.latest, '7.1.0');
+  assert.match(backport.latestNote, /latest\.json still points at 7\.1\.0/);
+  const next = await releaseAtomicaui(client, {});
+  assert.equal(next.version, '7.1.1');
+  assert.equal(latest(), '7.1.1');
+});
+
 test('saved release verifier checks an older release against its own manifest and every saved path', async () => {
   const older = fixture('7.0.0').release;
   const newer = fixture('7.0.1', 'archive-only').release;
@@ -353,7 +386,7 @@ function soloPayload(version = '7.0.0', source = { 'src/index.ts': 'export const
 function soloMake(files, pendingPaths = [], saved = new Map(files)) {
   const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40), pendingPaths: [...pendingPaths],
     isLoading: false, error: false, pendingCount: pendingPaths.length };
-  const writes = [], saves = [];
+  const writes = [], saves = [], titles = [];
   const touch = path => { if (!state.pendingPaths.includes(path)) state.pendingPaths.push(path); state.pendingCount = state.pendingPaths.length; };
   const vendorScan = () => {
     const contents = new Map([...files].filter(([path]) => path.startsWith('src/vendor/atomic-aui/'))
@@ -376,13 +409,13 @@ function soloMake(files, pendingPaths = [], saved = new Map(files)) {
       assert.equal(expectedSha256, hash(files.get(path)));
       writes.push(path); files.delete(path); touch(path);
     },
-    saveVersion: async (_title, paths) => {
+    saveVersion: async (title, paths) => {
       assert.deepEqual([...paths].sort(), [...state.pendingPaths].sort());
-      saves.push(paths); state.pendingPaths = []; state.pendingCount = 0;
+      saves.push(paths); titles.push(title); state.pendingPaths = []; state.pendingCount = 0;
       return { versionNumber: 9, gitSha: 'b'.repeat(40) };
     },
   };
-  return { client, files, writes, saves, state };
+  return { client, files, writes, saves, titles, state };
 }
 const plainApp = () => new Map([
   ['src/main.tsx', Buffer.from("import App from './App'\n<App />\n")],
@@ -449,6 +482,36 @@ test('interrupted solo upgrade resumes from the saved version and refuses foreig
   const refused = soloMake(stale, ['src/vendor/atomic-aui/src/index.ts'], savedFiles);
   await assert.rejects(installSoloRelease(refused.client, newer, { mode: 'upgrade', resume: true }), /differs from the verified release/);
   assert.deepEqual([...foreign.writes, ...refused.writes], []);
+});
+
+test('unpinned solo upgrade never moves backward; a pinned lower version is a labelled downgrade', async () => {
+  const older = soloPayload('7.0.0', { 'src/index.ts': 'one\n' });
+  const newer = soloPayload('7.0.1', { 'src/index.ts': 'two\n' });
+  const installed = soloMake(plainApp());
+  await installSoloRelease(installed.client, newer, { mode: 'add' });
+  for (const target of [older, newer]) {
+    const make = soloMake(new Map(installed.files));
+    const result = await installSoloRelease(make.client, target, { mode: 'upgrade' });
+    assert.deepEqual([result.upToDate, result.installedVersion, make.writes, make.saves], [true, '7.0.1', [], []]);
+    assert.match(result.summary, /already the newest/);
+  }
+  const make = soloMake(new Map(installed.files));
+  const result = await installSoloRelease(make.client, older, { mode: 'upgrade', pinned: true });
+  assert.equal(result.report.downgrade, true);
+  assert.deepEqual([result.report.from, result.report.to, result.report.changed], ['7.0.1', '7.0.0', ['src/index.ts']]);
+  assert.deepEqual(make.titles, ['AtomicAUI 7.0.0 downgrade']);
+  assert.match(result.summary, /^Downgrade: AtomicAUI 7\.0\.1 to 7\.0\.0/);
+  const forward = soloMake(new Map(installed.files));
+  const pinnedNewer = await installSoloRelease(forward.client, soloPayload('7.0.2', { 'src/index.ts': 'three\n' }), { mode: 'upgrade', pinned: true });
+  assert.equal(pinnedNewer.report.downgrade, undefined);
+  assert.deepEqual(forward.titles, ['AtomicAUI 7.0.2 upgrade']);
+});
+
+test('team pull request report labels a downgrade', t => {
+  const team = teamClone(t);
+  const body = teamChangeReport(team.ctx(), { from: '7.0.1', to: '7.0.0', downgrade: true, added: [], changed: ['index.ts'], removed: [],
+    breakingChanges: [] });
+  assert.equal(body.split('\n')[0], 'Downgrade: AtomicAUI 7.0.1 to 7.0.0.');
 });
 
 test('team pull request report lists the files actually changed and the breaking notes', t => {

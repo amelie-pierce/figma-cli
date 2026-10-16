@@ -1,6 +1,6 @@
 import { lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
-import { digest, isAtomicauiReleasePath, sourcePath, vendorManifest, verifyGeneratedManifest } from './make-drift.js';
+import { digest, sourcePath, vendorManifest, verifyGeneratedManifest } from './make-drift.js';
 import { requireGitMode } from './make-durable.js';
 
 const HASH = /^[a-f0-9]{64}$/;
@@ -150,8 +150,7 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
   const currentTokens = new Map([...inventory].filter(([path]) => path.startsWith(GENERATED)));
   const scope = new Set(request.files.map(file => relativePath(file.path)));
   const outOfScopeDrift = [...new Set([...baseline.files.keys(), ...inventory.keys()])]
-    .filter(path => !isAtomicauiReleasePath(path) && path !== 'VENDOR.json' && !scope.has(path) &&
-      !same(baseline.files.get(path), inventory.get(path)))
+    .filter(path => path !== 'VENDOR.json' && !scope.has(path) && !same(baseline.files.get(path), inventory.get(path)))
     .sort();
   const tokenScope = [...scope].some(path => path.startsWith(GENERATED) || path === GENERATION_MANIFEST);
   if (tokenScope) {
@@ -266,7 +265,7 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
     requestedAt: request.requestedAt, direction: request.direction, workspaceCommit: packageData.manifest.source.commit,
     makeVersion: state.savedVersion, requestSha256, packageSha256: packageData.sha256,
     baselineManifestSha256: digest(baselineBytes), beforeInventory: [...inventory.values()]
-      .filter(file => !isAtomicauiReleasePath(file.path)).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+      .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
     candidateDir: resolve(candidateDir), scope: request.files.map(file => ({ ...file })), actions, unresolved, outOfScopeDrift,
     vendorBefore: inventory.get('VENDOR.json'), vendorAfter, generatedTreeDigest: packageData.manifest.tree.digest };
   plan.digest = digest(JSON.stringify(plan));
@@ -296,7 +295,7 @@ export function exportDelta({ inventory, contents, baselineBytes, candidateDir, 
   if (!same(inventory.get('VENDOR.json'), fileInfo(baselineBytes))) throw new Error('Make VENDOR.json differs from trusted baseline.');
   const selected = paths?.length ? new Set(paths.map(relativePath)) : null;
   const dependencies = new Set(dependencyPaths.map(relativePath));
-  const all = new Set([...baseline.files.keys(), ...inventory.keys()].filter(path => !isAtomicauiReleasePath(path)));
+  const all = new Set([...baseline.files.keys(), ...inventory.keys()]);
   all.delete('VENDOR.json');
   const files = [];
   for (const path of [...all].sort()) {

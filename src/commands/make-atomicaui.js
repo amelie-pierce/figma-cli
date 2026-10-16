@@ -8,7 +8,7 @@ import { review } from '../make-team-review.js';
 import { listenNotice } from '../lavish-listen.js';
 import { digest, vendorManifest } from '../make-drift.js';
 import { ATOMICAUI_ROOT, ATOMICAUI_SITE, RELEASE_ROOT, buildRelease, changeReport, downloadRelease,
-  installRelease, installedStatus, latestRelease, nextPatch, planBreakingFixes, version } from '../make-atomicaui.js';
+  compareVersions, installRelease, installedStatus, latestRelease, nextPatch, planBreakingFixes, version } from '../make-atomicaui.js';
 
 const format = value => `${JSON.stringify(value, null, 2)}\n`;
 const decode = bytes => new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
@@ -63,7 +63,9 @@ export async function releaseAtomicaui(client, { requestedVersion, breakingChang
   }
   const release = buildRelease({ inventory: scan.inventory, contents: scan.contents, version: selected, breakingChanges,
     ...(partBase64Bytes === undefined ? {} : { partBase64Bytes }) });
-  const expected = [...release.output.keys()].sort();
+  const movesLatest = !current || compareVersions(selected, current.version) >= 0;
+  const output = new Map([...release.output].filter(([path]) => movesLatest || path !== latestPath));
+  const expected = [...output.keys()].sort();
   const expectedSet = new Set(expected);
   if (resume && (existingRelease.some(path => !expectedSet.has(path)) ||
       scan.state.pendingPaths.some(path => !expectedSet.has(path)))) {
@@ -74,7 +76,7 @@ export async function releaseAtomicaui(client, { requestedVersion, breakingChang
   if (resume) {
     for (const path of existingRelease) {
       const actual = await client.read(path, { remote: true });
-      const bytes = release.output.get(path);
+      const bytes = output.get(path);
       if (Buffer.byteLength(actual.content) === bytes.length && digest(Buffer.from(actual.content)) === digest(bytes)) completed.push(path);
       else replacements.set(path, actual.sha256);
     }
@@ -86,7 +88,7 @@ export async function releaseAtomicaui(client, { requestedVersion, breakingChang
   }
   const completedSet = new Set(completed);
   try {
-    for (const [path, bytes] of release.output) {
+    for (const [path, bytes] of output) {
       if (completedSet.has(path)) continue;
       const result = await client.writeDurable(path, decode(bytes),
         { expectedSha256: replacements.get(path) || (path === latestPath ? oldLatestHash : undefined), releaseAsset: true });
@@ -99,7 +101,7 @@ export async function releaseAtomicaui(client, { requestedVersion, breakingChang
   if (completed.length !== expected.length) throw new Error('AtomicAUI release write set differs from the expected path set.');
   const saved = await client.saveVersion(`AtomicAUI ${selected} library release`, expected);
   for (let offset = 0; offset < expected.length; offset += 16) {
-    const files = expected.slice(offset, offset + 16).map(path => ({ path, content: decode(release.output.get(path)) }));
+    const files = expected.slice(offset, offset + 16).map(path => ({ path, content: decode(output.get(path)) }));
     const verified = await client.verifyFiles(files);
     if (verified.verification !== 'remote-content-matched' || verified.files.length !== files.length) {
       throw new Error('AtomicAUI saved release verification did not match.');
@@ -108,6 +110,8 @@ export async function releaseAtomicaui(client, { requestedVersion, breakingChang
   requireClean((await client._driftState(Date.now() + 120000)).state);
   return { version: selected, fileCount: release.manifest.files.length, releasePaths: expected.length,
     archiveParts: release.manifest.archive.parts.length, manifestSha256: digest(release.output.get(`${prefix}manifest.json`)),
+    latest: movesLatest ? selected : current.version,
+    ...(movesLatest ? {} : { latestNote: `AtomicAUI ${selected} is older than the latest release ${current.version}, so latest.json still points at ${current.version}.` }),
     savedVersion: saved.versionNumber, savedGitSha: saved.gitSha, verification: 'saved-version-clean-pending; remote-content-matched',
     publishSteps: PUBLISH };
 }
@@ -167,16 +171,29 @@ function providerChanges(main, pkg) {
   const nextPackage = hasSass ? pkg : format(packageValue);
   return new Map([['src/main.tsx', nextMain], ['package.json', nextPackage]]);
 }
+function upgradeDirection(mode, before, release, pinned) {
+  if (mode !== 'upgrade' || !/^\d+\.\d+\.\d+$/.test(before.version || '')) return 'forward';
+  const order = compareVersions(release.manifest.version, before.version);
+  if (pinned) return order < 0 ? 'downgrade' : 'forward';
+  return order > 0 ? 'forward' : 'current';
+}
+function installReport(mode, before, release, pinned) {
+  const direction = upgradeDirection(mode, before, release, pinned);
+  if (direction === 'current') return null;
+  return { ...changeReport(before, release), ...(direction === 'downgrade' ? { downgrade: true } : {}) };
+}
+const alreadyNewest = (where, before, release) => ({ mode: where, installedVersion: before.version, latestVersion: release.manifest.version,
+  upToDate: true, summary: `AtomicAUI ${before.version} is already the newest release; nothing was changed.` });
 function changeSummary(report) {
   const notes = report.breakingChanges.map(item => typeof item === 'string' ? item : item.note);
-  return `AtomicAUI ${report.from || 'not installed'} to ${report.to}: ${report.added.length} added, ${report.changed.length} changed, ` +
+  return `${report.downgrade ? 'Downgrade: ' : ''}AtomicAUI ${report.from || 'not installed'} to ${report.to}: ${report.added.length} added, ${report.changed.length} changed, ` +
     `${report.removed.length} removed files.${notes.length ? ` Breaking changes: ${notes.join('; ')}.` : ''}`;
 }
 export function teamChangeReport(ctx, report) {
   const changed = ctx.git(['-c', 'core.quotePath=false', 'diff', '--name-only', '--no-renames', `${ORIGIN_TRUNK}...HEAD`], 'Listing the changed files')
     .split('\n').filter(path => path && !insideVendor(path));
   const notes = report.breakingChanges.map(item => item.note);
-  return [`AtomicAUI ${report.from || 'not installed'} to ${report.to}.`, '',
+  return [`${report.downgrade ? 'Downgrade: ' : ''}AtomicAUI ${report.from || 'not installed'} to ${report.to}.`, '',
     `- ${ATOMICAUI_ROOT}/: ${report.added.length} added, ${report.changed.length} changed, ${report.removed.length} removed`,
     ...changed.map(path => `- ${path}`),
     ...(notes.length ? ['', 'Breaking changes fixed in this pull request:', ...notes.map(note => `- ${note}`)] : [])].join('\n');
@@ -243,7 +260,7 @@ export function prepareTeamBranch(ctx, { mode, manifest }) {
   ctx.warn('Continuing your earlier AtomicAUI update.');
   return { branch, continued: true };
 }
-export async function installTeamRelease(directory, release, { mode } = {}) {
+export async function installTeamRelease(directory, release, { mode, pinned = false } = {}) {
   const root = resolve(directory);
   const ctx = teamContext({ dir: root, warn: message => console.error(message) });
   ctx.repo(); // A GitHub origin is sufficient when a team marker has not been created yet.
@@ -254,6 +271,8 @@ export async function installTeamRelease(directory, release, { mode } = {}) {
   const before = vendorAt(ctx, ORIGIN_TRUNK);
   if (mode === 'add' && before.installed) throw new Error('AtomicAUI is already installed. Use upgrade.');
   if (mode === 'upgrade' && !before.installed) throw new Error('AtomicAUI is not installed. Use add.');
+  const report = installReport(mode, before, release, pinned);
+  if (!report) return alreadyNewest('team', before, release);
   if (showAt(ctx, ORIGIN_TRUNK, 'src/main.tsx') === null || showAt(ctx, ORIGIN_TRUNK, 'package.json') === null) {
     throw new Error('AtomicAUI needs src/main.tsx and package.json for provider wiring.');
   }
@@ -261,7 +280,6 @@ export async function installTeamRelease(directory, release, { mode } = {}) {
   const started = prepareTeamBranch(ctx, { mode, manifest: release.manifest });
   if (installedStatus(vendorDir).localEdits.length) throw new Error('AtomicAUI project changed after starting the branch; install refused.');
   installRelease(root, release);
-  const report = changeReport(before, release);
   const wiring = providerChanges(fixes.get('src/main.tsx')?.content || readFileSync(join(root, 'src/main.tsx'), 'utf8'),
     fixes.get('package.json')?.content || readFileSync(join(root, 'package.json'), 'utf8'));
   const changed = new Map([...fixes].filter(([path]) => path !== 'src/main.tsx' && path !== 'package.json')
@@ -272,7 +290,7 @@ export async function installTeamRelease(directory, release, { mode } = {}) {
   installDependencies(ctx, root);
   const saved = save(ctx, { message: `Update ${report.added.length + report.changed.length + report.removed.length} files under ${ATOMICAUI_ROOT}` });
   const pullRequest = pr(ctx, {
-    title: `${mode === 'add' ? 'Add' : 'Upgrade'} ${ATOMICAUI_ROOT} (${report.added.length + report.changed.length + report.removed.length} files)`,
+    title: `${report.downgrade ? 'Downgrade' : mode === 'add' ? 'Add' : 'Upgrade'} ${ATOMICAUI_ROOT} (${report.added.length + report.changed.length + report.removed.length} files)`,
     body: teamChangeReport(ctx, report),
   });
   const visual = review(ctx, pullRequest.url, { lavish: true, app: true });
@@ -282,7 +300,7 @@ export async function installTeamRelease(directory, release, { mode } = {}) {
     summary: `${started.continued ? 'Continuing your earlier AtomicAUI update. ' : ''}${changeSummary(report)} Opened ${pullRequest.url} on ${started.branch}.` };
 }
 
-export async function installSoloRelease(client, release, { mode, resume = false, file } = {}) {
+export async function installSoloRelease(client, release, { mode, resume = false, file, pinned = false } = {}) {
   await checkWriteMode(client, {});
   const fixPaths = new Set(release.manifest.breakingChanges.flatMap(item => item.fixes).map(fix => fix.path));
   const appPaths = [...new Set(['src/main.tsx', 'package.json', ...fixPaths])];
@@ -330,7 +348,8 @@ export async function installSoloRelease(client, release, { mode, resume = false
     const wanted = release.files.get(rel), actual = existing.get(rel);
     if (wanted ? !actual || actual.sha256 !== digest(wanted) || actual.bytes !== wanted.length : actual || !before.files.has(rel)) differs(path);
   }
-  const report = changeReport(before, release);
+  const report = installReport(mode, before, release, pinned);
+  if (!report) return alreadyNewest('solo', before, release);
   const reads = new Map();
   const readCurrent = async path => {
     if (!reads.has(path)) reads.set(path, await client.read(path, { remote: true }));
@@ -370,7 +389,7 @@ export async function installSoloRelease(client, release, { mode, resume = false
     }
     if (!metadataDone) await write(vendorPath, vendorContent, existing.get('VENDOR.json')?.sha256, true);
   } catch (error) { error.completedWrites = writes.map(path => ({ path })); throw error; }
-  const saved = await client.saveVersion(`AtomicAUI ${release.manifest.version} ${mode}`, [...new Set(writes)].sort());
+  const saved = await client.saveVersion(`AtomicAUI ${release.manifest.version} ${report.downgrade ? 'downgrade' : mode}`, [...new Set(writes)].sort());
   const verify = await client.inventoryVendor(ATOMICAUI_ROOT, { includeBytes: true });
   requireClean(verify.state);
   if (verify.inventory.size !== release.files.size) throw new Error('Saved AtomicAUI vendor file count differs.');
@@ -427,8 +446,8 @@ export function registerAtomicaui(make, print, failure) {
         if (options.file && options.dir) throw new Error('Use --file for solo Make or --dir for a team clone, not both.');
         if (options.resume && !options.file) throw new Error('--resume is only for a solo Make file with --file.');
         const release = await downloadRelease({ version: options.version || options.to });
-        report(options.file ? await withMake(options.file, client => installSoloRelease(client, release, { mode, resume: options.resume, file: options.file }))
-          : await installTeamRelease(options.dir || '.', release, { mode }));
+        report(options.file ? await withMake(options.file, client => installSoloRelease(client, release, { mode, resume: options.resume, file: options.file, pinned: !!options.to }))
+          : await installTeamRelease(options.dir || '.', release, { mode, pinned: !!options.to }));
       } catch (error) { failure(error); }
     });
   install('add'); install('upgrade');

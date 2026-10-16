@@ -39,6 +39,10 @@ export function version(value) {
   if (!VERSION.test(value || '')) throw new Error('AtomicAUI version must be X.Y.Z.');
   return value;
 }
+export function compareVersions(a, b) {
+  const [left, right] = [version(a), version(b)].map(value => value.split('.').map(Number));
+  return left[0] - right[0] || left[1] - right[1] || left[2] - right[2];
+}
 export function nextPatch(value) {
   const parts = version(value).split('.').map(Number);
   return `${parts[0]}.${parts[1]}.${parts[2] + 1}`;

@@ -681,7 +681,9 @@ everything below):
 saved vendor tree from the AtomicAUI kit, writes an immutable
 `public/atomicaui/<version>/` folder plus `latest.json`, checks the exact
 pending path set, saves one Make version, and verifies the written files.
-Without `--version`, it uses the next patch version. Site publication remains a
+Without `--version`, it uses the next patch version. A version older than the
+current latest (a backport) still gets its folder, but `latest.json` stays on
+the newest release and the result says so. Site publication remains a
 manual Figma Make action: after the saved release, open **Make settings →
 General**. If the site is already published, click **Unpublish**, then
 **Publish**. Set **Who can view** to **Anyone on the web**, leave the password
@@ -716,7 +718,11 @@ report and points to the Make preview after its durable save. The downloader
 rejects HTML fallbacks and redirects, verifies the manifest, every archive
 part, and every source file, then checks local vendor edits before installing.
 The change report lists added, changed, and removed paths and any breaking
-notes carried by the manifest.
+notes carried by the manifest. `upgrade` without `--to` never moves an app
+backward: when the installed version is already the newest, it changes
+nothing and says so. `upgrade --to` a lower version is allowed and is labelled
+a downgrade in the change report, the saved version message and the pull
+request title.
 An interrupted solo `add` or `upgrade` can continue with `--file KEY` plus the
 same `--version`/`--to` and `--resume`, also after `VENDOR.json`, breaking
 fixes or wiring were written (`VENDOR.json` is written last). Every pending
@@ -725,8 +731,8 @@ fixes and wiring applied to its saved-version text, and unrelated pending paths 
 writing or saving. The team pull request body lists the files actually
 changed and the breaking notes.
 
-`public/atomicaui/**` is kit-only release data. Vendor drift, sync plans, and
-export deltas exclude it. An older kit without `tokens/generated.manifest.json`
+`public/atomicaui/**` is kit-only release data outside `src/vendor/atomic-aui/`,
+so vendor drift, sync plans and export deltas never read it. An older kit without `tokens/generated.manifest.json`
 can use the matching committed package manifest through `make sync
 --generation-manifest` for a read-only component sync plan.
 
