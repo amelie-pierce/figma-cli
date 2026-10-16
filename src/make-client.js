@@ -1108,6 +1108,31 @@ export class MakeClient {
       markerBytes: scan.contents.get(PROJECT_MARKER) ?? null, batches: scan.batches };
   }
 
+  // UTF-8 text of paths in the saved version's own tree, read from the sandbox
+  // git objects; null for a path that version does not have.
+  readSaved(paths) {
+    for (const path of paths) sourcePath(path);
+    return this._operation(async deadline => {
+      const state = requireGitMode((await this._driftState(deadline)).state);
+      const bridge = await this._fileBridge(deadline);
+      try {
+        const reader = this._sandboxGit(bridge);
+        const flat = await reader.flatten(await reader.commitTree(state.savedVersion));
+        const texts = new Map();
+        for (const path of paths) {
+          const entry = flat.get(path);
+          const blob = entry ? await reader.object(entry.blob) : null;
+          if (blob && blob.type !== 'blob') throw new Error(`Saved Make path is not a file: ${path}`);
+          texts.set(path, blob ? new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(blob.content) : null);
+        }
+        if ((await this._driftState(deadline)).state?.savedVersion !== state.savedVersion) {
+          throw new Error('Make version changed while reading the saved files.');
+        }
+        return texts;
+      } finally { await bridge.dispose(); }
+    });
+  }
+
   // The team-mode marker as Make's client VFS holds it, for the write gate.
   projectMarker() {
     return this._operation(async deadline => {

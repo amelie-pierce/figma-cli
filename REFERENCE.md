@@ -714,7 +714,7 @@ An interrupted solo `add` or `upgrade` can continue with `--file KEY` plus the
 same `--version`/`--to` and `--resume`, also after `VENDOR.json`, breaking
 fixes or wiring were written (`VENDOR.json` is written last). Every pending
 vendor file must equal the release, every pending app file must equal the
-planned fix and wiring content, and unrelated pending paths are refused before
+fixes and wiring applied to its saved-version text, and unrelated pending paths are refused before
 writing or saving. The team pull request body lists the files actually
 changed and the breaking notes.
 
