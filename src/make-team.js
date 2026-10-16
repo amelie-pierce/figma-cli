@@ -375,7 +375,7 @@ const tail = (text, lines = 15) => String(text).trim().split('\n').slice(-lines)
 
 function runScripts(ctx, { only = ['format', 'build'], outcome = 'Nothing was saved' } = {}) {
   const ran = [];
-  for (const { name, command, args } of projectScripts(ctx.root).filter(script => only.includes(script.name) && !(ctx.verifiedVendor && script.name === 'format'))) {
+  for (const { name, command, args } of projectScripts(ctx.root).filter(script => only.includes(script.name))) {
     const result = ctx.run(command, args, { cwd: ctx.root });
     if (result.status !== 0) {
       const code = name === 'build' ? 'TEAM_BUILD_FAILED' : 'TEAM_FORMAT_FAILED';
@@ -862,10 +862,7 @@ export function pr(ctx, { title, message, body } = {}) {
     : !hits.length ? `no area in ${PROJECT_MARKER} covers the changed files` : 'you own every area these changes touch';
   let existing = findPr(ctx, branch);
   let url;
-  if (existing) {
-    url = existing.url;
-    if (body) ctx.gh(['pr', 'edit', url, '--repo', ctx.repo(), '--body', body], 'Updating the pull request summary');
-  }
+  if (existing) url = existing.url;
   else {
     const task = ctx.tryGit(['config', '--get', `branch.${branch}.figmaCliTask`]).stdout.trim() || null;
     const review = noReviewer ? `No reviewer was requested automatically: ${noReviewer}. Ask a teammate to review.`

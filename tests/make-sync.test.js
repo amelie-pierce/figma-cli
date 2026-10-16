@@ -88,6 +88,22 @@ test('workspace VENDOR candidate pins the new source commit and exact reviewed i
   } finally { f.dispose(); }
 });
 
+test('scoped sync ignores a stale or broader workspace VENDOR candidate', () => {
+  const f = fixture();
+  try {
+    const baseline = JSON.parse(f.args.baselineBytes);
+    const location = join(f.directory, root, 'VENDOR.json');
+    const computed = (() => { const g = fixture(); try { return planSync(g.args).vendorBytes; } finally { g.dispose(); } })();
+    writeFileSync(location, f.args.baselineBytes);
+    assert.deepEqual(planSync(f.args).vendorBytes, computed);
+    const broader = { ...baseline, source: { ...baseline.source, commit, commitDate: '2026-10-15T00:00:00Z' },
+      files: baseline.files.map(file => file.path === 'lib/Button.tsx' ? { ...file, ...info(text('next')) }
+        : file.path === 'tokens/generated/.generated' ? { ...file, ...info(text('other')) } : file) };
+    writeFileSync(location, `${JSON.stringify(broader)}\n`);
+    assert.deepEqual(planSync(f.args).vendorBytes, computed);
+  } finally { f.dispose(); }
+});
+
 test('kit-only release paths stay out of sync plans and export deltas', () => {
   const f = fixture({ make: 'changed', workspace: 'base' });
   try {
