@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRelease, DEFAULT_PART_BASE64_BYTES, downloadRelease, getBytes, installRelease, installedStatus, nextPatch,
@@ -384,9 +384,35 @@ test('solo install raises an older compatible pin, keeps a newer one, and refuse
   assert.deepEqual(keptResult.report.dependencies, []);
   for (const pin of ['^2.0.0', 'latest']) {
     const conflict = soloMake(app({ '@base-ui/react': pin }));
-    await assert.rejects(installSoloRelease(conflict.client, payload, { mode: 'add' }), /needs @base-ui\/react \^1\.2\.0, but package\.json pins/);
+    await assert.rejects(installSoloRelease(conflict.client, payload, { mode: 'add' }), /needs @base-ui\/react \^1\.2\.0, but package\.json dependencies pins/);
     assert.deepEqual([conflict.writes, conflict.saves], [[], []]);
   }
+});
+
+test('solo install checks peer and optional pins: a different major refuses, a peer-only pin still gets installed', async () => {
+  const { payload } = fixture();
+  const app = pkg => new Map([
+    ['src/main.tsx', Buffer.from("import App from './App'\n<App />\n")],
+    ['package.json', Buffer.from(JSON.stringify(pkg))],
+  ]);
+  for (const field of ['peerDependencies', 'optionalDependencies']) {
+    const conflict = soloMake(app({ dependencies: {}, [field]: { '@base-ui/react': '0.9.0' } }));
+    await assert.rejects(installSoloRelease(conflict.client, payload, { mode: 'add' }), new RegExp(`package\\.json ${field} pins 0\\.9\\.0`));
+    assert.deepEqual([conflict.writes, conflict.saves], [[], []]);
+  }
+  const lower = soloMake(app({ peerDependencies: { '@base-ui/react': '^1.0.0' } }));
+  const lowerResult = await installSoloRelease(lower.client, payload, { mode: 'add' });
+  const lowerPkg = JSON.parse(lower.files.get('package.json'));
+  assert.deepEqual([lowerPkg.dependencies['@base-ui/react'], lowerPkg.peerDependencies['@base-ui/react']], ['^1.2.0', '^1.0.0']);
+  assert.deepEqual(lowerResult.report.dependencies, [{ name: '@base-ui/react', from: null, to: '^1.2.0' }]);
+  const higher = soloMake(app({ peerDependencies: { '@base-ui/react': '^1.5.0' } }));
+  await installSoloRelease(higher.client, payload, { mode: 'add' });
+  const higherPkg = JSON.parse(higher.files.get('package.json'));
+  assert.deepEqual([higherPkg.dependencies['@base-ui/react'], higherPkg.peerDependencies['@base-ui/react']], ['^1.5.0', '^1.5.0']);
+  const optional = soloMake(app({ optionalDependencies: { '@base-ui/react': '^1.3.0' } }));
+  const optionalResult = await installSoloRelease(optional.client, payload, { mode: 'add' });
+  assert.deepEqual(JSON.parse(optional.files.get('package.json')).optionalDependencies, { '@base-ui/react': '^1.3.0' });
+  assert.deepEqual(optionalResult.report.dependencies, []);
 });
 
 test('solo add resumes only exact pending release files and saves them once', async () => {
@@ -718,4 +744,21 @@ test('team add refuses a different major dependency before it starts a branch or
   assert.equal(team.git(team.clone, 'branch', '--show-current'), 'main');
   assert.equal(team.git(team.clone, 'status', '--porcelain'), '');
   assert.equal(team.commands.some(command => command.startsWith('npm') || command.includes('push')), false);
+});
+
+test('continued team add refuses a conflicting branch package.json before touching the vendor folder', async t => {
+  const { payload } = fixture();
+  const team = teamApp(t, { react: '^19.0.0' });
+  await assert.rejects(installTeamRelease(team.clone, payload, { mode: 'add', run: team.run }), /Opening the pull request failed/);
+  team.commitAs({ 'package.json': `${JSON.stringify({ dependencies: { react: '^19.0.0', '@base-ui/react': '^2.0.0' } })}\n` });
+  const vendorDir = join(team.clone, 'src/vendor/atomic-aui');
+  const inode = statSync(vendorDir).ino;
+  const vendorFile = readFileSync(join(vendorDir, 'src/index.ts'));
+  team.commands.length = 0;
+  await assert.rejects(installTeamRelease(team.clone, payload, { mode: 'add', run: team.run }), /package\.json dependencies pins \^2\.0\.0/);
+  assert.equal(team.git(team.clone, 'branch', '--show-current'), BRANCH);
+  assert.equal(statSync(vendorDir).ino, inode);
+  assert.ok(readFileSync(join(vendorDir, 'src/index.ts')).equals(vendorFile));
+  assert.equal(team.git(team.clone, 'status', '--porcelain'), '');
+  assert.equal(team.commands.some(command => command.startsWith('npm')), false);
 });

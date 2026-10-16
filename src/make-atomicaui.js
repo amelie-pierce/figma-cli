@@ -20,6 +20,7 @@ const RELEASE_KEYS = [...LEGACY_KEYS, 'dependencies', 'layout'].sort();
 const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const RELEASE_RANGE = /^[~^]?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
 const APP_RANGE = /^[~^]?v?(\d+)(?:\.(\d+|[x*]))?(?:\.(\d+|[x*]))?(?:-[0-9A-Za-z.-]+)?$/;
+const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
 const SOURCE_FILE = /\.[cm]?[jt]sx?$/;
 const IMPORT = /\b(?:import|export)\s+(type\s+)?(?:[\w$\s{},*]*?\sfrom\s*)?['"]([^'"\n]+)['"]|\bimport\s*\(\s*['"]([^'"\n]+)['"]\s*\)/g;
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -168,21 +169,27 @@ const line = match => match[1] === '0' ? `0.${match[2] ?? 'x'}` : match[1];
 export function mergeDependencies(pkg, dependencies = {}) {
   validateDependencies(dependencies);
   const changes = [];
+  const order = (left, right) => left[0] - right[0] || left[1] - right[1] || left[2] - right[2];
   for (const [name, range] of Object.entries(dependencies)) {
-    const field = ['dependencies', 'devDependencies'].find(key => typeof pkg[key]?.[name] === 'string');
-    if (!field) {
-      pkg.dependencies = { ...pkg.dependencies, [name]: range };
-      changes.push({ name, from: null, to: range });
+    const want = RELEASE_RANGE.exec(range);
+    const pins = DEPENDENCY_FIELDS.filter(key => typeof pkg[key]?.[name] === 'string').map(field => {
+      const current = pkg[field][name], have = APP_RANGE.exec(current.trim());
+      if (!have || line(have) !== line(want)) {
+        throw new Error(`AtomicAUI needs ${name} ${range}, but package.json ${field} pins ${current}, a different major version. Nothing was changed.`);
+      }
+      return { field, current, floor: floor(have) };
+    });
+    const installed = pins.find(pin => pin.field !== 'peerDependencies');
+    if (installed) {
+      if (order(installed.floor, floor(want)) >= 0) continue;
+      pkg[installed.field][name] = range;
+      changes.push({ name, from: installed.current, to: range });
       continue;
     }
-    const current = pkg[field][name], have = APP_RANGE.exec(current.trim()), want = RELEASE_RANGE.exec(range);
-    if (!have || line(have) !== line(want)) {
-      throw new Error(`AtomicAUI needs ${name} ${range}, but package.json pins ${current}, a different major version. Nothing was changed.`);
-    }
-    const [a, b] = [floor(have), floor(want)];
-    if ((a[0] - b[0] || a[1] - b[1] || a[2] - b[2]) >= 0) continue;
-    pkg[field][name] = range;
-    changes.push({ name, from: current, to: range });
+    const peer = pins[0];
+    const to = peer && order(peer.floor, floor(want)) > 0 ? peer.current : range;
+    pkg.dependencies = { ...pkg.dependencies, [name]: to };
+    changes.push({ name, from: null, to });
   }
   return changes;
 }

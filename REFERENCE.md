@@ -702,8 +702,9 @@ package the library imports at runtime, with the exact range from the kit's
 `package.json` (the release refuses an import the kit does not pin as
 `X.Y.Z`, `^X.Y.Z` or `~X.Y.Z`). `add` and `upgrade` merge them into the app's
 `package.json`, raising an older compatible pin but never lowering one, list
-them in the change report, and refuse a different major version before any
-write. The client also accepts releases published in the older direct-source
+them in the change report, and refuse a different major version in any
+dependency field (including peer and optional) before any write. A package
+pinned only as a peer is still added to `dependencies`, at the higher range. The client also accepts releases published in the older direct-source
 layout (7.0.0), only in that exact manifest shape; those carry no
 dependencies. After an interrupted, unsaved release, use
 `--version X.Y.Z --resume`; it checks every pending path and byte before

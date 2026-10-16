@@ -289,9 +289,9 @@ export async function installTeamRelease(directory, release, { mode, pinned = fa
     release.manifest.dependencies).dependencies;
   const started = prepareTeamBranch(ctx, { mode, manifest: release.manifest });
   if (installedStatus(vendorDir).localEdits.length) throw new Error('AtomicAUI project changed after starting the branch; install refused.');
-  installRelease(root, release);
   const wiring = providerChanges(fixes.get('src/main.tsx')?.content || readFileSync(join(root, 'src/main.tsx'), 'utf8'),
     fixes.get('package.json')?.content || readFileSync(join(root, 'package.json'), 'utf8'), release.manifest.dependencies);
+  installRelease(root, release);
   const changed = new Map([...fixes].filter(([path]) => path !== 'src/main.tsx' && path !== 'package.json')
     .map(([path, entry]) => [path, entry.content]).concat([...wiring.files]));
   for (const [path, content] of changed) {
