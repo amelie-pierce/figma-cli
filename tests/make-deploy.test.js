@@ -1022,7 +1022,7 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     assert.equal(s.make.saved.get('package.json').toString(), text(NEW_PKG));
   });
 
-  it('names an unbacked lockfile that keeps the working tree different, and finishes once it is reverted by hand', async t => {
+  it('names an unbacked lockfile that keeps the working tree different, and finishes once Make holds the saved lockfile', async t => {
     const s = dependencyChange(t);
     s.make.saved.set('package.json', Buffer.from(text(NEW_PKG)));
     s.make.working = new Map(s.make.saved);
@@ -1035,7 +1035,7 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     assert.ok(!readReceipt(receiptPath).completedWrites.some(write => write.path === 'pnpm-lock.yaml'), 'main\'s lockfile is not backed up as the original');
     const status = await s.make.projectStatus();
     const message = new RegExp(`differs from saved tree ${readReceipt(receiptPath).makeBefore.tree} in pnpm-lock\\.yaml \\(working sha256 ${status.workingSha256.get('pnpm-lock.yaml')}, ` +
-      `saved blob ${status.makeFlat.get('pnpm-lock.yaml').blob}\\)\\. .*no original to restore.*by hand`);
+      `saved blob ${status.makeFlat.get('pnpm-lock.yaml').blob}\\)\\. The receipt has no backup of it.*check make status\\. If the lockfile still differs, restore saved version .* from Make's version history; do not edit the lockfile by hand\\.`);
     for (let run = 1; run <= 2; run++) {
       await assert.rejects(deployAbort(s.make, { receiptPath }, s.deps), error => {
         assert.equal(error.code, 'DEPLOY_WRITE_FAILED');

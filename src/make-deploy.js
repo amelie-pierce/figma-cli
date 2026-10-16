@@ -909,8 +909,10 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
     if (!todo.length && !pending.length && unrestorable.length) {
       const named = unrestorable.map(file => `${file.path} (working sha256 ${status.workingSha256.get(file.path) ?? 'none'}, saved blob ${status.makeFlat.get(file.path)?.blob ?? 'none'})`);
       stopAbort(null, `Restored ${restored.size} file(s), but Make's working tree ${status.workingTree} still differs from saved tree ${receipt.makeBefore.tree} in ` +
-        `${named.join(', ')}. Make's install changed it before the deploy started, so this deploy has no original to restore. ` +
-        `Revert it to saved version ${short(receipt.makeBefore.versionGitSha)} in Make by hand, then run --abort to finish, or deploy main with --resume.`);
+        `${named.join(', ')}. The receipt has no backup of it: Make had already changed it before the deploy started. ` +
+        'Make manages this lockfile: it is hidden from the file tree and Make\'s install regenerates it from package.json. ' +
+        `package.json is back at saved version ${short(receipt.makeBefore.versionGitSha)}, so let Make finish its install, then check make status. ` +
+        `If the lockfile still differs, restore saved version ${short(receipt.makeBefore.versionGitSha)} from Make's version history; do not edit the lockfile by hand.`);
     }
     if (!todo.length || round >= ROUNDS) {
       const mismatch = status.workingTree !== receipt.makeBefore.tree
