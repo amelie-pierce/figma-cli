@@ -1,0 +1,21 @@
+_vaults/figma-cli/wiki/make/deploy.md
+  s_35b0e14273753c::t_770a5fb5c143f2 38,44
+REFERENCE.md
+  s_35b0e14273753c::t_770a5fb5c143f2 434,461
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0fbbe1ad0da75db4d72a3580773ad53c677590ce",
+  "prompts": {},
+  "sessions": {
+    "s_35b0e14273753c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "953805a8-76c3-4b08-b2ce-1cda45c34f85",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
