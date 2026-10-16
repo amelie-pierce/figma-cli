@@ -538,7 +538,13 @@ export class MakeClient {
 
   // Returns which independent views agreed. On timeout, the error names the
   // last state of each view instead of a bare timeout.
-  async _durableAgreement(path, expectedContent, deadline, { treeState, expectedChange } = {}) {
+  async _durableAgreement(path, expectedContent, deadline, { treeState, expectedChange, releaseAsset = false, vendorTreeFallback = false } = {}) {
+    if (releaseAsset && !path.startsWith('public/atomicaui/')) {
+      throw new Error('Three-view release verification is limited to public/atomicaui/.');
+    }
+    if (vendorTreeFallback && !path.startsWith('src/vendor/atomic-aui/')) {
+      throw new Error('Vendor tree fallback is limited to src/vendor/atomic-aui/.');
+    }
     const hidden = treeHidden(path);
     let observed = null;
     let editorDisagreed = false;
@@ -580,6 +586,10 @@ export class MakeClient {
             // Make's rendered tree deliberately omits dotfiles and root lockfiles. VFS and sandbox
             // agreement is the available independent proof for those paths.
             if (hidden) return 'vfs-sandbox-matched';
+            // Release assets are inert, immutable site data. Make can stop
+            // mounting a source editor after many such files are added; the
+            // rendered tree, client VFS and sandbox still give three views.
+            if (releaseAsset) return 'tree-vfs-sandbox-release-matched';
             // Make need not mount an editor for a file that is not open. If it
             // does mount one, its bytes must also agree. Deep paths may be
             // listed in the tree even when the viewport cannot select them;
@@ -597,6 +607,10 @@ export class MakeClient {
                 if (editor.editorCount === 0 || (editor.editorPath && editor.editorPath !== path)) {
                   return 'tree-vfs-sandbox-matched';
                 }
+                // Deep vendor paths can exceed Make's virtualized tree viewport
+                // while a mounted editor reports no path. The release installer
+                // already verified their bytes; three live views still agree.
+                if (vendorTreeFallback && !editor.editorPath) return 'tree-vfs-sandbox-vendor-matched';
               }
               observed.editor = editorDisagreed ? 'different' : 'unavailable';
             }
@@ -619,8 +633,15 @@ export class MakeClient {
 
   // rewrite: write even when Make already holds this content, so Make's client
   // owns it (createVersion skips a lockfile only Make's install rewrote).
-  writeDurable(path, content, { expectedSha256, firstVersion = false, rewrite = false, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
+  writeDurable(path, content, { expectedSha256, firstVersion = false, rewrite = false, releaseAsset = false, vendorTreeFallback = false,
+    backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     sourcePath(path);
+    if (releaseAsset && !path.startsWith('public/atomicaui/')) {
+      throw new Error('Three-view release verification is limited to public/atomicaui/.');
+    }
+    if (vendorTreeFallback && !path.startsWith('src/vendor/atomic-aui/')) {
+      throw new Error('Vendor tree fallback is limited to src/vendor/atomic-aui/.');
+    }
     if (typeof content !== 'string') throw new Error('Make durable write requires UTF-8 text.');
     if (expectedSha256 != null && !/^[a-fA-F0-9]{64}$/.test(expectedSha256)) throw new Error('Invalid expected SHA-256.');
     return this._operation(async deadline => {
@@ -633,7 +654,7 @@ export class MakeClient {
       if (existing.exists && originalSha256 !== expectedSha256.toLowerCase()) throw new Error('Make source changed; SHA-256 does not match.');
       if (!existing.exists) await this._requireListableAncestor(path, deadline);
       const treeState = {};
-      await this._durableAgreement(path, existing.exists ? existing.content : null, deadline, { treeState });
+      await this._durableAgreement(path, existing.exists ? existing.content : null, deadline, { treeState, releaseAsset, vendorTreeFallback });
       if (existing.exists && existing.content === content && !rewrite) return { fileKey: this.fileKey, path, changed: false, sha256: originalSha256, verification: 'unchanged' };
       const backupPath = existing.exists ? await this._bounded(() => this._backup(path, existing.content, {
         backupDir, operation: 'durable-write', replacementSha256: sha256(content),
@@ -648,7 +669,7 @@ export class MakeClient {
         if (accepted?.refused) throw new Error(accepted.refused);
         const expectedChange = !existing.exists && !treeHidden(path)
           ? { beforeEntries: treeState.entries, beforeRows: treeState.rows, writtenPath: path } : undefined;
-        verification = await this._durableAgreement(path, content, deadline, { expectedChange });
+        verification = await this._durableAgreement(path, content, deadline, { expectedChange, releaseAsset, vendorTreeFallback });
       } catch (cause) {
         const error = new Error(`Make durable write outcome is uncertain: ${cause.message}. Inspect before retrying.`);
         error.backupPath = backupPath;
@@ -660,8 +681,12 @@ export class MakeClient {
     });
   }
 
-  deleteDurable(path, { expectedSha256, firstVersion = false, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
+  deleteDurable(path, { expectedSha256, firstVersion = false, vendorTreeFallback = false,
+    backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     sourcePath(path);
+    if (vendorTreeFallback && !path.startsWith('src/vendor/atomic-aui/')) {
+      throw new Error('Vendor tree fallback is limited to src/vendor/atomic-aui/.');
+    }
     if (!/^[a-fA-F0-9]{64}$/.test(expectedSha256 || '')) throw new Error('Make durable delete requires expected SHA-256.');
     return this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
@@ -671,7 +696,7 @@ export class MakeClient {
       if (!original.exists || sha256(original.content) !== expectedSha256.toLowerCase()) throw new Error('Make source is missing or changed; delete refused.');
       await this._requireListableAncestor(path, deadline);
       const treeState = {};
-      await this._durableAgreement(path, original.content, deadline, { treeState });
+      await this._durableAgreement(path, original.content, deadline, { treeState, vendorTreeFallback });
       const backupPath = await this._bounded(() => this._backup(path, original.content, { backupDir, operation: 'durable-delete' }), deadline);
       const immediate = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
       if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {
@@ -1104,6 +1129,31 @@ export class MakeClient {
       markerBytes: scan.contents.get(PROJECT_MARKER) ?? null, batches: scan.batches };
   }
 
+  // UTF-8 text of paths in the saved version's own tree, read from the sandbox
+  // git objects; null for a path that version does not have.
+  readSaved(paths) {
+    for (const path of paths) sourcePath(path);
+    return this._operation(async deadline => {
+      const state = requireGitMode((await this._driftState(deadline)).state);
+      const bridge = await this._fileBridge(deadline);
+      try {
+        const reader = this._sandboxGit(bridge);
+        const flat = await reader.flatten(await reader.commitTree(state.savedVersion));
+        const texts = new Map();
+        for (const path of paths) {
+          const entry = flat.get(path);
+          const blob = entry ? await reader.object(entry.blob) : null;
+          if (blob && blob.type !== 'blob') throw new Error(`Saved Make path is not a file: ${path}`);
+          texts.set(path, blob ? new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(blob.content) : null);
+        }
+        if ((await this._driftState(deadline)).state?.savedVersion !== state.savedVersion) {
+          throw new Error('Make version changed while reading the saved files.');
+        }
+        return texts;
+      } finally { await bridge.dispose(); }
+    });
+  }
+
   // The team-mode marker as Make's client VFS holds it, for the write gate.
   projectMarker() {
     return this._operation(async deadline => {
@@ -1144,8 +1194,13 @@ export class MakeClient {
     const dispose = async () => {
       try { await this.transport.send('Runtime.callFunctionOn', {
         objectId, functionDeclaration: 'function() { this.dispose(); }', returnByValue: true,
-      }, { timeoutMs: 400 }); }
-      finally { await this.transport.send('Runtime.releaseObject', { objectId }, { timeoutMs: 400 }); }
+      }, { timeoutMs: Math.min(5000, Math.max(400, deadline - Date.now())) }); }
+      finally {
+        // Releasing a CDP handle is best-effort housekeeping. A slow browser
+        // must not turn an already verified source write into an uncertain one.
+        await this.transport.send('Runtime.releaseObject', { objectId },
+          { timeoutMs: Math.min(5000, Math.max(400, deadline - Date.now())) }).catch(() => {});
+      }
     };
     // A provisioned socket stays pending until Make acknowledges creating its
     // workspace (about a second after provisioning, observed live); wait
@@ -1203,8 +1258,10 @@ export class MakeClient {
           }`,
         }, { timeoutMs: this._remaining(deadline) });
         return result.result?.value || 0;
-      } finally { await this.transport.send('Runtime.releaseObject', { objectId: sockets.objects.objectId }, { timeoutMs: 400 }); }
-    } finally { await this.transport.send('Runtime.releaseObject', { objectId: prototype.result.objectId }, { timeoutMs: 400 }); }
+      } finally { await this.transport.send('Runtime.releaseObject', { objectId: sockets.objects.objectId },
+        { timeoutMs: Math.min(5000, Math.max(400, deadline - Date.now())) }).catch(() => {}); }
+    } finally { await this.transport.send('Runtime.releaseObject', { objectId: prototype.result.objectId },
+      { timeoutMs: Math.min(5000, Math.max(400, deadline - Date.now())) }).catch(() => {}); }
   }
 
   async _backup(path, content, metadata) {

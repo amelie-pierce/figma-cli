@@ -89,6 +89,7 @@ async function treeDOMAction(action) {
   function inspect() {
     const roots = [...document.querySelectorAll('[data-testid="virtualized-file-tree-container"][role="tree"]')]
       .filter((element) => element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0);
+    if (!roots.length) throw new Error('Make Code file tree is temporarily unavailable.');
     if (roots.length !== 1) throw new Error('Expected exactly one visible Make Code file tree.');
     const root = roots[0];
     const elements = [...root.querySelectorAll('[role="treeitem"]')];
@@ -160,7 +161,17 @@ async function treeDOMAction(action) {
       }
     }
   }
-  const state = inspect();
+  async function stableInspect() {
+    const deadline = Date.now() + 2000;
+    for (;;) {
+      try { return inspect(); }
+      catch (error) {
+        if (error.message !== 'Make Code file tree is temporarily unavailable.' || Date.now() >= deadline) throw error;
+        await new Promise(resolve => setTimeout(resolve, 40));
+      }
+    }
+  }
+  const state = await stableInspect();
   if (action.type === 'scroll') {
     state.viewport.scrollTop = action.top;
     // scrollTop changes before React mounts the new virtualized rows. Wait for
@@ -168,7 +179,7 @@ async function treeDOMAction(action) {
     const deadline = Date.now() + 1500;
     for (;;) {
       await new Promise((resolve) => setTimeout(resolve, 40));
-      const next = inspect();
+      const next = await stableInspect();
       const first = Math.min(...next.rows.map(row => row.top));
       const last = Math.max(...next.rows.map(row => row.top + row.height));
       if (first <= next.viewport.scrollTop + 1 &&
@@ -209,7 +220,7 @@ async function treeDOMAction(action) {
     }
     row.control.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
-    return snapshot(inspect());
+    return snapshot(await stableInspect());
   }
   if (action.type !== 'snapshot') throw new Error('Unknown Make tree action.');
   return snapshot(state);
@@ -278,8 +289,12 @@ async function scanTree(transport, { deadline, maxEntries, targetPath }) {
       }
       if (folderAction) {
         if (++expansions > maxEntries) throw new Error('Make file tree exceeded the folder expansion limit.');
+        // Make re-renders the tree after a write. A refused folder click made
+        // no change, so read the tree again from the top.
         await evaluateTree(transport, { type: folderAction.type, row: folderAction.row, contentHeight,
-          expectedRows: state.rows }, deadline);
+          expectedRows: state.rows }, deadline).catch((error) => {
+          if (!/Make file tree changed before the requested action/.test(error?.message)) throw error;
+        });
         restart = true;
         break;
       }

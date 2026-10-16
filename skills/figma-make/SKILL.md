@@ -12,6 +12,34 @@ commands rather than assuming an upstream installation includes it.
 
 ## Choose the saving mode
 
+For the AtomicAUI library, use the `make atomicaui` command group. “Release a new
+AtomicAUI version” maps to `release --file KEY` (optionally `--version X.Y.Z`);
+the release command saves the files; the user rebuilds the site in **Make
+settings → General** by clicking **Unpublish** (if already published) and then
+**Publish**. Set **Who can view** to **Anyone on the web**, use no password, and
+keep the existing address. The address can return 404 for about a minute.
+**Update kit** and **Publish kit** do not rebuild the site.
+After an interrupted unsaved release, use `release --version X.Y.Z --resume`;
+after a save, use `verify-release --file KEY --version X.Y.Z` for a read-only
+full path and hash check. Kit-only `public/atomicaui/**` files sit outside
+`src/vendor/atomic-aui/`, so vendor drift, sync plans and export deltas never
+see them. An older release than the current latest keeps `latest.json`
+unchanged; `upgrade` without `--to` never moves an app backward, and
+`upgrade --to` a lower version is labelled a downgrade.
+“Add AtomicAUI to this app” maps to `add`, “update AtomicAUI in this app” to
+`upgrade`, and “is AtomicAUI up to date?” to `status`. Direct solo Make writes
+always require the exact `--file KEY`; team clone commands use `--dir` or the
+current clone and open a normal review PR. These commands verify the public
+HTTPS release before installation. See `src/commands/make-atomicaui.js` for
+the command contract and `src/make-atomicaui.js` for the release format.
+New releases write archive parts, the manifest, its sidecar hash, and the latest
+pointer. The archive manifest still verifies every source file; the client
+also supports the earlier direct-source release layout.
+If a solo `add` or `upgrade` is interrupted before its save, inspect the
+current Make state and rerun it with `--file KEY`, the same version and
+`--resume`. It verifies every pending vendor, fix and wiring file and refuses
+unrelated pending paths before completing one save.
+
 The original writes (`replace`, `create`, `import`, `remove`) reach only the open
 session's working copy. It is lost when the Make file is reopened unless Make
 creates a saved version. Git-mode files create versions through Make's version

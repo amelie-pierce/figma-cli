@@ -675,6 +675,76 @@ everything below):
   "areas": { "src/components/**": ["alice"], "src/index.css": ["bob"] } }
 ```
 
+### AtomicAUI site releases and installs
+
+`make atomicaui release --file KEY [--version X.Y.Z]` snapshots the exact
+saved vendor tree from the AtomicAUI kit, writes an immutable
+`public/atomicaui/<version>/` folder plus `latest.json`, checks the exact
+pending path set, saves one Make version, and verifies the written files.
+Without `--version`, it uses the next patch version. A version older than the
+current latest (a backport) still gets its folder, but `latest.json` stays on
+the newest release and the result says so. Site publication remains a
+manual Figma Make action: after the saved release, open **Make settings →
+General**. If the site is already published, click **Unpublish**, then
+**Publish**. Set **Who can view** to **Anyone on the web**, leave the password
+off, and keep the same site address. The address can return 404 for about a
+minute during republishing. **Update kit** and **Publish kit** update the kit
+package; they do not rebuild the site. The command prints these steps. New
+releases write only archive parts, the manifest, its sidecar hash, and the latest
+pointer. The manifest still lists every source file with size and hash. Archive
+base64 parts are at most 2 MiB (`--part-bytes` can lower that; larger values
+are refused). `--breaking-notes FILE` records breaking changes in the
+manifest: a JSON array of `{ "note", "fixes": [{ "path", "find", "replace" }] }`,
+where each fix targets `src/**` (outside the vendor folder) or `package.json`
+and `find` must match exactly once; `add` and `upgrade` apply these fixes in
+the same save or pull request. The manifest also carries `dependencies`: each
+package the library imports at runtime, with the exact range from the kit's
+`package.json` (the release refuses an import the kit does not pin as
+`X.Y.Z`, `^X.Y.Z` or `~X.Y.Z`). `add` and `upgrade` merge them into the app's
+`package.json`, raising an older compatible pin but never lowering one, list
+them in the change report, and refuse a different major version in any
+dependency field (including peer and optional) before any write. A package
+pinned only as a peer is still added to `dependencies`, at the higher range. The client also accepts releases published in the older direct-source
+layout (7.0.0), only in that exact manifest shape; those carry no
+dependencies. After an interrupted, unsaved release, use
+`--version X.Y.Z --resume`; it checks every pending path and byte before
+continuing. `make atomicaui verify-release --file KEY --version X.Y.Z`
+reads the saved release without writing and checks it against its own
+manifest, sidecar hash, parts, archive and exact path set, so older releases
+stay verifiable after newer ones. `latest.json` is checked only when it points
+at that version.
+
+`make atomicaui add [--version X.Y.Z]`, `upgrade [--to X.Y.Z]`, and `status`
+use the public site over credential-free HTTPS. Pass `--file KEY` for a solo
+Make file. In a team clone, run from its root or use `--dir CLONE`; add and
+upgrade refuse a dirty working tree, start their own fresh task branch
+`<login>/atomicaui-<mode>-<version>` from `main`, save, open a new pull request, and open the team review Lavish pages
+(change report and a built app preview). A rerun after a failure continues
+only that same branch, and only when it has no merged or closed pull request,
+every save on it is yours, it touches only AtomicAUI, wiring, lockfile and
+breaking-fix paths, and any unsaved files are inside `src/vendor/atomic-aui/`. A solo install prints the change
+report and points to the Make preview after its durable save. The downloader
+rejects HTML fallbacks and redirects, verifies the manifest, every archive
+part, and every source file, then checks local vendor edits before installing.
+The change report lists added, changed, and removed paths and any breaking
+notes carried by the manifest. `upgrade` without `--to` never moves an app
+backward: when the installed version is already the newest, it changes
+nothing and says so. `upgrade --to` a lower version is allowed and is labelled
+a downgrade in the change report, the saved version message and the pull
+request title.
+An interrupted solo `add` or `upgrade` can continue with `--file KEY` plus the
+same `--version`/`--to` and `--resume`, also after `VENDOR.json`, breaking
+fixes or wiring were written (`VENDOR.json` is written last). Every pending
+vendor file must equal the release, every pending app file must equal the
+fixes and wiring applied to its saved-version text, and unrelated pending paths are refused before
+writing or saving. The team pull request body lists the files actually
+changed and the breaking notes.
+
+`public/atomicaui/**` is kit-only release data outside `src/vendor/atomic-aui/`,
+so vendor drift, sync plans and export deltas never read it. An older kit without `tokens/generated.manifest.json`
+can use the matching committed package manifest through `make sync
+--generation-manifest` for a read-only component sync plan.
+
 ### Make delta and sync
 
 `make export-delta` requires a clean saved git-mode Make file, a trusted

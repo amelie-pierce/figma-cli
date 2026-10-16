@@ -670,6 +670,14 @@ describe('team pr and merge', () => {
     assert.deepEqual(result.reviewersNotRequested, ['@bob']);
     assert.match(f.warnings[0], /Could not ask @bob/);
   });
+  it('opens a pull request with a supplied change report and never edits it when reused', t => {
+    const { f } = ready(t);
+    const first = pr(f.ctx(), { body: '- initial: 1 file' });
+    const second = pr(f.ctx(), { body: '- updated: 2 files' });
+    assert.equal(second.url, first.url);
+    assert.equal(f.prs.length, 1);
+    assert.equal(f.prs[0].body, '- initial: 1 file');
+  });
   it('refuses a PR with nothing to review', t => {
     const p = project(t);
     const f = fakes(p);

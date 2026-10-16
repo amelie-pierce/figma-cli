@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'nod
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { applySync, exportDelta, parseRequest, planSync, validatePlanDigest, writeApplyOutputs } from '../src/make-sync.js';
-import { digest, verifyGeneratedManifest } from '../src/make-drift.js';
+import { compareVendor, digest, vendorManifest, verifyGeneratedManifest } from '../src/make-drift.js';
+import { MakeClient } from '../src/make-client.js';
 
 const root = 'src/vendor/atomic-aui';
 const path = `${root}/lib/Button.tsx`;
@@ -33,7 +34,9 @@ function fixture({ base = 'base', make = base, workspace = 'next', choice, direc
     ['tokens/generated/splash-bootstrap.js', tokens.get('splash-bootstrap.js')],
     ['tokens/generated.manifest.json', generationBytes],
   ].filter(([, bytes]) => bytes));
-  const baselineBytes = text(JSON.stringify({ files: [...baseline].map(([name, bytes]) => ({ path: name, ...info(bytes) })) }));
+  const baselineBytes = text(JSON.stringify({ source: { repository: 'example/repo', path: 'modules/design/atomic-aui/src',
+    commit: 'e'.repeat(40), commitDate: '2026-10-12T00:00:00Z' },
+  files: [...baseline].map(([name, bytes]) => ({ path: name, ...info(bytes) })) }));
   const contents = new Map([...baseline]);
   if (make == null) contents.delete('lib/Button.tsx'); else contents.set('lib/Button.tsx', text(make));
   contents.set('VENDOR.json', baselineBytes);
@@ -67,6 +70,106 @@ test('source-only plan records hashes, diff, scope and digest', () => {
     assert.deepEqual(plan.unresolved, []);
     validatePlanDigest(plan);
     assert.throws(() => validatePlanDigest({ ...plan, makeVersion: '0'.repeat(40) }), /digest mismatch/);
+  } finally { f.dispose(); }
+});
+
+test('workspace VENDOR candidate pins the new source commit and exact reviewed inventory', () => {
+  const f = fixture();
+  try {
+    const baseline = JSON.parse(f.args.baselineBytes);
+    const candidate = { ...baseline, source: { ...baseline.source, commit, commitDate: '2026-10-15T00:00:00Z' },
+      files: baseline.files.map(file => file.path === 'lib/Button.tsx' ? { ...file, ...info(text('next')) } : file) };
+    const bytes = text(`${JSON.stringify(candidate)}\n`);
+    const location = join(f.directory, root, 'VENDOR.json');
+    writeFileSync(location, bytes);
+    assert.deepEqual(planSync(f.args).vendorBytes, bytes);
+    writeFileSync(location, `${JSON.stringify({ ...candidate, source: { ...candidate.source, repository: 'other/repo' } })}\n`);
+    assert.throws(() => planSync(f.args), /metadata differs/);
+  } finally { f.dispose(); }
+});
+
+test('scoped sync ignores a stale or broader workspace VENDOR candidate', () => {
+  const f = fixture();
+  try {
+    const baseline = JSON.parse(f.args.baselineBytes);
+    const location = join(f.directory, root, 'VENDOR.json');
+    const computed = (() => { const g = fixture(); try { return planSync(g.args).vendorBytes; } finally { g.dispose(); } })();
+    writeFileSync(location, f.args.baselineBytes);
+    assert.deepEqual(planSync(f.args).vendorBytes, computed);
+    const broader = { ...baseline, source: { ...baseline.source, commit, commitDate: '2026-10-15T00:00:00Z' },
+      files: baseline.files.map(file => file.path === 'lib/Button.tsx' ? { ...file, ...info(text('next')) }
+        : file.path === 'tokens/generated/.generated' ? { ...file, ...info(text('other')) } : file) };
+    writeFileSync(location, `${JSON.stringify(broader)}\n`);
+    assert.deepEqual(planSync(f.args).vendorBytes, computed);
+    const samePaths = file => file.path === 'lib/Button.tsx' ? { ...file, ...info(text('older')) } : file;
+    for (const stale of [{ ...broader, files: baseline.files.map(samePaths) },
+      { ...broader, source: { ...broader.source, commit: 'f'.repeat(40) },
+        files: baseline.files.map(file => file.path === 'lib/Button.tsx' ? { ...file, ...info(text('next')) } : file) }]) {
+      writeFileSync(location, `${JSON.stringify(stale)}\n`);
+      assert.deepEqual(planSync(f.args).vendorBytes, computed);
+    }
+  } finally { f.dispose(); }
+});
+
+test('kit release files beside the vendored library never reach drift, sync plans or export deltas', async () => {
+  const f = fixture({ make: 'changed', workspace: 'base' });
+  try {
+    const kit = new Map([
+      ...[...f.args.contents].map(([name, bytes]) => [`${root}/${name}`, bytes]),
+      ['public/atomicaui/latest.json', text('{"version":"7.0.0"}')],
+      ['public/atomicaui/7.0.0/manifest.json', text('{}')],
+      ['public/atomicaui/7.0.0/atomicaui-7.0.0.tar.gz.b64.000', text('AAAA')],
+    ]);
+    const client = new MakeClient({ transport: { close() {} }, timeoutMs: 120000 });
+    client.fileKey = 'Scratch';
+    client._operation = async fn => fn(Date.now() + 120000);
+    client._driftState = async () => ({ state });
+    client._fileBridge = async () => ({ dispose: async () => {}, invoke: async (_fn, [type, data]) => {
+      assert.equal(type, 'fs/dir/list');
+      const directory = data.path.slice('code/'.length);
+      const entries = new Map();
+      for (const name of kit.keys()) {
+        if (!name.startsWith(`${directory}/`)) continue;
+        const [first, ...rest] = name.slice(directory.length + 1).split('/');
+        entries.set(first, rest.length > 0);
+      }
+      return { success: true, data: { path: data.path, files: [...entries].map(([name, isDirectory]) => ({ name, path: name,
+        isFile: !isDirectory, isDirectory, size: isDirectory ? undefined : kit.get(`${directory}/${name}`).length })) } };
+    } });
+    client._bridgeReadBytes = async (_bridge, name) => kit.get(name);
+    const scan = await client.inventoryVendor(root, { includeBytes: true });
+    const args = { ...f.args, inventory: scan.inventory, contents: scan.contents };
+    const release = value => String(value).includes('public/atomicaui');
+    const drift = compareVendor(vendorManifest(f.args.baselineBytes, root), scan.inventory,
+      { manifestFile: scan.inventory.get('VENDOR.json'), stateBefore: state, stateAfter: state });
+    const { plan } = planSync(args);
+    const delta = exportDelta({ ...args, who: 'Engineer' });
+    assert.deepEqual(drift.files.filter(file => file.status !== 'matched').map(file => file.path), ['lib/Button.tsx']);
+    assert.deepEqual(plan.actions.map(action => action.path), [path]);
+    assert.deepEqual(plan.outOfScopeDrift, []);
+    assert.deepEqual(delta.files.map(file => file.path), [path]);
+    for (const output of [drift.files.map(file => file.path), plan.beforeInventory.map(file => file.path), plan.outOfScopeDrift,
+      plan.actions.map(action => action.path), delta.files.map(file => file.path)]) {
+      assert.equal(output.some(release), false);
+    }
+  } finally { f.dispose(); }
+});
+
+test('older kit without generated.manifest accepts the matching committed package manifest for dry-run sync', () => {
+  const f = fixture({ workspace: 'base' });
+  try {
+    const generationBytes = f.args.contents.get('tokens/generated.manifest.json');
+    f.args.generationManifestBytes = generationBytes;
+    f.args.contents.delete('tokens/generated.manifest.json');
+    f.args.inventory.delete('tokens/generated.manifest.json');
+    const baseline = JSON.parse(f.args.baselineBytes);
+    baseline.files = baseline.files.filter(file => file.path !== 'tokens/generated.manifest.json');
+    f.args.baselineBytes = text(JSON.stringify(baseline));
+    f.args.contents.set('VENDOR.json', f.args.baselineBytes);
+    f.args.inventory.set('VENDOR.json', { path: 'VENDOR.json', ...info(f.args.baselineBytes) });
+    const { plan } = planSync(f.args);
+    assert.deepEqual(plan.outOfScopeDrift, []);
+    assert.deepEqual(plan.actions.map(action => action.operation), ['keep']);
   } finally { f.dispose(); }
 });
 
@@ -216,6 +319,7 @@ test('apply uses durable paths, saves exact set and checks drift; unresolved ref
     const written = new Map();
     const client = { writeDurable: async (name, value, options) => {
       written.set(name, value);
+      assert.equal(options.vendorTreeFallback, true);
       calls.push(['write', name, options.expectedSha256]);
       return { backupPath: '/private/backup' };
     }, deleteDurable: async () => { throw new Error('unexpected delete'); },

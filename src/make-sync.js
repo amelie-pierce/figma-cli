@@ -169,7 +169,9 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
     for (const [path, expected] of packaged) if (!same(currentTokens.get(path), expected)) {
       throw new Error(`Generated tokens differ from Core package: ${path}`);
     }
-    const manifest = contents.get(GENERATION_MANIFEST);
+    // Older kits carry the generated tree but not its manifest file. The
+    // committed package may supply that exact manifest for read-only proof.
+    const manifest = contents.get(GENERATION_MANIFEST) || generationManifestBytes;
     if (!manifest || digest(manifest) !== packageData.manifest.generationManifest.sha256) {
       throw new Error('Make generated.manifest.json differs from Core package.');
     }
@@ -224,18 +226,46 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
       diff: reviewDiff(contents.get(path) || null, resultBytes) });
   }
   const finalTokens = new Map([...expected].filter(([path]) => path.startsWith(GENERATED)));
-  const manifestBytes = scope.has(GENERATION_MANIFEST) ? generationManifestBytes : contents.get(GENERATION_MANIFEST);
+  const manifestBytes = scope.has(GENERATION_MANIFEST) ? generationManifestBytes :
+    (contents.get(GENERATION_MANIFEST) || generationManifestBytes);
   if (!unresolved.length) verifyGeneratedManifest(manifestBytes, finalTokens);
   const sameBaseline = expected.size === baseline.files.size && [...expected]
     .every(([path, entry]) => same(entry, baseline.files.get(path)));
-  const vendorBytes = sameBaseline ? baselineBytes : Buffer.from(`${JSON.stringify({ ...JSON.parse(baselineBytes.toString('utf8')),
+  let vendorBytes = sameBaseline ? baselineBytes : Buffer.from(`${JSON.stringify({ ...JSON.parse(baselineBytes.toString('utf8')),
     files: [...expected.values()].filter(file => file.path !== 'VENDOR.json')
       .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) }, null, 2)}\n`);
+  // A workspace vendor candidate carries the source commit and date as well as
+  // the file inventory. It applies only when it is pinned to the request's
+  // commit and lists exactly the reviewed result; any other candidate is stale
+  // or broader, so the computed manifest is kept.
+  const candidateVendorPath = join(resolve(candidateDir), VENDOR_ROOT, 'VENDOR.json');
+  const candidateBytes = !sameBaseline && lstatSync(candidateVendorPath, { throwIfNoEntry: false })?.isFile()
+    ? readArtifact(candidateDir, `${VENDOR_ROOT}/VENDOR.json`) : null;
+  const candidate = candidateBytes && json(candidateBytes, 'Workspace VENDOR.json');
+  const parsed = candidate?.source?.commit === request.workspaceCommit ? vendorManifest(candidateBytes, VENDOR_ROOT) : null;
+  if (parsed && parsed.files.size === expected.size && [...expected].every(([path, entry]) => same(entry, parsed.files.get(path)))) {
+    const original = json(baselineBytes, 'Trusted VENDOR.json');
+    const candidateSource = candidate.source;
+    const originalSource = original.source;
+    const candidateOther = { ...candidate };
+    const originalOther = { ...original };
+    delete candidateOther.source;
+    delete candidateOther.files;
+    delete originalOther.source;
+    delete originalOther.files;
+    if (JSON.stringify(candidateOther) !== JSON.stringify(originalOther) ||
+        typeof candidateSource.commitDate !== 'string' ||
+        JSON.stringify({ ...candidateSource, commit: originalSource?.commit, commitDate: originalSource?.commitDate }) !== JSON.stringify(originalSource)) {
+      throw new Error('Workspace VENDOR.json metadata differs outside source commit and date.');
+    }
+    vendorBytes = candidateBytes;
+  }
   const vendorAfter = fileInfo(vendorBytes);
   const plan = { schema: 'figma-cli/make-sync-plan@1', fileKey, requestId: request.requestId, who: request.who,
     requestedAt: request.requestedAt, direction: request.direction, workspaceCommit: packageData.manifest.source.commit,
     makeVersion: state.savedVersion, requestSha256, packageSha256: packageData.sha256,
-    baselineManifestSha256: digest(baselineBytes), beforeInventory: [...inventory.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+    baselineManifestSha256: digest(baselineBytes), beforeInventory: [...inventory.values()]
+      .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
     candidateDir: resolve(candidateDir), scope: request.files.map(file => ({ ...file })), actions, unresolved, outOfScopeDrift,
     vendorBefore: inventory.get('VENDOR.json'), vendorAfter, generatedTreeDigest: packageData.manifest.tree.digest };
   plan.digest = digest(JSON.stringify(plan));
@@ -316,13 +346,14 @@ export async function applySync(client, { plan, vendorBytes, packageData, candid
   try {
     for (const { action, content } of prepared) {
       const result = action.operation === 'delete'
-        ? await client.deleteDurable(action.path, { expectedSha256: action.before.sha256, backupDir })
-        : await client.writeDurable(action.path, content, { expectedSha256: action.before?.sha256, backupDir });
+        ? await client.deleteDurable(action.path, { expectedSha256: action.before.sha256, backupDir, vendorTreeFallback: true })
+        : await client.writeDurable(action.path, content, { expectedSha256: action.before?.sha256, backupDir,
+          vendorTreeFallback: true });
       writes.push({ path: action.path, before: action.before, after: action.after, backupPath: result.backupPath });
     }
     if (vendorContent !== null) {
       const result = await client.writeDurable(`${VENDOR_ROOT}/VENDOR.json`, vendorContent,
-        { expectedSha256: plan.vendorBefore.sha256, backupDir });
+        { expectedSha256: plan.vendorBefore.sha256, backupDir, vendorTreeFallback: true });
       writes.push({ path: `${VENDOR_ROOT}/VENDOR.json`, before: plan.vendorBefore,
         after: plan.vendorAfter, backupPath: result.backupPath });
     }
