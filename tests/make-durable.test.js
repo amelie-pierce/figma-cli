@@ -355,7 +355,7 @@ test('a sandbox or tree mismatch refuses the missing-editor fallback', async () 
   await assert.rejects(client._durableAgreement(path, 'expected', Date.now() + 300), /tree absent/);
 });
 
-test('deep unselectable source accepts three views whatever editor is mounted, unless one disagreed', async () => {
+test('an editor that disagreed earlier refuses the deep viewport fallback', async () => {
   const path = 'src/vendor/atomic-aui/lib/datepicker/use-recipe.ts';
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
   client.fileKey = 'ScratchKey';
@@ -363,12 +363,11 @@ test('deep unselectable source accepts three views whatever editor is mounted, u
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async () => ({ content: 'expected' });
   client._sourceTree = async () => [{ kind: 'file', path }];
-  client._read = async () => { throw new Error('Make source ancestry cannot fit in the file-tree viewport; selection was refused.'); };
-  assert.equal(await client._durableAgreement(path, 'expected', Date.now() + 1000), 'tree-vfs-sandbox-matched');
+  client._editor = async () => ({ editorCount: 1, editorPath: 'src/App.tsx' });
   let reads = 0;
   client._read = async () => {
     if (reads++ === 0) return { content: 'different' };
-    throw new Error('Make source ancestry cannot fit in the file-tree viewport; selection was refused.');
+    throw Object.assign(new Error('viewport refused'), { code: 'MAKE_TREE_VIEWPORT' });
   };
   await assert.rejects(client._durableAgreement(path, 'expected', Date.now() + 300), /editor different/);
 });

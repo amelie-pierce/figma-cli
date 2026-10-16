@@ -67,12 +67,22 @@ function makeEditorAction(action, workspace) {
   const selected = allVisible('[data-testid="code-file-item"][aria-current="page"]');
   const trees = allVisible('[data-testid="virtualized-file-tree-container"][role="tree"]');
   const ready = context.ready && trees.length === 1;
+  // The Files workspace names the mounted editor's full path; the legacy layout names only its leaf.
+  const editorPath = () => {
+    if (context.mode !== 'files-workspace' || editors.length !== 1) return null;
+    const crumbs = allVisible('[data-testid="files-workspace-header"] nav[aria-label="File path"]');
+    const leaves = allVisible('[data-testid="files-workspace-selected-file"]');
+    const parts = crumbs.length === 1 ? [...crumbs[0].children].filter(visible).filter(element => element.textContent?.trim()) : [];
+    if (leaves.length !== 1 || parts.length < 2 || parts.at(-1) !== leaves[0]) return null;
+    return parts.slice(1).map(element => element.textContent.trim()).join('/');
+  };
   const summary = {
     url: location.href, title: document.title, codeReady: ready, workspaceMode: context.mode, editorCount: editors.length,
     readOnly: editors.length === 1 ? editors[0].cmView?.view?.state?.readOnly !== false : null,
     busy, offline,
     ...(context.needsFilesTab ? { needsFilesTab: true } : {}),
     selectedName: selected.length === 1 ? selected[0].closest('[role="treeitem"]')?.getAttribute('aria-label') : null,
+    editorPath: editorPath(),
   };
   if (action.type === 'ensure-code' || action.type === 'inspect') return summary;
   // Source writes go through the filesystem bridge, never the editor.
@@ -570,17 +580,21 @@ export class MakeClient {
             if (hidden) return 'vfs-sandbox-matched';
             // Make need not mount an editor for a file that is not open. If it
             // does mount one, its bytes must also agree. Deep paths may be
-            // listed in the tree even when the viewport cannot select them, so
-            // whatever editor is mounted then belongs to another file.
+            // listed in the tree even when the viewport cannot select them;
+            // they fall back only while the mounted editor provably shows
+            // another path.
             try {
               const editor = await this._read(path, deadline, { editorWaitMs: EDITOR_WAIT_MS });
               observed.editor = editor.content === expectedContent ? 'matched' : 'different';
               if (observed.editor === 'matched') return 'editor-tree-vfs-sandbox-matched';
               editorDisagreed = true;
             } catch (error) {
-              if (!editorDisagreed && (error.code === 'MAKE_NO_EDITOR' ||
-                  error.message?.startsWith('Make source ancestry cannot fit in the file-tree viewport;'))) {
-                return 'tree-vfs-sandbox-matched';
+              if (!editorDisagreed && error.code === 'MAKE_NO_EDITOR') return 'tree-vfs-sandbox-matched';
+              if (!editorDisagreed && error.code === 'MAKE_TREE_VIEWPORT') {
+                const editor = await this._editor({ type: 'inspect' }, deadline);
+                if (editor.editorCount === 0 || (editor.editorPath && editor.editorPath !== path)) {
+                  return 'tree-vfs-sandbox-matched';
+                }
               }
               observed.editor = editorDisagreed ? 'different' : 'unavailable';
             }
