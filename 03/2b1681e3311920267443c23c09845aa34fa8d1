@@ -1,0 +1,88 @@
+src/make-atomicaui.js
+  s_2ac1da875b83e9::t_ac20a0fbcb399d 204
+  s_2ac1da875b83e9::t_427b451012db5f 295-306,308-310,314-315
+  s_2ac1da875b83e9::t_ef3d77a444dffc 14,18-35,116-117,120,134,138-150,153,160-165
+  s_2ac1da875b83e9::t_3773d12edae510 181,188-193,199-203,205-215
+src/make-tree.js
+  s_2ac1da875b83e9::t_316363fe2bf3b4 92,164-174,182,223
+src/commands/make-atomicaui.js
+  s_2ac1da875b83e9::t_407b23cc1e5d02 18,20-21,34-35,37-38,51-53,55,61-66,69-72,75-77,80-82,85,88,284
+  s_2ac1da875b83e9::t_70eb6e0f731de8 32,36,59-60,68,73-74,78-79,86,285,290-291
+  s_2ac1da875b83e9::t_2fb8674d6a7d4d 56-58
+  s_2ac1da875b83e9::t_4d3a68a0288e86 87
+  s_2ac1da875b83e9::t_92b51b388afc0e 110-128,131-144,295-299
+  s_2ac1da875b83e9::t_a185c412aeeeef 129-130
+  s_2ac1da875b83e9::t_760df1c9f6181e 300-301
+tests/make-sync.test.js
+  s_2ac1da875b83e9::t_d672474cb29a3e 90-107
+  s_2ac1da875b83e9::t_b2a9234672736c 73-89
+tests/make-tree.test.js
+  s_2ac1da875b83e9::t_dc3f39ea0738b8 46-47,50,82,100,146-149
+  s_2ac1da875b83e9::t_e32d14149a54d9 150-151
+_vaults/figma-cli/wiki/make/index.md
+  s_2ac1da875b83e9::t_426aa7e0410f17 9
+src/make-drift.js
+  s_2ac1da875b83e9::t_7873e673bb427d 5,58
+src/make-sync.js
+  s_2ac1da875b83e9::t_7873e673bb427d 3,153-154,242-243,273
+  s_2ac1da875b83e9::t_d672474cb29a3e 173-175,230-231
+src/make-transport.js
+  s_2ac1da875b83e9::t_d55017a006b43c 182
+src/make-client.js
+  s_2ac1da875b83e9::t_4d3a68a0288e86 544-546,588-591,632,634-636
+  s_2ac1da875b83e9::t_d55017a006b43c 1160-1166,1224-1227
+  s_2ac1da875b83e9::t_ba7871acffafd3 470-472,1323-1324
+  s_0db7938d4cd762::t_4bf7d0392366a4 631
+  s_e7c3ae5e0f70b3::t_307cb78a2f330e 543,649,664
+tests/make-durable.test.js
+  s_2ac1da875b83e9::t_55ff27a57180fd 408-423
+REFERENCE.md
+  s_2ac1da875b83e9::t_426aa7e0410f17 685-690,701-704
+  s_2ac1da875b83e9::t_8461bd5261d7a5 705
+tests/make-atomicaui.test.js
+  s_2ac1da875b83e9::t_3d0e7cd3e1d7cb 8-9,54-76,177,180-181,183,192-193,195-196,209,212
+  s_2ac1da875b83e9::t_8caa330b8cce32 175,178-179,182,184-191,194,197-208,210-211,213-214
+  s_2ac1da875b83e9::t_cc810ba57bd0e4 139-140
+  s_2ac1da875b83e9::t_e3f72d000796a2 10,157-174
+  s_2ac1da875b83e9::t_62d5c42694c225 176
+_vaults/figma-cli/wiki/make/atomicaui-release.md
+  s_2ac1da875b83e9::t_426aa7e0410f17 1-28
+skills/figma-make/SKILL.md
+  s_2ac1da875b83e9::t_426aa7e0410f17 18-21
+tests/make-client.test.js
+  s_2ac1da875b83e9::t_62ce70318d8fa9 493-494,497
+tests/make-drift.test.js
+  s_2ac1da875b83e9::t_b2a9234672736c 36-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "032b1681e3311920267443c23c09845aa34fa8d1",
+  "prompts": {},
+  "sessions": {
+    "s_0db7938d4cd762": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbfdbbba-55b2-44f1-9a3a-04ba4dfe81bb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_2ac1da875b83e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a13e5c-4710-7b12-b24e-010bb9bffce1",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_e7c3ae5e0f70b3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0dc8364-ab2c-4e7b-a848-1c69dd52a353",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
