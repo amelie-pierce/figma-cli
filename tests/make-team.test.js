@@ -135,8 +135,7 @@ function fakes(p, { login = ME, build = 0, format = null, pulls = {}, edit = 0, 
     if (args[0] === 'pr' && args[1] === 'edit') {
       if (edit) return { status: 1, stdout: '', stderr: 'could not request reviewer' };
       const target = prs.find(x => x.url === args[2]);
-      if (args.includes('--body')) target.body = flag('--body');
-      if (args.includes('--add-reviewer')) target.reviewRequests.push({ login: flag('--add-reviewer') });
+      target.reviewRequests.push({ login: flag('--add-reviewer') });
       return ok('');
     }
     if (args[0] === 'pr' && args[1] === 'merge') {
@@ -671,14 +670,13 @@ describe('team pr and merge', () => {
     assert.deepEqual(result.reviewersNotRequested, ['@bob']);
     assert.match(f.warnings[0], /Could not ask @bob/);
   });
-  it('updates a reused pull request body with the current change report', t => {
+  it('opens a pull request with a supplied change report and never edits it when reused', t => {
     const { f } = ready(t);
     const first = pr(f.ctx(), { body: '- initial: 1 file' });
     const second = pr(f.ctx(), { body: '- updated: 2 files' });
     assert.equal(second.url, first.url);
-    assert.equal(second.created, false);
     assert.equal(f.prs.length, 1);
-    assert.equal(f.prs[0].body, '- updated: 2 files');
+    assert.equal(f.prs[0].body, '- initial: 1 file');
   });
   it('refuses a PR with nothing to review', t => {
     const p = project(t);
