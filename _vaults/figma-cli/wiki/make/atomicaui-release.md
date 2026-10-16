@@ -12,9 +12,10 @@ writing the full payload. New releases contain only bounded archive base64
 parts, `manifest.json`, `manifest.sha256`, and the latest pointer. The manifest
 records hashes and sizes for every source file and decoded archive
 parts (`src/make-atomicaui.js:113`, `src/commands/make-atomicaui.js:32`). The
-save requires the exact release path set, and `verify-release` reads every
-saved path and hash from the Make filesystem bridge
-(`src/commands/make-atomicaui.js`). After saving, the manual site rebuild is
+save requires the exact release path set, and `verify-release` replays the
+client download chain over the saved Make files: the release's own sidecar,
+manifest, parts and archive plus the exact folder path set; `latest.json` is
+checked only when it names that version (`src/commands/make-atomicaui.js`). After saving, the manual site rebuild is
 **Make settings → General → Unpublish → Publish** (skip Unpublish when the site
 is not already published). Set **Who can view** to **Anyone on the web**, no
 password, and keep the address. The address can return 404 for about a minute
@@ -23,10 +24,11 @@ The first saved release contained 265 source files in 270 release paths. The
 archive-only layout keeps those bytes in the verified archive with a handful
 of Make writes; the downloader still accepts the first release's direct paths.
 
-An interrupted solo `add` can resume with the exact `--file`, `--version`, and
-`--resume`. The command requires pending paths to match the partial vendor
-inventory and compares each file with the verified release before completing
-the save (`src/commands/make-atomicaui.js`).
+An interrupted solo `add` or `upgrade` can resume with the exact `--file`,
+version and `--resume`. `VENDOR.json` is written last; pending vendor files
+must equal the release, pending fix targets must round-trip through the
+planned fixes, and pending wiring must equal the planned wiring before the
+single save (`src/commands/make-atomicaui.js`).
 Deep vendor paths may exceed the Make file-tree viewport, which prevents the
 editor selector from proving their ancestry (`src/make-tree.js:342`). For this
 selection refusal or a selected vendor path with no source editor, solo

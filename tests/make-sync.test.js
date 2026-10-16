@@ -82,9 +82,8 @@ test('workspace VENDOR candidate pins the new source commit and exact reviewed i
     const location = join(f.directory, root, 'VENDOR.json');
     writeFileSync(location, bytes);
     assert.deepEqual(planSync(f.args).vendorBytes, bytes);
-    candidate.files[0].sha256 = '0'.repeat(64);
-    writeFileSync(location, JSON.stringify(candidate));
-    assert.throws(() => planSync(f.args), /file inventory differs/);
+    writeFileSync(location, `${JSON.stringify({ ...candidate, source: { ...candidate.source, repository: 'other/repo' } })}\n`);
+    assert.throws(() => planSync(f.args), /metadata differs/);
   } finally { f.dispose(); }
 });
 
@@ -101,6 +100,13 @@ test('scoped sync ignores a stale or broader workspace VENDOR candidate', () => 
         : file.path === 'tokens/generated/.generated' ? { ...file, ...info(text('other')) } : file) };
     writeFileSync(location, `${JSON.stringify(broader)}\n`);
     assert.deepEqual(planSync(f.args).vendorBytes, computed);
+    const samePaths = file => file.path === 'lib/Button.tsx' ? { ...file, ...info(text('older')) } : file;
+    for (const stale of [{ ...broader, files: baseline.files.map(samePaths) },
+      { ...broader, source: { ...broader.source, commit: 'f'.repeat(40) },
+        files: baseline.files.map(file => file.path === 'lib/Button.tsx' ? { ...file, ...info(text('next')) } : file) }]) {
+      writeFileSync(location, `${JSON.stringify(stale)}\n`);
+      assert.deepEqual(planSync(f.args).vendorBytes, computed);
+    }
   } finally { f.dispose(); }
 });
 

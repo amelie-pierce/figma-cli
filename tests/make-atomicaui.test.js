@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRelease, DEFAULT_PART_BASE64_BYTES, downloadRelease, getBytes, installRelease, installedStatus, nextPatch,
   planBreakingFixes } from '../src/make-atomicaui.js';
-import { installSoloRelease, prepareTeamBranch, releaseAtomicaui, verifyAtomicauiRelease } from '../src/commands/make-atomicaui.js';
+import { installSoloRelease, prepareTeamBranch, releaseAtomicaui, teamChangeReport, verifyAtomicauiRelease } from '../src/commands/make-atomicaui.js';
 import { defaultRun, teamContext } from '../src/make-team.js';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -177,24 +177,38 @@ test('fake Make client receives an immutable release folder and one exact save',
   await assert.rejects(releaseAtomicaui(client, { requestedVersion: '7.0.0' }), /immutable/);
 });
 
-test('saved release verifier compares the exact release path set and every hash', async () => {
-  const { inventory, contents, release } = fixture();
+test('saved release verifier checks an older release against its own manifest and every saved path', async () => {
+  const older = fixture('7.0.0').release;
+  const newer = fixture('7.0.1', 'archive-only').release;
   const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40),
     pendingPaths: [], isLoading: false, error: false, pendingCount: 0 };
-  const actualContents = new Map([...release.output].map(([path, bytes]) =>
+  const actualContents = new Map([...older.output, ...newer.output].map(([path, bytes]) =>
     [path.slice('public/atomicaui/'.length), bytes]));
-  const actualInventory = new Map([...actualContents].map(([path, bytes]) =>
-    [path, { path, bytes: bytes.length, sha256: hash(bytes) }]));
+  const inventoryOf = () => new Map([...actualContents].map(([path, bytes]) => [path, { path, bytes: bytes.length, sha256: hash(bytes) }]));
+  let actualInventory = inventoryOf();
   const client = {
     _driftState: async () => ({ state }),
-    inventoryVendor: async root => root === 'src/vendor/atomic-aui'
-      ? { inventory, contents, state }
-      : { inventory: actualInventory, contents: actualContents, state },
+    inventoryVendor: async root => {
+      assert.equal(root, 'public/atomicaui');
+      return { inventory: actualInventory, contents: actualContents, state };
+    },
   };
-  const result = await verifyAtomicauiRelease(client, '7.0.0');
-  assert.equal(result.releasePaths, release.output.size);
-  actualInventory.get('7.0.0/manifest.json').sha256 = hash('tampered');
+  const old = await verifyAtomicauiRelease(client, '7.0.0');
+  assert.equal(old.releasePaths, older.output.size - 1);
+  assert.equal(old.latest, false);
+  const current = await verifyAtomicauiRelease(client, '7.0.1');
+  assert.equal(current.latest, true);
+  actualContents.set('7.0.0/extra.txt', Buffer.from('extra'));
+  actualInventory = inventoryOf();
+  await assert.rejects(verifyAtomicauiRelease(client, '7.0.0'), /path set differs/);
+  actualContents.delete('7.0.0/extra.txt');
+  actualContents.set('7.0.0/manifest.json', Buffer.from('tampered'));
+  actualInventory = inventoryOf();
   await assert.rejects(verifyAtomicauiRelease(client, '7.0.0'), /release differs/);
+  actualContents.set('7.0.0/manifest.json', older.output.get('public/atomicaui/7.0.0/manifest.json'));
+  actualContents.set('latest.json', Buffer.from(JSON.stringify({ ...newer.latest, manifestSha256: '0'.repeat(64) })));
+  actualInventory = inventoryOf();
+  await assert.rejects(verifyAtomicauiRelease(client, '7.0.1'), /latest\.json/);
 });
 
 test('interrupted release keeps a matching part, rewrites a mismatched part and saves exact paths once', async () => {
@@ -321,6 +335,118 @@ test('solo add resumes only exact pending release files and saves them once', as
   assert.equal(saves.length, 1);
   assert.ok(!writes.includes(first));
   assert.ok(files.has('src/vendor/atomic-aui/VENDOR.json'));
+});
+
+function soloPayload(version = '7.0.0', source = { 'src/index.ts': 'export const Button = 1\n', 'tokens/index.scss': ':root {}\n' },
+  breakingChanges = []) {
+  const bytes = new Map(Object.entries(source).map(([path, text]) => [path, Buffer.from(text)]));
+  const vendor = Buffer.from(JSON.stringify({ schema: 1, name: 'atomic-aui', files: [...bytes].map(([path, value]) =>
+    ({ path, bytes: value.length, sha256: hash(value) })) }));
+  const contents = new Map([...bytes, ['VENDOR.json', vendor]]);
+  const inventory = new Map([...contents].map(([path, value]) => [path, { path, bytes: value.length, sha256: hash(value) }]));
+  const release = buildRelease({ contents, inventory, version, breakingChanges, layout: 'direct-and-archive' });
+  return { manifest: release.manifest, manifestSha256: hash(release.output.get(`public/atomicaui/${version}/manifest.json`)),
+    files: new Map(release.manifest.files.map(item => [item.path, release.output.get(`public/atomicaui/${version}/files/${item.path}`)])),
+    site: 'https://example.test' };
+}
+function soloMake(files, pendingPaths = []) {
+  const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40), pendingPaths: [...pendingPaths],
+    isLoading: false, error: false, pendingCount: pendingPaths.length };
+  const writes = [], saves = [];
+  const touch = path => { if (!state.pendingPaths.includes(path)) state.pendingPaths.push(path); state.pendingCount = state.pendingPaths.length; };
+  const vendorScan = () => {
+    const contents = new Map([...files].filter(([path]) => path.startsWith('src/vendor/atomic-aui/'))
+      .map(([path, value]) => [path.slice('src/vendor/atomic-aui/'.length), value]));
+    return { contents, inventory: new Map([...contents].map(([path, value]) => [path, { bytes: value.length, sha256: hash(value) }])), state };
+  };
+  const client = {
+    fileKey: 'atomicaui-solo-resume', projectMarker: async () => null,
+    _driftState: async () => ({ state }),
+    files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
+    read: async path => ({ content: files.get(path).toString(), sha256: hash(files.get(path)) }),
+    inventoryVendor: async () => vendorScan(),
+    writeDurable: async (path, content, { expectedSha256 } = {}) => {
+      assert.equal(expectedSha256 || null, files.has(path) ? hash(files.get(path)) : null);
+      writes.push(path); files.set(path, Buffer.from(content)); touch(path);
+      return { changed: true };
+    },
+    deleteDurable: async (path, { expectedSha256 } = {}) => {
+      assert.equal(expectedSha256, hash(files.get(path)));
+      writes.push(path); files.delete(path); touch(path);
+    },
+    saveVersion: async (_title, paths) => {
+      assert.deepEqual([...paths].sort(), [...state.pendingPaths].sort());
+      saves.push(paths); state.pendingPaths = []; state.pendingCount = 0;
+      return { versionNumber: 9, gitSha: 'b'.repeat(40) };
+    },
+  };
+  return { client, files, writes, saves, state };
+}
+const plainApp = () => new Map([
+  ['src/main.tsx', Buffer.from("import App from './App'\n<App />\n")],
+  ['src/App.tsx', Buffer.from('render(oldButton)\n')],
+  ['package.json', Buffer.from(JSON.stringify({ dependencies: { react: '^19' }, devDependencies: {} }))],
+]);
+
+test('interrupted solo add resumes after wiring or VENDOR.json was written, and refuses foreign pending content', async () => {
+  const breakingChanges = [{ note: 'Button renamed', fixes: [{ path: 'src/App.tsx', find: 'oldButton', replace: 'Button' }] }];
+  const payload = soloPayload('7.0.0', undefined, breakingChanges);
+  const complete = soloMake(plainApp());
+  await installSoloRelease(complete.client, payload, { mode: 'add' });
+  const finished = new Map(complete.files);
+  assert.equal(finished.get('src/App.tsx').toString(), 'render(Button)\n');
+  const vendorPath = 'src/vendor/atomic-aui/VENDOR.json';
+  const changedPaths = [...finished.keys()].filter(path => !plainApp().has(path) || !plainApp().get(path).equals(finished.get(path)));
+  for (const written of [changedPaths.filter(path => path !== vendorPath), changedPaths]) {
+    const files = plainApp();
+    for (const path of written) files.set(path, finished.get(path));
+    const make = soloMake(files, written);
+    const result = await installSoloRelease(make.client, payload, { mode: 'add', resume: true });
+    assert.deepEqual(make.writes, changedPaths.filter(path => !written.includes(path)));
+    assert.deepEqual([...make.saves[0]].sort(), [...changedPaths].sort());
+    assert.deepEqual(result.report.added, ['src/index.ts', 'tokens/index.scss']);
+    for (const [path, value] of finished) assert.ok(make.files.get(path).equals(value), path);
+  }
+  const foreign = plainApp();
+  foreign.set('src/main.tsx', Buffer.from("import App from './App'\n<App />\n// my own edit\n"));
+  const refused = soloMake(foreign, ['src/main.tsx']);
+  await assert.rejects(installSoloRelease(refused.client, payload, { mode: 'add', resume: true }), /differs from the verified release: src\/main.tsx/);
+  const fixed = plainApp();
+  fixed.set('src/App.tsx', Buffer.from('render(somethingElse)\n'));
+  const wrongFix = soloMake(fixed, ['src/App.tsx']);
+  await assert.rejects(installSoloRelease(wrongFix.client, payload, { mode: 'add', resume: true }), /src\/App.tsx/);
+  assert.deepEqual([...refused.writes, ...wrongFix.writes], []);
+});
+
+test('interrupted solo upgrade resumes with exact pending vendor files and reports from the saved version', async () => {
+  const older = soloPayload('7.0.0', { 'src/index.ts': 'one\n', 'src/old.ts': 'old\n' });
+  const newer = soloPayload('7.0.1', { 'src/index.ts': 'two\n', 'src/new.ts': 'new\n' });
+  const installed = soloMake(plainApp());
+  await installSoloRelease(installed.client, older, { mode: 'add' });
+  const files = new Map(installed.files);
+  files.set('src/vendor/atomic-aui/src/index.ts', newer.files.get('src/index.ts'));
+  files.delete('src/vendor/atomic-aui/src/old.ts');
+  const make = soloMake(files, ['src/vendor/atomic-aui/src/index.ts', 'src/vendor/atomic-aui/src/old.ts']);
+  const result = await installSoloRelease(make.client, newer, { mode: 'upgrade', resume: true });
+  assert.equal(result.report.from, '7.0.0');
+  assert.deepEqual(result.report.removed, ['src/old.ts']);
+  assert.deepEqual(make.writes, ['src/vendor/atomic-aui/src/new.ts', 'src/vendor/atomic-aui/VENDOR.json']);
+  assert.equal(JSON.parse(make.files.get('src/vendor/atomic-aui/VENDOR.json')).atomicauiRelease.version, '7.0.1');
+  const stale = new Map(installed.files);
+  stale.set('src/vendor/atomic-aui/src/index.ts', Buffer.from('half written'));
+  const refused = soloMake(stale, ['src/vendor/atomic-aui/src/index.ts']);
+  await assert.rejects(installSoloRelease(refused.client, newer, { mode: 'upgrade', resume: true }), /differs from the verified release/);
+});
+
+test('team pull request report lists the files actually changed and the breaking notes', t => {
+  const team = teamClone(t);
+  prepareTeamBranch(team.ctx(), { mode: 'add', manifest: teamManifest });
+  team.commitAs({ 'src/vendor/atomic-aui/VENDOR.json': '{}\n', 'src/vendor/atomic-aui/index.ts': 'x\n', 'src/App.tsx': 'fixed\n', 'package-lock.json': '{}\n' });
+  const body = teamChangeReport(team.ctx(), { from: null, to: '7.0.0', added: ['index.ts'], changed: [], removed: [],
+    breakingChanges: [{ note: 'Button renamed', fixes: [] }] });
+  assert.deepEqual(body.split('\n'), ['AtomicAUI not installed to 7.0.0.', '',
+    '- src/vendor/atomic-aui/: 1 added, 0 changed, 0 removed', '- package-lock.json', '- src/App.tsx', '',
+    'Breaking changes fixed in this pull request:', '- Button renamed']);
 });
 
 test('breaking notes require an exact app fix before the installation writes', async () => {

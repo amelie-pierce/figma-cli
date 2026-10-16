@@ -694,7 +694,10 @@ base64 parts are at most 512 KiB by default (configurable up to 2 MiB with
 `--part-bytes`). The client also accepts older direct-source releases. After an interrupted, unsaved release, use
 `--version X.Y.Z --resume`; it checks every pending path and byte before
 continuing. `make atomicaui verify-release --file KEY --version X.Y.Z`
-independently reads the saved release path set and hashes without writing.
+reads the saved release without writing and checks it against its own
+manifest, sidecar hash, parts, archive and exact path set, so older releases
+stay verifiable after newer ones. `latest.json` is checked only when it points
+at that version.
 
 `make atomicaui add [--version X.Y.Z]`, `upgrade [--to X.Y.Z]`, and `status`
 use the public site over credential-free HTTPS. Pass `--file KEY` for a solo
@@ -710,9 +713,13 @@ rejects HTML fallbacks and redirects, verifies the manifest, every archive
 part, and every source file, then checks local vendor edits before installing.
 The change report lists added, changed, and removed paths and any breaking
 notes carried by the manifest.
-An interrupted solo `add` can continue with `--file KEY --version X.Y.Z
---resume`. It accepts only the exact pending files of that release and refuses
-changed bytes or unrelated pending paths before writing or saving.
+An interrupted solo `add` or `upgrade` can continue with `--file KEY` plus the
+same `--version`/`--to` and `--resume`, also after `VENDOR.json`, breaking
+fixes or wiring were written (`VENDOR.json` is written last). Every pending
+vendor file must equal the release, every pending app file must equal the
+planned fix and wiring content, and unrelated pending paths are refused before
+writing or saving. The team pull request body lists the files actually
+changed and the breaking notes.
 
 `public/atomicaui/**` is kit-only release data. Vendor drift, sync plans, and
 export deltas exclude it. An older kit without `tokens/generated.manifest.json`

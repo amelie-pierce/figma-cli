@@ -236,16 +236,15 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
     files: [...expected.values()].filter(file => file.path !== 'VENDOR.json')
       .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) }, null, 2)}\n`);
   // A workspace vendor candidate carries the source commit and date as well as
-  // the file inventory. It applies only when it describes exactly the reviewed
-  // change set; a stale or broader candidate is left to the computed manifest.
+  // the file inventory. It applies only when it is pinned to the request's
+  // commit and lists exactly the reviewed result; any other candidate is stale
+  // or broader, so the computed manifest is kept.
   const candidateVendorPath = join(resolve(candidateDir), VENDOR_ROOT, 'VENDOR.json');
-  const changedPaths = files => [...new Set([...files.keys(), ...baseline.files.keys()])]
-    .filter(path => path !== 'VENDOR.json' && !same(files.get(path), baseline.files.get(path))).sort();
   const candidateBytes = !sameBaseline && lstatSync(candidateVendorPath, { throwIfNoEntry: false })?.isFile()
     ? readArtifact(candidateDir, `${VENDOR_ROOT}/VENDOR.json`) : null;
-  const parsed = candidateBytes && vendorManifest(candidateBytes, VENDOR_ROOT);
-  if (parsed && JSON.stringify(changedPaths(parsed.files)) === JSON.stringify(changedPaths(expected))) {
-    const candidate = json(candidateBytes, 'Workspace VENDOR.json');
+  const candidate = candidateBytes && json(candidateBytes, 'Workspace VENDOR.json');
+  const parsed = candidate?.source?.commit === request.workspaceCommit ? vendorManifest(candidateBytes, VENDOR_ROOT) : null;
+  if (parsed && parsed.files.size === expected.size && [...expected].every(([path, entry]) => same(entry, parsed.files.get(path)))) {
     const original = json(baselineBytes, 'Trusted VENDOR.json');
     const candidateSource = candidate.source;
     const originalSource = original.source;
@@ -256,15 +255,9 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
     delete originalOther.source;
     delete originalOther.files;
     if (JSON.stringify(candidateOther) !== JSON.stringify(originalOther) ||
-        candidateSource?.repository !== originalSource?.repository ||
-        candidateSource?.path !== originalSource?.path ||
-        candidateSource?.commit !== request.workspaceCommit ||
-        typeof candidateSource?.commitDate !== 'string' ||
-        JSON.stringify({ ...candidateSource, commit: originalSource.commit, commitDate: originalSource.commitDate }) !== JSON.stringify(originalSource)) {
+        typeof candidateSource.commitDate !== 'string' ||
+        JSON.stringify({ ...candidateSource, commit: originalSource?.commit, commitDate: originalSource?.commitDate }) !== JSON.stringify(originalSource)) {
       throw new Error('Workspace VENDOR.json metadata differs outside source commit and date.');
-    }
-    if (parsed.files.size !== expected.size || [...expected].some(([path, entry]) => !same(entry, parsed.files.get(path)))) {
-      throw new Error('Workspace VENDOR.json file inventory differs from reviewed sync result.');
     }
     vendorBytes = candidateBytes;
   }
