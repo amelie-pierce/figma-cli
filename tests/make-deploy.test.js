@@ -10,6 +10,7 @@ import { deployAbort, deployApply, deployPlan, deployResume, deployVerify, readR
 import { markerContent } from '../src/make-mode.js';
 import { PROJECT_MARKER } from '../src/make-project.js';
 import { defaultRun } from '../src/make-team.js';
+import { listMakeFiles } from '../src/make-tree.js';
 
 // Local git only: a bare "origin" stands in for GitHub, while gh, pnpm and the
 // Make client are faked. Nothing here reaches Figma, GitHub or a registry.
@@ -289,6 +290,46 @@ function landChange(s, changes = { 'src/App.tsx': 'export const App = () => "v2"
   return sha;
 }
 
+// A compact fake rendered tree. The first folder expansion after a write sees
+// Make's stale guarded snapshot, then the next traversal sees the new rows.
+function writtenTree(paths, { refuseFirstExpand = false } = {}) {
+  const roots = [];
+  for (const path of paths) {
+    if (path.startsWith('.') || ['pnpm-lock.yaml', 'package-lock.json'].includes(path)) continue;
+    let children = roots;
+    for (const [index, name] of path.split('/').entries()) {
+      let node = children.find(item => item.name === name);
+      if (!node) { node = { name, kind: index === path.split('/').length - 1 ? 'file' : 'folder', children: [] }; children.push(node); }
+      children = node.children;
+    }
+  }
+  const expanded = new Set();
+  let refused = false;
+  const flatten = (nodes = roots, prefix = '', level = 1) => nodes.flatMap(node => {
+    const path = prefix ? `${prefix}/${node.name}` : node.name;
+    return [{ node, path, level }, ...(node.kind === 'folder' && expanded.has(path) ? flatten(node.children, path, level + 1) : [])];
+  });
+  return {
+    async evaluate(expression) {
+      const action = JSON.parse(expression.match(/\)\((\{[\s\S]*\})\)$/)[1]);
+      if (action.type === 'expand') {
+        if (refuseFirstExpand && !refused) {
+          refused = true;
+          throw new Error('Make file tree changed before the requested action. Run the command again.');
+        }
+        const hit = flatten().find((item, index) => index * 32 === action.row.top && item.node.name === action.row.name);
+        assert.ok(hit, 'folder action targets a rendered row');
+        expanded.add(hit.path);
+      }
+      const visible = flatten();
+      return { contentHeight: visible.length * 32, scrollTop: 0, clientHeight: 100000,
+        rows: visible.map(({ node, level }, index) => ({ name: node.name, kind: node.kind, level,
+          top: index * 32, height: 32, expanded: node.kind === 'folder' ? expanded.has(visible[index].path) : null,
+          selected: false })) };
+    },
+  };
+}
+
 const DEEP_PATH = 'src/vendor/atomic-aui/lib/datepicker/use-recipe.ts';
 function checkUnopenedReadback(make) {
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
@@ -439,6 +480,35 @@ describe('make deploy guards', () => {
 });
 
 describe('make deploy dry run, apply and verify', () => {
+  it('crosses many newly created folders in one apply with exact tree refreshes', async t => {
+    const s = setup(t);
+    const additions = Object.fromEntries(Array.from({ length: 12 }, (_, index) =>
+      [`src/vendor/atomic-aui/lib/field-${index}/Input.tsx`, `export const field${index} = true;\n`]));
+    landChange(s, additions);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    assert.equal(plan.counts.add, 12);
+    let beforeEntries;
+    let beforeRows;
+    let checked = 0;
+    s.make.hooks.beforeWrite = path => {
+      if (path in additions) beforeEntries = listMakeFiles(writtenTree(s.make.working.keys()), {
+        onSnapshot: snapshot => { beforeRows = snapshot.rows; },
+      });
+    };
+    s.make.hooks.afterWrite = async path => {
+      if (!(path in additions)) return;
+      const entries = await listMakeFiles(writtenTree(s.make.working.keys(), { refuseFirstExpand: true }), {
+        expectedChange: { beforeEntries: await beforeEntries, beforeRows, writtenPath: path },
+      });
+      assert.ok(entries.some(entry => entry.path === path));
+      checked++;
+    };
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.stage, 'deployed');
+    assert.equal(checked, 12);
+    assert.equal(s.make.saved.size, s.make.working.size);
+  });
+
   it('plans without writing, then applies, records the receipt, tags main and verifies after a reload', async t => {
     const s = setup(t, { marker: false });
     const sha = landChange(s);

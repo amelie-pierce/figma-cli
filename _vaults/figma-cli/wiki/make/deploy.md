@@ -7,6 +7,7 @@ date: 2026-10-15
 Updated 2026-10-15: dependency changes (write order, waiting out Make's own install, lockfiles written through the client) and the CDP timeout for large files.
 Updated 2026-10-15: `_vaults/` is repo-only and never deployed.
 Updated 2026-10-16: abort ordering, idle rechecks, cumulative receipt bookkeeping, exact saved-tree proof and scratch live validation.
+Updated 2026-10-16: guarded tree refresh after a new file creates folders or a delete empties them.
 
 # make deploy
 
@@ -28,6 +29,10 @@ Updated 2026-10-16: abort ordering, idle rechecks, cumulative receipt bookkeepin
 - Refused: binary content or files over 2 MiB; LFS paths that differ; new or deleted root files; new top-level folders (the bridge cannot prove absence there; see [persistence.md](persistence.md)); submodules and symbolic links.
 - Write order: other files, then the root `package.json`, then the root lockfiles last (`writeRank`, `src/make-deploy.js`). See [Dependency changes](#dependency-changes).
 - The digest covers everything except the plan path. Apply re-plans, and the digest, the commit and the free tag number must all still match.
+
+## Folder changes during writes and deletes
+
+For a new durable file, the client retains the complete rendered tree from its pre-write absence check. After Make accepts the VFS write, the shared tree traversal may reread once if a guarded row action sees a changed tree. It compares the fresh complete tree with that snapshot: only the written file and its missing ancestor folders may appear; existing paths, kinds, levels and row heights must remain. A durable delete (deploy deletes, abort removals, library replacement) retains its pre-delete tree the same way: only the deleted file and ancestor folders left with no rows beneath them may disappear, and nothing may appear. Other changes keep the original refusal. The VFS, sandbox and editor byte checks still run (`src/make-client.js:568`, `src/make-client.js:635`, `src/make-client.js:673`, `src/make-tree.js:303`, `src/make-tree.js:341`). Fake-Make coverage runs the real `writeDurable` and `deleteDurable` through the guarded refresh: a new folder and an emptied folder continue, while an unrelated insertion or removal refuses (`tests/make-tree.test.js:375`). Tree-level tests cover the same cases (`tests/make-tree.test.js:165`, `tests/make-tree.test.js:210`). The deploy test at `tests/make-deploy.test.js:483` runs only the tree check from its hooks, beside a fake client, for twelve new folders.
 
 ## Dependency changes
 

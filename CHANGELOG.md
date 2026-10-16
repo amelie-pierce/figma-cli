@@ -5,6 +5,7 @@
 ### Fixed
 
 - `make deploy` skips the repo-only project vault `_vaults/**`, as it skips `.npmrc` and `.figma/design-context/`, instead of refusing it with `DEPLOY_UNSUPPORTED_PATH` (Make cannot create a new top-level folder); `make status` leaves it out of its comparison too.
+- `make deploy`, `make deploy --abort`, `make write` and `make delete` no longer stop with "Make file tree changed before the requested action" when a new file creates folders or a delete empties them. The guarded tree check rereads once and accepts only the written file and its new ancestor folders, or the deleted file and ancestor folders left empty; any other tree change still refuses.
 - `team save` never changes vendored files: every file in a `VENDOR.json` folder or listed in one is put back byte for byte (mode included) after the project's `format` and `build` scripts, also when a script fails, and the result counts them (`vendoredKept`, `vendoredRestored`).
 - `team pr` writes a short body (each file only when there are at most 10, otherwise counts by kind and top folder) with a review line, and says why no reviewer was requested (`noReviewerRequested`: no areas map, no area covers the files, or you own them all).
 - `team review` counts empty new or deleted files and mode-only changes in its change summary, taking their path from the `diff --git` header.

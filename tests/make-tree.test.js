@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
+import { createHash } from 'node:crypto';
+import { MakeClient } from '../src/make-client.js';
 import { buildMakeHierarchy, listMakeFiles, selectMakeFile } from '../src/make-tree.js';
 
 const row = (name, kind, level, index, extra = {}) => ({
@@ -160,6 +162,105 @@ describe('Make virtualized DOM traversal', () => {
     assert.deepEqual(transport.clicks, []);
   });
 
+  it('refreshes once when a write inserts its file and parent folder during a guarded tree action', async () => {
+    let inserted = false;
+    let armed = false;
+    const transport = fixture([folder('src', [file('old.ts')])], {
+      onAction(action, { nodes }) {
+        if (armed && action.type === 'expand' && !inserted) {
+          nodes[0].children.push(folder('field', [file('Input.tsx')]));
+          inserted = true;
+        }
+      },
+    });
+    let beforeRows;
+    const beforeEntries = await listMakeFiles(transport, { onSnapshot: snapshot => { beforeRows = snapshot.rows; } });
+    transport.nodes[0].expanded = false;
+    armed = true;
+    const entries = await listMakeFiles(transport, { expectedChange: { beforeEntries, beforeRows, writtenPath: 'src/field/Input.tsx' } });
+    assert.deepEqual(entries.map(entry => entry.path), ['src', 'src/old.ts', 'src/field', 'src/field/Input.tsx']);
+    assert.equal(inserted, true);
+  });
+
+  it('refuses an unrelated file inserted alongside the written folder', async () => {
+    let inserted = false;
+    let armed = false;
+    const transport = fixture([folder('src', [file('old.ts')])], {
+      onAction(action, { nodes }) {
+        if (armed && action.type === 'expand' && !inserted) {
+          nodes[0].children.push(folder('field', [file('Input.tsx')]), file('stray.ts'));
+          inserted = true;
+        }
+      },
+    });
+    let beforeRows;
+    const beforeEntries = await listMakeFiles(transport, { onSnapshot: snapshot => { beforeRows = snapshot.rows; } });
+    transport.nodes[0].expanded = false;
+    armed = true;
+    await assert.rejects(listMakeFiles(transport, { expectedChange: { beforeEntries, beforeRows, writtenPath: 'src/field/Input.tsx' } }), /changed before/);
+  });
+
+  it('does not authorize a tree refresh without the complete pre-write rows', async () => {
+    const transport = fixture([folder('src', [file('old.ts')])]);
+    const beforeEntries = await listMakeFiles(transport);
+    transport.nodes[0].children.push(folder('field', [file('Input.tsx')]));
+    await assert.rejects(listMakeFiles(transport, { expectedChange: { beforeEntries, writtenPath: 'src/field/Input.tsx' } }), /changed before/);
+  });
+
+  it('refreshes once when a delete removes its file and the folder it emptied during a guarded tree action', async () => {
+    let removed = false;
+    let armed = false;
+    const transport = fixture([folder('src', [file('old.ts'), folder('field', [file('Input.tsx')])])], {
+      clientHeight: 320,
+      onAction(action, { nodes }) {
+        if (armed && action.type === 'expand' && !removed) {
+          nodes[0].children.splice(1, 1);
+          removed = true;
+        }
+      },
+    });
+    let beforeRows;
+    const beforeEntries = await listMakeFiles(transport, { onSnapshot: snapshot => { beforeRows = snapshot.rows; } });
+    assert.ok(beforeEntries.some(entry => entry.path === 'src/field/Input.tsx'));
+    transport.nodes[0].expanded = false;
+    armed = true;
+    const entries = await listMakeFiles(transport, { expectedChange: { beforeEntries, beforeRows, removedPath: 'src/field/Input.tsx' } });
+    assert.deepEqual(entries.map(entry => entry.path), ['src', 'src/old.ts']);
+    assert.equal(removed, true);
+  });
+
+  it('refuses an unrelated removal alongside the deleted file', async () => {
+    let removed = false;
+    let armed = false;
+    const transport = fixture([folder('src', [file('old.ts'), folder('field', [file('Input.tsx')])])], {
+      clientHeight: 320,
+      onAction(action, { nodes }) {
+        if (armed && action.type === 'expand' && !removed) {
+          nodes[0].children.splice(0, 2);
+          removed = true;
+        }
+      },
+    });
+    let beforeRows;
+    const beforeEntries = await listMakeFiles(transport, { onSnapshot: snapshot => { beforeRows = snapshot.rows; } });
+    transport.nodes[0].expanded = false;
+    armed = true;
+    await assert.rejects(listMakeFiles(transport, { expectedChange: { beforeEntries, beforeRows, removedPath: 'src/field/Input.tsx' } }), /changed before/);
+  });
+
+  it('waits for a delete and keeps its folder while it still holds other files', async () => {
+    const transport = fixture([folder('src', [folder('field', [file('Input.tsx'), file('Label.tsx')])])], { clientHeight: 320 });
+    let beforeRows;
+    const beforeEntries = await listMakeFiles(transport, { onSnapshot: snapshot => { beforeRows = snapshot.rows; } });
+    const unchanged = await listMakeFiles(transport, { expectedChange: { beforeEntries, beforeRows, removedPath: 'src/field/Input.tsx' } });
+    assert.deepEqual(unchanged.map(entry => entry.path), beforeEntries.map(entry => entry.path));
+    transport.nodes[0].children[0].children.splice(0, 1);
+    const entries = await listMakeFiles(transport, { expectedChange: { beforeEntries, beforeRows, removedPath: 'src/field/Input.tsx' } });
+    assert.deepEqual(entries.map(entry => entry.path), ['src', 'src/field', 'src/field/Label.tsx']);
+    transport.nodes[0].children.splice(0, 1);
+    await assert.rejects(listMakeFiles(transport, { expectedChange: { beforeEntries, beforeRows, removedPath: 'src/field/Input.tsx' } }), /changed before/);
+  });
+
   it('keeps every ancestor rendered with the leaf and returns root-to-parent metadata', async () => {
     const transport = fixture([folder('src', [folder('components', [file('App.tsx')], true)], true), file('package.json')],
       { clientHeight: 96 });
@@ -225,5 +326,80 @@ describe('Make virtualized DOM traversal', () => {
     const transport = fixture([file('a')], { rejectSelection: true });
     await assert.rejects(selectMakeFile(transport, 'a', { timeoutMs: 20 }), /Timed out/);
     assert.deepEqual(transport.clicks, ['a']);
+  });
+});
+
+// A MakeClient whose VFS, sandbox bridge and rendered tree are fakes, so the
+// real writeDurable/deleteDurable, _durableAgreement and _sourceTree run offline.
+// After the VFS change every folder collapses, and Make applies `change` to the
+// rendered tree while the next scan expands src/lib, so the guard refuses once.
+function fakeMake(nodes, files, change) {
+  const vfs = new Map(Object.entries(files));
+  let pending = false;
+  const transport = fixture(nodes, { clientHeight: 320, onAction(action, context) {
+    if (pending && action.type === 'expand' && action.row?.name === 'lib') { pending = false; change(context); }
+  } });
+  const collapse = items => items.forEach(item => { if (item.kind === 'folder') { item.expanded = false; collapse(item.children); } });
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 5000 });
+  client.fileKey = 'ScratchKey';
+  client._operation = fn => fn(Date.now() + 5000);
+  client._ensureCode = async () => ({ busy: false, offline: false, readOnly: false });
+  client._driftState = async () => ({ state: { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40),
+    pendingCount: 0, pendingPaths: [], isLoading: false, error: false } });
+  client._treeTransport = () => transport;
+  client._backup = async () => '/private/backup';
+  client._read = async () => { throw Object.assign(new Error('Make shows no source editor.'), { code: 'MAKE_NO_EDITOR' }); };
+  client._bridgeRead = async (_bridge, path) => {
+    if (!vfs.has(path)) throw new Error('missing');
+    return { content: vfs.get(path) };
+  };
+  client._fileBridge = async () => ({
+    dispose: async () => {},
+    invoke: async (_fn, [, { path }]) => {
+      const prefix = path === 'code' ? '' : `${path.slice('code/'.length)}/`;
+      const names = [...vfs.keys()].filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length).split('/')[0]);
+      return names.length ? { success: true, data: { path, files: [...new Set(names)].map(name => ({ name })) } } : null;
+    },
+  });
+  client._durable = async action => {
+    if (action.type === 'read') return { exists: vfs.has(action.path), content: vfs.get(action.path) };
+    if (action.type === 'write') vfs.set(action.path, action.content);
+    if (action.type === 'delete') vfs.delete(action.path);
+    collapse(transport.nodes);
+    pending = true;
+    return { accepted: true };
+  };
+  return client;
+}
+
+describe('Make durable writes and deletes across a guarded tree refresh', () => {
+  const hash = text => createHash('sha256').update(text).digest('hex');
+  const tree = (...extra) => [folder('src', [folder('lib', [file('old.ts')]), ...extra])];
+
+  it('writes a file whose new folder appears during a guarded expand', async () => {
+    const client = fakeMake(tree(), { 'src/lib/old.ts': 'old' },
+      ({ nodes }) => nodes[0].children.push(folder('field', [file('Input.tsx')])));
+    const result = await client.writeDurable('src/field/Input.tsx', 'input');
+    assert.equal(result.verification, 'tree-vfs-sandbox-matched');
+  });
+
+  it('refuses a write when an unrelated file appears with the new folder', async () => {
+    const client = fakeMake(tree(), { 'src/lib/old.ts': 'old' },
+      ({ nodes }) => nodes[0].children.push(folder('field', [file('Input.tsx')]), file('stray.ts')));
+    await assert.rejects(client.writeDurable('src/field/Input.tsx', 'input'), /durable write outcome is uncertain: Make file tree changed before/);
+  });
+
+  it('deletes a file whose emptied folder disappears during a guarded expand', async () => {
+    const client = fakeMake(tree(folder('field', [file('Input.tsx')])), { 'src/lib/old.ts': 'old', 'src/field/Input.tsx': 'input' },
+      ({ nodes }) => nodes[0].children.splice(1, 1));
+    const result = await client.deleteDurable('src/field/Input.tsx', { expectedSha256: hash('input') });
+    assert.equal(result.verification, 'tree-vfs-sandbox-delete-matched');
+  });
+
+  it('refuses a delete when an unrelated file disappears with the emptied folder', async () => {
+    const client = fakeMake(tree(folder('field', [file('Input.tsx')])), { 'src/lib/old.ts': 'old', 'src/field/Input.tsx': 'input' },
+      ({ nodes }) => { nodes[0].children.splice(1, 1); nodes[0].children[0].children.splice(0, 1); });
+    await assert.rejects(client.deleteDurable('src/field/Input.tsx', { expectedSha256: hash('input') }),
+      /durable delete outcome is uncertain: Make file tree changed before/);
   });
 });
