@@ -1,0 +1,28 @@
+src/make-atomicaui.js
+  s_df905f4f8e1a90::t_a547cf2cede651 3,137-171,179-180
+_vaults/figma-cli/wiki/make/atomicaui-release.md
+  s_df905f4f8e1a90::t_3f830ee6a61c80 32
+tests/make-atomicaui.test.js
+  s_df905f4f8e1a90::t_20481d15dd5fbb 146-147,149,151,572
+  s_df905f4f8e1a90::t_49a7ee6dfdd22a 107-128
+package.json
+  s_df905f4f8e1a90::t_155858eff48583 52
+package-lock.json
+  s_df905f4f8e1a90::t_3222d886ce53d0 10,13,28-54,56-74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3eab6637cd6ae0964db1ad310919f9758e924825",
+  "prompts": {},
+  "sessions": {
+    "s_df905f4f8e1a90": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a143b2-9523-7301-acb4-4290e8809952",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
