@@ -1,0 +1,42 @@
+tests/make-tree.test.js
+  s_ef08e6623a97df::t_ef2552712d12e4 165,168,177,185,188,197
+  s_ef08e6623a97df::t_cf711aba04d190 163-164,166-167,169-173,176,179-184,186-187,189-193,196,199-200
+  s_ef08e6623a97df::t_f65ddac6b9412a 174-175,178,194-195,198
+  s_ef08e6623a97df::t_8c5401c4fe958c 201-207
+src/make-tree.js
+  s_ef08e6623a97df::t_4f4a9c4104b649 301-302,307-308,317-319,321-323,327-348,351-353,355
+  s_ef08e6623a97df::t_4c10530b13c2f3 304-306,309,325-326
+  s_ef08e6623a97df::t_50fa25eea2415b 303,311,313-314,316,324,349-350,356
+  s_ef08e6623a97df::t_fdafc4fdf75543 310,312,315
+  s_ef08e6623a97df::t_e9cf163c9c7bda 320
+tests/make-durable.test.js
+  s_ef08e6623a97df::t_db736f7f55a610 71-86
+_vaults/figma-cli/wiki/make/deploy.md
+  s_ef08e6623a97df::t_74901139184489 10,33-34
+  s_ef08e6623a97df::t_14e98c5ebb246f 35
+  s_ef08e6623a97df::t_b0823bc5ebbebf 36
+tests/make-deploy.test.js
+  s_ef08e6623a97df::t_127bb60008c2d3 491,494-496,501
+  s_ef08e6623a97df::t_d0cb0633dcb8c7 483-490,492-493,497-500,502-511
+  s_ef08e6623a97df::t_5e93eb6ba71ba6 13,293-330
+  s_ef08e6623a97df::t_95462ddd66df3d 331-332
+src/make-client.js
+  s_ef08e6623a97df::t_8eb81fdbf2174c 540,634-635,648-649,651
+  s_ef08e6623a97df::t_79a4abd7445b3d 521,523,567-568,650
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c0cccd563bb593405b0de8393c06644abbbb8f57",
+  "prompts": {},
+  "sessions": {
+    "s_ef08e6623a97df": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a14395-ba20-7e71-9937-1a2c3dd461af",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
