@@ -289,8 +289,12 @@ async function scanTree(transport, { deadline, maxEntries, targetPath }) {
       }
       if (folderAction) {
         if (++expansions > maxEntries) throw new Error('Make file tree exceeded the folder expansion limit.');
+        // Make re-renders the tree after a write. A refused folder click made
+        // no change, so read the tree again from the top.
         await evaluateTree(transport, { type: folderAction.type, row: folderAction.row, contentHeight,
-          expectedRows: state.rows }, deadline);
+          expectedRows: state.rows }, deadline).catch((error) => {
+          if (!/Make file tree changed before the requested action/.test(error?.message)) throw error;
+        });
         restart = true;
         break;
       }
