@@ -298,8 +298,62 @@ async function scanTree(transport, { deadline, maxEntries, targetPath }) {
   }
 }
 
+const TREE_CHANGED = /Make file tree changed (?:before the requested action|during traversal)\./;
+
+function checkWrittenTree(beforeEntries, afterEntries, writtenPath, beforeRows, afterRows) {
+  if (!Array.isArray(beforeEntries) || !Array.isArray(beforeRows) || typeof writtenPath !== 'string') {
+    throw new Error('Make file tree changed before the requested action. Run the command again.');
+  }
+  const before = new Map(beforeEntries.map(entry => [entry.path, entry.kind]));
+  const after = new Map(afterEntries.map(entry => [entry.path, entry.kind]));
+  const beforeByTop = new Map(beforeRows.map(row => [row.top, row]));
+  const afterByTop = new Map(afterRows.map(row => [row.top, row]));
+  const beforeMetadata = new Map(beforeEntries.map(entry => [entry.path, {
+    level: entry.level, height: beforeByTop.get(entry.top)?.height,
+  }]));
+  const afterMetadata = new Map(afterEntries.map(entry => [entry.path, {
+    level: entry.level, height: afterByTop.get(entry.top)?.height,
+  }]));
+  const parts = writtenPath.split('/');
+  const allowed = new Map(parts.map((_, index) => [parts.slice(0, index + 1).join('/'),
+    index === parts.length - 1 ? 'file' : 'folder']));
+  if (before.has(writtenPath) || (after.has(writtenPath) && after.get(writtenPath) !== 'file')) {
+    throw new Error('Make file tree changed before the requested action. Run the command again.');
+  }
+  for (const [path, kind] of before) {
+    if (after.get(path) !== kind || beforeMetadata.get(path).level !== afterMetadata.get(path)?.level ||
+        !Number.isFinite(beforeMetadata.get(path).height) ||
+        beforeMetadata.get(path).height !== afterMetadata.get(path)?.height) {
+      throw new Error('Make file tree changed before the requested action. Run the command again.');
+    }
+  }
+  for (const [path, kind] of after) {
+    if (!before.has(path) && allowed.get(path) !== kind) {
+      throw new Error('Make file tree changed before the requested action. Run the command again.');
+    }
+  }
+}
+
+async function scanAfterWrite(transport, options) {
+  const { expectedChange, ...settings } = options;
+  if (!expectedChange) return scanTree(transport, settings);
+  let result;
+  try {
+    result = await scanTree(transport, settings);
+  } catch (error) {
+    if (!TREE_CHANGED.test(error.message)) throw error;
+    // A write may insert a folder between the read and a guarded DOM click.
+    // Re-read once, then accept only the exact path and missing ancestors.
+    result = await scanTree(transport, settings);
+  }
+  checkWrittenTree(expectedChange.beforeEntries, result.entries, expectedChange.writtenPath,
+    expectedChange.beforeRows, result.rows);
+  return result;
+}
+
 export async function listMakeFiles(transport, options = {}) {
-  const result = await scanTree(transport, optionsWithDeadline(options));
+  const result = await scanAfterWrite(transport, { ...optionsWithDeadline(options), expectedChange: options.expectedChange });
+  options.onSnapshot?.(result);
   return result.entries;
 }
 

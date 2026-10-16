@@ -160,6 +160,51 @@ describe('Make virtualized DOM traversal', () => {
     assert.deepEqual(transport.clicks, []);
   });
 
+  it('refreshes once when a write inserts its file and parent folder during a guarded tree action', async () => {
+    let inserted = false;
+    let armed = false;
+    const transport = fixture([folder('src', [file('old.ts')])], {
+      onAction(action, { nodes }) {
+        if (armed && action.type === 'expand' && !inserted) {
+          nodes[0].children.push(folder('field', [file('Input.tsx')]));
+          inserted = true;
+        }
+      },
+    });
+    let beforeRows;
+    const beforeEntries = await listMakeFiles(transport, { onSnapshot: snapshot => { beforeRows = snapshot.rows; } });
+    transport.nodes[0].expanded = false;
+    armed = true;
+    const entries = await listMakeFiles(transport, { expectedChange: { beforeEntries, beforeRows, writtenPath: 'src/field/Input.tsx' } });
+    assert.deepEqual(entries.map(entry => entry.path), ['src', 'src/old.ts', 'src/field', 'src/field/Input.tsx']);
+    assert.equal(inserted, true);
+  });
+
+  it('refuses an unrelated file inserted alongside the written folder', async () => {
+    let inserted = false;
+    let armed = false;
+    const transport = fixture([folder('src', [file('old.ts')])], {
+      onAction(action, { nodes }) {
+        if (armed && action.type === 'expand' && !inserted) {
+          nodes[0].children.push(folder('field', [file('Input.tsx')]), file('stray.ts'));
+          inserted = true;
+        }
+      },
+    });
+    let beforeRows;
+    const beforeEntries = await listMakeFiles(transport, { onSnapshot: snapshot => { beforeRows = snapshot.rows; } });
+    transport.nodes[0].expanded = false;
+    armed = true;
+    await assert.rejects(listMakeFiles(transport, { expectedChange: { beforeEntries, beforeRows, writtenPath: 'src/field/Input.tsx' } }), /changed before/);
+  });
+
+  it('does not authorize a tree refresh without the complete pre-write rows', async () => {
+    const transport = fixture([folder('src', [file('old.ts')])]);
+    const beforeEntries = await listMakeFiles(transport);
+    transport.nodes[0].children.push(folder('field', [file('Input.tsx')]));
+    await assert.rejects(listMakeFiles(transport, { expectedChange: { beforeEntries, writtenPath: 'src/field/Input.tsx' } }), /changed before/);
+  });
+
   it('keeps every ancestor rendered with the leaf and returns root-to-parent metadata', async () => {
     const transport = fixture([folder('src', [folder('components', [file('App.tsx')], true)], true), file('package.json')],
       { clientHeight: 96 });
