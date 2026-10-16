@@ -1,0 +1,25 @@
+skills/figma-make/references/commands.md
+  s_879274534d7130::t_3c4c2fa29b209a 56-57
+CHANGELOG.md
+  s_879274534d7130::t_3c4c2fa29b209a 16
+REFERENCE.md
+  s_879274534d7130::t_3c4c2fa29b209a 149-154
+_vaults/figma-cli/wiki/make/persistence.md
+  s_879274534d7130::t_b3d677a6b4d7c3 30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7b18293b31ad1d37c1464889aed04953772b14f5",
+  "prompts": {},
+  "sessions": {
+    "s_879274534d7130": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "72dc9124-0d53-467a-884e-f4aebe32efa7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
