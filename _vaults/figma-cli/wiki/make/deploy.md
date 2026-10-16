@@ -35,13 +35,13 @@ Observed live on the scratch file (2026-10-15):
 - `createVersion` commits a lockfile only when Make's client wrote it. When the last writer was Make's install, version 31 kept the old lockfile while the working copy held main's; the post-save content check caught it (`DEPLOY_SAVE_UNCERTAIN`, then `saved-drift` at `--verify`). A client write of identical content is enough for the version to keep it (version 32).
 
 So the deploy (`src/make-deploy.js`):
-- backs up each planned lockfile's start content before any write (`backupLockfiles`), because Make rewrites it as soon as `package.json` lands; `--abort` needs that backup;
+- backs up each planned lockfile's start content before any write (`backupLockfiles`), because Make rewrites it as soon as `package.json` lands; `--abort` needs that backup. A lockfile that already equalled main's at the start has no original (`noOriginal`): it is not backed up, and abort leaves it as Make holds it;
 - writes `package.json` after the other files and the lockfiles last, always through the client (`writeDurable(..., { rewrite: true })`, `src/make-client.js`), even when Make already holds main's content;
 - waits until Make is idle after each dependency write (`waitIdle`: no busy editor or loading state, and the persistence state and dependency hashes unchanged for 10 s);
 - when Make's state moves under a write (`MAKE_PENDING_CHANGED` from the client, nothing written) or a dependency write fails, waits, re-checks every unsaved path against the plan (`plannedState`), then retries that path, at most three times;
 - before the save, writes a planned dependency file Make regenerated again (`reconcile`), and stops without saving when Make keeps changing it after three rounds.
 
-Paths outside the plan and unplanned content in other files still refuse. `--resume` and `--abort` accept a planned dependency file Make regenerated; abort restores it from its backup. A dry run accepts a lockfile that Make's install rewrote to exactly main's content (`requireMakeReady`).
+Paths outside the plan and unplanned content in other files still refuse. `--resume` and `--abort` accept a planned dependency file Make regenerated; abort restores it from its backup. `--resume` also writes a lockfile that already holds main's content through the client again, so the version keeps it. A dry run accepts a lockfile that Make's install rewrote to exactly main's content (`requireMakeReady`).
 
 Each `Runtime.evaluate` call used the transport's fixed 5 s timeout, which large writes outlasted (the 377 KB Hinge stylesheet). A call now gets 100 ms more per KiB it sends, and a read may use the operation's remaining time (`payloadTimeout`, `src/make-client.js`).
 
