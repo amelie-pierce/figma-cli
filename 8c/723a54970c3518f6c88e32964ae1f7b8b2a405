@@ -1,0 +1,26 @@
+REFERENCE.md
+  s_b2c37763a09bae::t_db7b64c4b5eed8 461
+src/make-deploy.js
+  s_b2c37763a09bae::t_c60460a04781e7 905-911,925
+_vaults/figma-cli/wiki/make/deploy.md
+  s_b2c37763a09bae::t_db7b64c4b5eed8 45
+tests/make-deploy.test.js
+  s_b2c37763a09bae::t_f8b9b641644993 1004,1031-1034
+  s_b2c37763a09bae::t_c60460a04781e7 1015-1025
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8c723a54970c3518f6c88e32964ae1f7b8b2a405",
+  "prompts": {},
+  "sessions": {
+    "s_b2c37763a09bae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9eb9f60f-03ce-4bbc-b0c9-9aa958ba83fd",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
