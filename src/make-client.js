@@ -26,11 +26,24 @@ function uncertainSave(message) {
   return error;
 }
 
+// Make's pending state moved between the pre-check and the write, so nothing
+// was written and the caller may retry once Make is idle again.
+function pendingChanged(what) {
+  const error = new Error(`Make version or pending files changed before the durable ${what}.`);
+  error.code = 'MAKE_PENDING_CHANGED';
+  return error;
+}
+
 function saveRequest(title, expectedPaths) {
   if (typeof title !== 'string' || !title.trim() || title.length > 160) throw new Error('Make version title must be 1–160 characters.');
   if (!Array.isArray(expectedPaths) || !expectedPaths.length || expectedPaths.length > 1000) throw new Error('Provide the exact expected changed-file set.');
   expectedPaths.forEach(sourcePath);
 }
+// Each CDP call has its own timeout (the transport's, 5 s by default), which a
+// call carrying a whole file into the page can outlast: a 377 KB stylesheet
+// write timed out live. Such a call gets 100 ms more per KiB it carries.
+const payloadTimeout = bytes => 5000 + Math.ceil(bytes / 1024) * 100;
+
 // How long a selected Markdown file may show no source editor before it is
 // treated as preview-only, which is how Make renders Markdown.
 const EDITOR_WAIT_MS = 3000;
@@ -225,12 +238,18 @@ export class MakeClient {
     }
   }
 
-  async _evaluate(expression, deadline) {
-    return this._bounded(() => this.transport.evaluate(guardExpression(this.fileKey, expression)), deadline);
+  // `bytes` is the size the call returns, when larger than what it sends;
+  // never past the operation's deadline.
+  async _evaluate(expression, deadline, { bytes = 0 } = {}) {
+    const timeoutMs = Math.min(this._remaining(deadline), Math.max(this.transport.timeoutMs || 0, payloadTimeout(Math.max(expression.length, bytes))));
+    return this._bounded(() => this.transport.evaluate(guardExpression(this.fileKey, expression), { timeoutMs }), deadline);
   }
 
+  // A read returns a whole file of unknown size, so it may take the
+  // operation's remaining time; reads change nothing.
   _editor(action, deadline) {
-    return this._evaluate(`(${makeEditorAction.toString()})(${JSON.stringify(action)}, (${makeWorkspace.toString()}))`, deadline);
+    return this._evaluate(`(${makeEditorAction.toString()})(${JSON.stringify(action)}, (${makeWorkspace.toString()}))`, deadline,
+      { bytes: action.type === 'read' ? Infinity : 0 });
   }
 
   async _operation(callback) {
@@ -332,6 +351,21 @@ export class MakeClient {
 
   inspect() {
     return this._operation(async (deadline) => ({ fileKey: this.fileKey, ...await this._ensureCode(deadline) }));
+  }
+
+  // A cheap probe for waiting until Make is idle: the editor flags, the
+  // persistence state and the client-VFS hash of each named path.
+  idleState(paths = []) {
+    return this._operation(async deadline => {
+      const ui = await this._ensureCode(deadline);
+      const state = (await this._driftState(deadline)).state;
+      const sha = {};
+      for (const path of paths) {
+        const entry = await this._durable({ type: 'read', path: sourcePath(path) }, deadline);
+        sha[path] = entry?.exists ? sha256(entry.content) : null;
+      }
+      return { busy: !!ui.busy, offline: !!ui.offline, state, sha };
+    });
   }
 
   ui() {
@@ -470,7 +504,8 @@ export class MakeClient {
   }
 
   _durable(action, deadline) {
-    return this._evaluate(`(${makeDurablePageAction.toString()})(${JSON.stringify(action)})`, deadline);
+    return this._evaluate(`(${makeDurablePageAction.toString()})(${JSON.stringify(action)})`, deadline,
+      { bytes: action.type === 'read' ? Infinity : 0 });
   }
 
   _sourceTree(deadline) {
@@ -555,7 +590,15 @@ export class MakeClient {
     }
   }
 
-  writeDurable(path, content, { expectedSha256, firstVersion = false, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
+  // A path's content in Make's client VFS: { exists, content }.
+  readDurable(path) {
+    sourcePath(path);
+    return this._operation(deadline => this._durable({ type: 'read', path }, deadline));
+  }
+
+  // rewrite: write even when Make already holds this content, so Make's client
+  // owns it (createVersion skips a lockfile only Make's install rewrote).
+  writeDurable(path, content, { expectedSha256, firstVersion = false, rewrite = false, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     sourcePath(path);
     if (typeof content !== 'string') throw new Error('Make durable write requires UTF-8 text.');
     if (expectedSha256 != null && !/^[a-fA-F0-9]{64}$/.test(expectedSha256)) throw new Error('Invalid expected SHA-256.');
@@ -569,13 +612,13 @@ export class MakeClient {
       if (existing.exists && originalSha256 !== expectedSha256.toLowerCase()) throw new Error('Make source changed; SHA-256 does not match.');
       if (!existing.exists) await this._requireListableAncestor(path, deadline);
       await this._durableAgreement(path, existing.exists ? existing.content : null, deadline);
-      if (existing.exists && existing.content === content) return { fileKey: this.fileKey, path, changed: false, sha256: originalSha256, verification: 'unchanged' };
+      if (existing.exists && existing.content === content && !rewrite) return { fileKey: this.fileKey, path, changed: false, sha256: originalSha256, verification: 'unchanged' };
       const backupPath = existing.exists ? await this._bounded(() => this._backup(path, existing.content, {
         backupDir, operation: 'durable-write', replacementSha256: sha256(content),
       }), deadline) : null;
       const immediate = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
       if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {
-        throw new Error('Make version or pending files changed before the durable write.');
+        throw pendingChanged('write');
       }
       let verification;
       try {
@@ -607,7 +650,7 @@ export class MakeClient {
       const backupPath = await this._bounded(() => this._backup(path, original.content, { backupDir, operation: 'durable-delete' }), deadline);
       const immediate = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
       if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {
-        throw new Error('Make version or pending files changed before the durable delete.');
+        throw pendingChanged('delete');
       }
       try {
         const accepted = await this._durable({ type: 'delete', path, expectedContent: original.content }, deadline);

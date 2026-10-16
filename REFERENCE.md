@@ -425,7 +425,19 @@ next tag number and a digest; it is written to `~/.figma-cli/deploys/plans/`.
 `--apply` runs every guard again and re-plans: the digest must match the reviewed
 plan, `origin/main` must still be the planned commit (`DEPLOY_MAIN_MOVED`) and
 the tag number must be free (`DEPLOY_TAG_CLASH`). It then writes each path with
-the durable client-VFS write (backups under `~/.figma-cli/deploys/backups/`),
+the durable client-VFS write (backups under `~/.figma-cli/deploys/backups/`).
+The root dependency files go last (`package.json`, then the lockfiles), because
+Make runs its own install when they change, and that install rewrites the
+lockfile while the deploy writes. A version keeps a lockfile only when Make's
+client wrote it, so each lockfile is written through the client even when
+Make's install already holds main's content, and its start content is backed
+up first for `--abort` (unless it already equalled main's, so there is nothing to restore). After each dependency
+write, and whenever Make's state moves under a write, the deploy waits until
+Make is idle, checks that every unsaved path is planned and holds its before or
+planned content (only a planned dependency file may hold what Make's install
+regenerated), and tries that path again. Before the save, a dependency file
+Make regenerated is written again; when Make keeps changing it after three
+rounds, the deploy stops without saving. It then
 saves one version `deploy <sha7>` whose saved tree must equal the checked working
 tree (Make may list only planned paths as pending), checks the whole project
 root against `main`, and pushes the annotated tag `make-deploy/<n>` on the
@@ -446,7 +458,7 @@ Recovery:
 
 | Stopped at | `stage` | Run |
 |---|---|---|
-| A write, before any save (`DEPLOY_WRITE_FAILED`) | `writing` / `written` | `--resume` writes the remaining paths and saves; each planned path must hold its before or after content and nothing else may be unsaved. `--abort` restores the written paths from the backups instead |
+| A write, before any save (`DEPLOY_WRITE_FAILED`) | `writing` / `written` | `--resume` writes the remaining paths and saves; each planned path must hold its before or after content and nothing else may be unsaved; a planned dependency file Make's install regenerated, and a lockfile already holding main's content, is written again through the client. `--abort` restores the written paths from the backups instead, including a regenerated dependency file whose start content a backup holds; a lockfile that started equal to main stays as Make holds it |
 | createVersion ran but was not confirmed (`DEPLOY_SAVE_UNCERTAIN`) | `save-uncertain` / `saved-unverified` | `--verify` only; the save is never retried |
 | Saved, but the drift check could not read Make (`DEPLOY_DRIFT`) | `saved` | `--verify`; if Make has moved past the saved version, it records `saved-drift` |
 | Saved, but Make does not equal `main` (`DEPLOY_DRIFT`) | `saved-drift` | Look at the listed paths; the next dry run plans from this version, or refuses as make-ahead when Make has moved past it |

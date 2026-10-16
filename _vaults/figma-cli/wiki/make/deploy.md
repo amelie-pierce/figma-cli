@@ -4,6 +4,7 @@ description: The repo-admin deploy of main into a team-mode Make file; guards, p
 date: 2026-10-15
 ---
 
+Updated 2026-10-15: dependency changes (write order, waiting out Make's own install, lockfiles written through the client) and the CDP timeout for large files.
 Updated 2026-10-15: `_vaults/` is repo-only and never deployed.
 
 # make deploy
@@ -24,8 +25,25 @@ Updated 2026-10-15: `_vaults/` is repo-only and never deployed.
 - `buildPlan` (`src/make-deploy.js:273`) compares `main`'s tree with Make's saved tree **by blob, ignoring mode**. Listing exposes no file mode, and Make keeps or sets modes its own way. Mode-only differences are listed as `modeOnly`.
 - `.npmrc`, `.figma/design-context/` and the repo-only `_vaults/` are never deployed (`alwaysExcluded`, `src/make-deploy.js:43`; `isRepoOnly`, `src/make-project.js:20`). Before, a vault in `main` was refused with `DEPLOY_UNSUPPORTED_PATH` as a new top-level folder (the Hinge deploy). `make status` adds `_vaults/` paths to its out-of-relation set the same way (`src/make-project.js:330`). The marker is excluded when `main` has none, so Make keeps its own. `make status` uses the same exclusion (`markerOutsideMain`, `src/make-project.js`).
 - Refused: binary content or files over 2 MiB; LFS paths that differ; new or deleted root files; new top-level folders (the bridge cannot prove absence there; see [persistence.md](persistence.md)); submodules and symbolic links.
-- Write order: lockfiles first, then other files, then the root `package.json` last. Make reinstalls when `package.json` changes. In the live run, writing `package.json` first made Make's own install rewrite `pnpm-lock.yaml` mid-write, and the write's pre-check timed out.
+- Write order: other files, then the root `package.json`, then the root lockfiles last (`writeRank`, `src/make-deploy.js`). See [Dependency changes](#dependency-changes).
 - The digest covers everything except the plan path. Apply re-plans, and the digest, the commit and the free tag number must all still match.
+
+## Dependency changes
+
+Observed live on the scratch file (2026-10-15):
+- Make runs its own install in the sandbox 1 to 2.5 s after a client write of `pnpm-lock.yaml` or `package.json`, and rewrites the lockfile to match `package.json`. It never reports busy and never lists the lockfile as pending. Writing the lockfile before `package.json` (the Hinge order) just makes Make put the old one back.
+- `createVersion` commits a lockfile only when Make's client wrote it. When the last writer was Make's install, version 31 kept the old lockfile while the working copy held main's; the post-save content check caught it (`DEPLOY_SAVE_UNCERTAIN`, then `saved-drift` at `--verify`). A client write of identical content is enough for the version to keep it (version 32).
+
+So the deploy (`src/make-deploy.js`):
+- backs up each planned lockfile's start content before any write (`backupLockfiles`), because Make rewrites it as soon as `package.json` lands; `--abort` needs that backup. A lockfile that already equalled main's at the start has no original (`noOriginal`): it is not backed up, and abort leaves it as Make holds it;
+- writes `package.json` after the other files and the lockfiles last, always through the client (`writeDurable(..., { rewrite: true })`, `src/make-client.js`), even when Make already holds main's content;
+- waits until Make is idle after each dependency write (`waitIdle`: no busy editor or loading state, and the persistence state and dependency hashes unchanged for 10 s);
+- when Make's state moves under a write (`MAKE_PENDING_CHANGED` from the client, nothing written) or a dependency write fails, waits, re-checks every unsaved path against the plan (`plannedState`), then retries that path, at most three times;
+- before the save, writes a planned dependency file Make regenerated again (`reconcile`), and stops without saving when Make keeps changing it after three rounds.
+
+Paths outside the plan and unplanned content in other files still refuse. `--resume` and `--abort` accept a planned dependency file Make regenerated; abort restores it from its backup. `--resume` also writes a lockfile that already holds main's content through the client again, so the version keeps it. A dry run accepts a lockfile that Make's install rewrote to exactly main's content (`requireMakeReady`).
+
+Each `Runtime.evaluate` call used the transport's fixed 5 s timeout, which large writes outlasted (the 377 KB Hinge stylesheet). A call now gets 100 ms more per KiB it sends, and a read may use the operation's remaining time (`payloadTimeout`, `src/make-client.js`).
 
 ## Save and tag
 
@@ -55,6 +73,8 @@ Run on scratch Make `2X8cYvemgPmUJSZ5GWaeRB` and repo `amelie-pierce/figma-testi
 - `--resume` wrote the remaining path. Make saved version 13 (`9f09f649…`), but the old tree-SHA check failed on the lockfile mode (`DEPLOY_SAVE_UNCERTAIN`), which led to the content check.
 - `--verify` passed after a reload, with `fresh-sandbox-verified`, and pushed `make-deploy/0`. `make status` then read `in-sync` against that tag, and a new dry run found nothing to deploy.
 - `make mode solo` restored solo mode: version 14 (`2c27a9b9…`), whose tree `325a77ff…` equals `main`'s tree exactly.
-- Not proven live: a single uninterrupted `--apply` run with the fixed write order, `--abort`, and a tag clash. Integration tests cover these.
+- Dependency change, scratch PR 10 (`tiny-invariant`): the first apply wrote all 5 paths but version 31 kept the old lockfile (see [Dependency changes](#dependency-changes)). After the fix, a dry run planned only `pnpm-lock.yaml` from that version; apply saved version 32 (`make-deploy/4`) and `--verify` passed.
+- Dependency change, scratch PR 12 (`dequal`), one uninterrupted apply: lockfile backup, 2 source files, `package.json`, `pnpm-lock.yaml`; version 33, `make-deploy/5`; `--verify` passed with `fresh-sandbox-verified`.
+- Not proven live: `--abort` and a tag clash. Integration tests cover these.
 
 Tests: `tests/make-deploy.test.js` uses a stateful fake Make, fake `gh` and `pnpm`, and local bare repos. Also see `tests/make-durable.test.js` and `tests/make-project.test.js`.
