@@ -1,0 +1,31 @@
+_vaults/figma-cli/wiki/make/deploy.md
+  s_4b8755e5c8d8d0::t_7e3137a876815f 45
+  s_4b8755e5c8d8d0::t_a278986025dfe4 9
+REFERENCE.md
+  s_4b8755e5c8d8d0::t_ab1559b4e59708 434,461
+tests/make-deploy.test.js
+  s_4b8755e5c8d8d0::t_2e0515562c5c9a 1020
+  s_4b8755e5c8d8d0::t_765392deac8582 618,628-632,636
+  s_4b8755e5c8d8d0::t_f0cf28bf5b8358 616-617,619-627,633-635,637-675
+  s_4b8755e5c8d8d0::t_90634eec7eaa60 958-976,1004,1015-1016
+src/make-deploy.js
+  s_4b8755e5c8d8d0::t_52c3029311ecb6 852-860
+  s_4b8755e5c8d8d0::t_520525a9b84327 905
+  s_4b8755e5c8d8d0::t_3804771d6157d0 851,861-869,872-879,882-894,896-897,901-904,906-909,912
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5e923a911cf47810f17730fb9d349ddda82c1220",
+  "prompts": {},
+  "sessions": {
+    "s_4b8755e5c8d8d0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a14250-5b66-7083-863f-974145054aa7",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
