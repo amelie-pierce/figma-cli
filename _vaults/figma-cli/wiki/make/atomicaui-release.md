@@ -48,5 +48,4 @@ kits without `tokens/generated.manifest.json` can verify an unchanged
 generated tree against the supplied committed package manifest during a
 read-only component sync plan (`src/make-sync.js:175`). Tests for the release
 transport, interrupted resume, and sync boundary are in
-`tests/make-atomicaui.test.js`, `tests/make-drift.test.js`, and
-`tests/make-sync.test.js`.
+`tests/make-atomicaui.test.js` and `tests/make-sync.test.js`.
