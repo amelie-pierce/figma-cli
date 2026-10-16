@@ -1,15 +1,16 @@
 ---
 title: AtomicAUI kit-hosted releases
 description: Immutable site payloads and the boundary with vendor exchange.
-date: 2026-10-15
+date: 2026-10-16
 ---
 
 # AtomicAUI kit-hosted releases
 
 `make atomicaui release` builds a versioned payload under
 `public/atomicaui/<version>/` and moves `public/atomicaui/latest.json` after
-writing the full payload. The archive and large sources are split into bounded
-base64 parts; the manifest records hashes and sizes for files and decoded
+writing the full payload. New releases contain only bounded archive base64
+parts, `manifest.json`, `manifest.sha256`, and the latest pointer. The manifest
+records hashes and sizes for every source file and decoded archive
 parts (`src/make-atomicaui.js:113`, `src/commands/make-atomicaui.js:32`). The
 save requires the exact release path set, and `verify-release` reads every
 saved path and hash from the Make filesystem bridge
@@ -18,8 +19,21 @@ saved path and hash from the Make filesystem bridge
 is not already published). Set **Who can view** to **Anyone on the web**, no
 password, and keep the address. The address can return 404 for about a minute
 during republishing. **Update kit** and **Publish kit** do not rebuild the site.
-The first saved release contained 265 source files in 270 release
-paths.
+The first saved release contained 265 source files in 270 release paths. The
+archive-only layout keeps those bytes in the verified archive with a handful
+of Make writes; the downloader still accepts the first release's direct paths.
+
+An interrupted solo `add` can resume with the exact `--file`, `--version`, and
+`--resume`. The command requires pending paths to match the partial vendor
+inventory and compares each file with the verified release before completing
+the save (`src/commands/make-atomicaui.js`).
+Deep vendor paths may exceed the Make file-tree viewport, which prevents the
+editor selector from proving their ancestry (`src/make-tree.js:342`). For this
+selection refusal or a selected vendor path with no source editor, solo
+installation and workspace sync accept agreement among
+the client VFS, sandbox, and rendered tree for paths under
+`src/vendor/atomic-aui/`; other editor failures still stop the write
+(`src/make-client.js:498-566`, `tests/make-durable.test.js`).
 
 `public/atomicaui/**` is kit-only data. Vendor drift, workspace-to-Make sync,
 and Make-to-workspace export deltas exclude those paths

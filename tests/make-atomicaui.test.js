@@ -10,7 +10,7 @@ import { buildRelease, DEFAULT_PART_BASE64_BYTES, downloadRelease, getBytes, ins
 import { installSoloRelease, releaseAtomicaui, verifyAtomicauiRelease } from '../src/commands/make-atomicaui.js';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-function fixture(version = '7.0.0') {
+function fixture(version = '7.0.0', layout = 'direct-and-archive') {
   const source = new Map([
     ['src/index.ts', Buffer.from('export const Button = 1\n')],
     ['tokens/index.scss', Buffer.from(':root { --theme-surface: white; }\n')],
@@ -19,7 +19,7 @@ function fixture(version = '7.0.0') {
     ({ path, bytes: bytes.length, sha256: hash(bytes) })) }));
   const contents = new Map([...source, ['VENDOR.json', vendor]]);
   const inventory = new Map([...contents].map(([path, bytes]) => [path, { path, bytes: bytes.length, sha256: hash(bytes) }]));
-  return { source, contents, inventory, release: buildRelease({ contents, inventory, version }) };
+  return { source, contents, inventory, release: buildRelease({ contents, inventory, version, layout }) };
 }
 async function served(files, fn) {
   const server = createServer((request, response) => {
@@ -51,6 +51,20 @@ test('release archive and HTTPS client verify the complete chain through a local
   });
 });
 
+test('compact release serves only archive parts, manifest, sidecar and latest pointer', async () => {
+  const { contents, release } = fixture('7.0.1', 'archive-only');
+  const paths = [...release.output.keys()].sort();
+  assert.equal(release.manifest.layout, 'archive-only');
+  assert.equal(paths.length, release.manifest.archive.parts.length + 3);
+  assert.equal(paths.some(path => path.includes('/files/') || path.includes('/file-parts/')), false);
+  await served(release.output, async site => {
+    const fetched = await downloadRelease({ site, allowHttp: true });
+    for (const [path, bytes] of fetched.files) assert.ok(bytes.equals(contents.get(path)));
+    assert.equal(fetched.manifest.version, '7.0.1');
+    assert.equal(fetched.files.size, release.manifest.files.length);
+  });
+});
+
 test('large archive and source use configurable bounded base64 parts', async () => {
   const { source } = fixture();
   let seed = 0x7a00b00b;
@@ -64,7 +78,7 @@ test('large archive and source use configurable bounded base64 parts', async () 
     ({ path, bytes: bytes.length, sha256: hash(bytes) })) }));
   const contents = new Map([...source, ['VENDOR.json', vendor]]);
   const inventory = new Map([...contents].map(([path, bytes]) => [path, { path, bytes: bytes.length, sha256: hash(bytes) }]));
-  const release = buildRelease({ contents, inventory, version: '7.0.0' });
+  const release = buildRelease({ contents, inventory, version: '7.0.0', layout: 'direct-and-archive' });
   assert.equal(release.manifest.partBase64Bytes, DEFAULT_PART_BASE64_BYTES);
   assert.ok(release.manifest.archive.parts.length > 1);
   assert.ok(release.manifest.files.find(item => item.path === 'src/large.ts').parts.length > 1);
@@ -75,7 +89,8 @@ test('large archive and source use configurable bounded base64 parts', async () 
     const fetched = await downloadRelease({ site, allowHttp: true });
     assert.ok(fetched.files.get('src/large.ts').equals(large));
   });
-  const smaller = buildRelease({ contents, inventory, version: '7.0.0', partBase64Bytes: 256 * 1024 });
+  const smaller = buildRelease({ contents, inventory, version: '7.0.0', partBase64Bytes: 256 * 1024,
+    layout: 'direct-and-archive' });
   assert.ok(smaller.manifest.archive.parts.length >= release.manifest.archive.parts.length);
   assert.throws(() => buildRelease({ contents, inventory, version: '7.0.0', partBase64Bytes: 3 }), /part size/);
 });
@@ -182,12 +197,12 @@ test('saved release verifier compares the exact release path set and every hash'
 });
 
 test('interrupted release keeps a matching part, rewrites a mismatched part and saves exact paths once', async () => {
-  const { inventory, contents, release } = fixture();
+  const { inventory, contents, release } = fixture('7.0.0', 'archive-only');
   const firstPath = [...release.output.keys()][0];
-  const vendorPath = 'public/atomicaui/7.0.0/files/VENDOR.json';
-  const files = new Map([[firstPath, release.output.get(firstPath)], [vendorPath, Buffer.from('corrupted')]]);
+  const manifestPath = 'public/atomicaui/7.0.0/manifest.json';
+  const files = new Map([[firstPath, release.output.get(firstPath)], [manifestPath, Buffer.from('corrupted')]]);
   const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40),
-    pendingPaths: [firstPath, vendorPath], isLoading: false, error: false, pendingCount: 2 };
+    pendingPaths: [firstPath, manifestPath], isLoading: false, error: false, pendingCount: 2 };
   const writes = [], saves = [];
   const client = {
     fileKey: 'atomicaui-resume-fixture',
@@ -213,7 +228,7 @@ test('interrupted release keeps a matching part, rewrites a mismatched part and 
   const result = await releaseAtomicaui(client, { requestedVersion: '7.0.0', resume: true });
   assert.equal(result.releasePaths, expected.length);
   assert.ok(!writes.includes(firstPath));
-  assert.ok(writes.includes(vendorPath));
+  assert.ok(writes.includes(manifestPath));
   assert.deepEqual(saves, [expected]);
   state.pendingPaths = [firstPath]; state.pendingCount = 1;
   await assert.rejects(releaseAtomicaui(client, { requestedVersion: '7.0.0', resume: true }), /immutable release/);
@@ -236,8 +251,9 @@ test('fake solo Make client writes provider, stylesheet, sass and vendor in one 
     _driftState: async () => ({ state }),
     files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
     read: async path => ({ content: files.get(path).toString(), sha256: hash(files.get(path)) }),
-    writeDurable: async (path, content, { expectedSha256 } = {}) => {
+    writeDurable: async (path, content, { expectedSha256, vendorTreeFallback } = {}) => {
       assert.equal(expectedSha256 || null, files.has(path) ? hash(files.get(path)) : null);
+      assert.equal(vendorTreeFallback, path.startsWith('src/vendor/atomic-aui/'));
       files.set(path, Buffer.from(content)); return { changed: true };
     },
     saveVersion: async (_title, paths) => { saves.push(paths); return { versionNumber: 4, gitSha: 'b'.repeat(40) }; },
@@ -254,6 +270,56 @@ test('fake solo Make client writes provider, stylesheet, sass and vendor in one 
   assert.match(files.get('src/main.tsx').toString(), /AuiIdentityProvider/);
   assert.match(files.get('src/main.tsx').toString(), /tokens\/index.scss/);
   assert.equal(JSON.parse(files.get('package.json')).devDependencies.sass, '^1.89.0');
+});
+
+test('solo add resumes only exact pending release files and saves them once', async () => {
+  const { release } = fixture();
+  const payload = { manifest: release.manifest, manifestSha256: hash(release.output.get('public/atomicaui/7.0.0/manifest.json')),
+    files: new Map(release.manifest.files.map(item => [item.path, release.output.get(`public/atomicaui/7.0.0/files/${item.path}`)])),
+    site: 'https://example.test' };
+  const first = 'src/vendor/atomic-aui/src/index.ts';
+  const files = new Map([
+    [first, payload.files.get('src/index.ts')],
+    ['src/main.tsx', Buffer.from("import App from './App'\n<App />\n")],
+    ['package.json', Buffer.from(JSON.stringify({ dependencies: { react: '^19' }, devDependencies: {} }))],
+  ]);
+  const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40), pendingPaths: [first],
+    isLoading: false, error: false, pendingCount: 1 };
+  const saves = [], writes = [];
+  const client = {
+    fileKey: 'atomicaui-resume-solo-fixture', projectMarker: async () => null,
+    _driftState: async () => ({ state }),
+    files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
+    read: async path => ({ content: files.get(path).toString(), sha256: hash(files.get(path)) }),
+    inventoryVendor: async () => {
+      const contents = new Map([...files].filter(([path]) => path.startsWith('src/vendor/atomic-aui/'))
+        .map(([path, bytes]) => [path.slice('src/vendor/atomic-aui/'.length), bytes]));
+      return { contents, inventory: new Map([...contents].map(([path, bytes]) =>
+        [path, { bytes: bytes.length, sha256: hash(bytes) }])), state };
+    },
+    writeDurable: async (path, content, { expectedSha256, vendorTreeFallback } = {}) => {
+      assert.equal(expectedSha256 || null, files.has(path) ? hash(files.get(path)) : null);
+      assert.equal(vendorTreeFallback, path.startsWith('src/vendor/atomic-aui/'));
+      writes.push(path); files.set(path, Buffer.from(content));
+      if (!state.pendingPaths.includes(path)) state.pendingPaths.push(path);
+      state.pendingCount = state.pendingPaths.length;
+      return { changed: true };
+    },
+    saveVersion: async (_title, paths) => {
+      assert.deepEqual(paths, [...state.pendingPaths].sort());
+      saves.push(paths); state.pendingPaths = []; state.pendingCount = 0;
+      return { versionNumber: 4, gitSha: 'b'.repeat(40) };
+    },
+  };
+  files.set(first, Buffer.from('local edit'));
+  await assert.rejects(installSoloRelease(client, payload, { mode: 'add', resume: true }), /differs from the verified release/);
+  assert.deepEqual(writes, []);
+  files.set(first, payload.files.get('src/index.ts'));
+  const result = await installSoloRelease(client, payload, { mode: 'add', resume: true });
+  assert.equal(result.savedVersion, 4);
+  assert.equal(saves.length, 1);
+  assert.ok(!writes.includes(first));
+  assert.ok(files.has('src/vendor/atomic-aui/VENDOR.json'));
 });
 
 test('breaking notes require an exact app fix before the installation writes', async () => {
