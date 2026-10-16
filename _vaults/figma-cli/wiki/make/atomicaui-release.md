@@ -12,7 +12,7 @@ writing the full payload, unless the version is older than the current latest
 (a backport keeps its folder and leaves the pointer alone). New releases contain only bounded archive base64
 parts, `manifest.json`, `manifest.sha256`, and the latest pointer. The manifest
 records hashes and sizes for every source file and decoded archive
-parts (`src/make-atomicaui.js:214`, `src/commands/make-atomicaui.js:37`). The
+parts (`src/make-atomicaui.js:232`, `src/commands/make-atomicaui.js:37`). The
 save requires the exact release path set, and `verify-release` replays the
 client download chain over the saved Make files: the release's own sidecar,
 manifest, parts and archive plus the exact folder path set; `latest.json` is
@@ -39,12 +39,13 @@ equal the release, and each pending app file must equal the fixes and wiring
 applied to its saved text (and differ from it) before the single save
 (`src/commands/make-atomicaui.js`).
 Deep vendor paths may exceed the Make file-tree viewport, which prevents the
-editor selector from proving their ancestry (`src/make-tree.js:345`). For this
-selection refusal or a selected vendor path with no source editor, solo
+editor selector from proving their ancestry (`src/make-tree.js:403`). When
+that refusal coincides with a mounted editor that reports no path, solo
 installation and workspace sync accept agreement among
 the client VFS, sandbox, and rendered tree for paths under
-`src/vendor/atomic-aui/`; other editor failures still stop the write
-(`src/make-client.js:541-612`, `tests/make-durable.test.js`).
+`src/vendor/atomic-aui/`; an editor showing the same path, and other editor
+failures, still stop the write (`src/make-client.js:541-614`,
+`tests/make-durable.test.js`).
 
 `public/atomicaui/**` is kit-only data. Vendor drift, workspace-to-Make sync,
 and Make-to-workspace export deltas work on `inventoryVendor('src/vendor/atomic-aui')`,
