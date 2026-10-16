@@ -6,6 +6,7 @@ date: 2026-10-15
 
 Updated 2026-10-15: dependency changes (write order, waiting out Make's own install, lockfiles written through the client) and the CDP timeout for large files.
 Updated 2026-10-15: `_vaults/` is repo-only and never deployed.
+Updated 2026-10-16: abort ordering, idle rechecks, cumulative receipt bookkeeping, exact saved-tree proof and scratch live validation.
 
 # make deploy
 
@@ -41,7 +42,7 @@ So the deploy (`src/make-deploy.js`):
 - when Make's state moves under a write (`MAKE_PENDING_CHANGED` from the client, nothing written) or a dependency write fails, waits, re-checks every unsaved path against the plan (`plannedState`), then retries that path, at most three times;
 - before the save, writes a planned dependency file Make regenerated again (`reconcile`), and stops without saving when Make keeps changing it after three rounds.
 
-Paths outside the plan and unplanned content in other files still refuse. `--resume` and `--abort` accept a planned dependency file Make regenerated; abort restores it from its backup. `--resume` also writes a lockfile that already holds main's content through the client again, so the version keeps it. A dry run accepts a lockfile that Make's install rewrote to exactly main's content (`requireMakeReady`).
+Paths outside the plan and unplanned content in other files still refuse. `--resume` and `--abort` accept a planned dependency file Make regenerated; abort restores it from its backup. Abort restores other files first, then `package.json`, then lockfiles, using the existing idle wait and whole-plan check after each dependency write or delete and after a pending-state race (`src/make-deploy.js:876`). It persists the restored list after each path and carries it across retry runs, including recovery of paths an older retry omitted from that list (`src/make-deploy.js:851`). Abort marks the receipt `aborted` only when the working tree equals the original saved tree; otherwise it reports both tree hashes and leaves recovery open (`src/make-deploy.js:911`). When only a lockfile Make's install changed before the deploy (no original backup) still differs, it names the path with its working sha256 and saved blob and stops without a rerun: let Make finish its install from `package.json`, check `make status`, and if the lockfile still differs restore the saved version from Make's version history (no hand edit); once it matches, one more `--abort` closes the receipt. Cross-run recovery does not count a path whose only apply write was uncertain as restored; when it is back at saved content it is listed apart as `restoredUncertain` in the receipt and the abort result. `--resume` also writes a lockfile that already holds main's content through the client again, so the version keeps it. A dry run accepts a lockfile that Make's install rewrote to exactly main's content (`requireMakeReady`).
 
 Each `Runtime.evaluate` call used the transport's fixed 5 s timeout, which large writes outlasted (the 377 KB Hinge stylesheet). A call now gets 100 ms more per KiB it sends, and a read may use the operation's remaining time (`payloadTimeout`, `src/make-client.js`).
 
@@ -75,6 +76,8 @@ Run on scratch Make `2X8cYvemgPmUJSZ5GWaeRB` and repo `amelie-pierce/figma-testi
 - `make mode solo` restored solo mode: version 14 (`2c27a9b9…`), whose tree `325a77ff…` equals `main`'s tree exactly.
 - Dependency change, scratch PR 10 (`tiny-invariant`): the first apply wrote all 5 paths but version 31 kept the old lockfile (see [Dependency changes](#dependency-changes)). After the fix, a dry run planned only `pnpm-lock.yaml` from that version; apply saved version 32 (`make-deploy/4`) and `--verify` passed.
 - Dependency change, scratch PR 12 (`dequal`), one uninterrupted apply: lockfile backup, 2 source files, `package.json`, `pnpm-lock.yaml`; version 33, `make-deploy/5`; `--verify` passed with `fresh-sandbox-verified`.
-- Not proven live: `--abort` and a tag clash. Integration tests cover these.
+- Abort was proven live on the same scratch file with main `dd6d947`: an interrupted 12-path apply wrote `package.json` and `pnpm-lock.yaml`, then `--abort` restored all 12 paths without saving. Receipt `20261016T023848Z-2X8cYvemgPmUJSZ5GWaeRB-dd6d947` ended `aborted`; saved version `ce5d426` was unchanged, pending was 0, and working and saved trees both equalled `f366521` (`src/make-deploy.js:843`, `tests/make-deploy.test.js:1019`).
+- A second interrupted apply and abort on the same scratch file proved retry bookkeeping: receipt `20261016T024442Z-2X8cYvemgPmUJSZ5GWaeRB-dd6d947` held six restored paths after the first abort was interrupted and 12 after `--abort` was rerun. It again ended with pending 0 and working tree `f366521`, equal to the unchanged saved tree (`src/make-deploy.js:851`, `tests/make-deploy.test.js:616`).
+- Not proven live: a tag clash. Integration tests cover it.
 
 Tests: `tests/make-deploy.test.js` uses a stateful fake Make, fake `gh` and `pnpm`, and local bare repos. Also see `tests/make-durable.test.js` and `tests/make-project.test.js`.

@@ -848,51 +848,94 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
   const restoreOf = file => (file.op === 'add' ? null : backupContent(receipt, file, deps.home));
   // Every backup is read before anything changes.
   const contents = new Map(files.filter(file => !noOriginal(file) && (file.state === 'after' || file.state === 'regenerated')).map(file => [file.path, restoreOf(file)]));
-  const touchesDependencies = files.some(file => contents.has(file.path) && isDependency(file.path));
-  const restored = [];
-  let status = first;
-  let todo = files.filter(file => contents.has(file.path));
-  // Restore, then re-read Make. Make's own install can regenerate a restored
-  // dependency file, so those are restored again once Make is idle.
-  for (let round = 1; ; round++) {
-    let moved = false;
-    for (const file of [...todo].sort(byWriteOrder)) {
-      const current = status.workingSha256.get(file.path) ?? null;
-      try {
-        const content = contents.has(file.path) ? contents.get(file.path) : restoreOf(file);
-        if (file.op === 'add') await client.deleteDurable(file.path, { expectedSha256: current, backupDir: backupDir(receipt, deps.home) });
-        else await client.writeDurable(file.path, content, { expectedSha256: current ?? undefined, backupDir: backupDir(receipt, deps.home) });
-      } catch (error) {
-        if (round >= ROUNDS || (error.code !== 'MAKE_PENDING_CHANGED' && !isDependency(file.path))) {
-          receipt.restored = [...new Set(restored)];
-          stop(receipt, error, 'writing', `Abort stopped while restoring: ${error.message} Run --abort again.`, 'DEPLOY_WRITE_FAILED');
-        }
-        moved = true;
-        break;
-      }
-      restored.push(file.path);
-      if (isDependency(file.path)) await waitIdle(client, receipt, deps);
-    }
-    status = touchesDependencies || moved ? await settledStatus(client, receipt, deps) : await client.projectStatus();
-    const checked = plannedState(receipt, status);
-    const left = checked.problem ? [] : contentDiff(status.workingFlat, status.makeFlat)
-      .filter(path => !receipt.plan.files.some(file => file.path === path && noOriginal(file) && status.workingFlat.get(path)?.blob === file.afterBlob));
-    todo = checked.problem ? [] : checked.files.filter(file => file.state !== 'before' && !noOriginal(file));
-    if (!checked.problem && !todo.length && !left.length) break;
-    if (checked.problem || round >= ROUNDS || todo.some(file => !isDependency(file.path) && !moved)) {
-      receipt.restored = [...new Set(restored)];
-      stop(receipt, null, 'writing', `Restored ${receipt.restored.length} file(s), but Make still differs from its saved version in ` +
-        `${checked.problem || JSON.stringify(left)}.`, 'DEPLOY_WRITE_FAILED');
+  const restored = new Set(receipt.restored || []);
+  // Older abort retries replaced this list. Recover paths that this deploy
+  // wrote and a previous abort already returned to their starting content;
+  // a path whose only write was uncertain is listed apart, at saved content.
+  const savedUncertain = new Set();
+  if (receipt.restored?.length) {
+    for (const file of files) {
+      const writes = receipt.completedWrites.filter(write => write.path === file.path && !write.backupOnly);
+      if (file.state !== 'before' || restored.has(file.path) || !writes.length) continue;
+      if (writes.some(write => !write.uncertain)) restored.add(file.path);
+      else savedUncertain.add(file.path);
     }
   }
-  const restoredPaths = [...new Set(restored)];
+  if (savedUncertain.size) receipt.restoredUncertain = [...savedUncertain];
+  const recordRestored = path => {
+    restored.add(path);
+    receipt.restored = [...restored];
+    saveReceipt(receipt);
+  };
+  const stopAbort = (error, message) => {
+    receipt.restored = [...restored];
+    stop(receipt, error, 'writing', message, 'DEPLOY_WRITE_FAILED');
+  };
+  let status = first;
+  let todo = files.filter(file => contents.has(file.path));
+  const recheck = async () => {
+    status = await settledStatus(client, receipt, deps);
+    const checked = plannedState(receipt, status);
+    if (checked.problem) stopAbort(null, `Abort stopped once Make was idle: ${checked.problem}. Run --abort again.`);
+    return checked;
+  };
+  // Restore dependency files last. Their writes can start Make's install;
+  // settle and check the entire plan before the next write or retry.
+  for (let round = 1; ; round++) {
+    for (const file of [...todo].sort(byWriteOrder)) {
+      for (let attempt = 1; ; attempt++) {
+        const current = status.workingSha256.get(file.path) ?? null;
+        try {
+          const content = contents.has(file.path) ? contents.get(file.path) : restoreOf(file);
+          if (file.op === 'add') await client.deleteDurable(file.path, { expectedSha256: current, backupDir: backupDir(receipt, deps.home) });
+          else await client.writeDurable(file.path, content, { expectedSha256: current ?? undefined, backupDir: backupDir(receipt, deps.home) });
+        } catch (error) {
+          if (attempt >= ROUNDS || (error.code !== 'MAKE_PENDING_CHANGED' && !isDependency(file.path))) {
+            stopAbort(error, `Abort stopped while restoring: ${error.message} Run --abort again.`);
+          }
+          const checked = await recheck();
+          if (checked.files.find(item => item.path === file.path).state === 'before') {
+            recordRestored(file.path);
+            break;
+          }
+          continue;
+        }
+        recordRestored(file.path);
+        if (isDependency(file.path)) await recheck();
+        break;
+      }
+    }
+    const checked = await recheck();
+    todo = checked.files.filter(file => file.state !== 'before' && !noOriginal(file));
+    const pending = status.persistence?.pendingPaths || [];
+    if (!todo.length && status.workingTree === receipt.makeBefore.tree && !pending.length) break;
+    const unrestorable = checked.files.filter(file => noOriginal(file) && status.workingFlat.get(file.path)?.blob !== status.makeFlat.get(file.path)?.blob);
+    if (!todo.length && !pending.length && unrestorable.length) {
+      const named = unrestorable.map(file => `${file.path} (working sha256 ${status.workingSha256.get(file.path) ?? 'none'}, saved blob ${status.makeFlat.get(file.path)?.blob ?? 'none'})`);
+      stopAbort(null, `Restored ${restored.size} file(s), but Make's working tree ${status.workingTree} still differs from saved tree ${receipt.makeBefore.tree} in ` +
+        `${named.join(', ')}. The receipt has no backup of it: Make had already changed it before the deploy started. ` +
+        'Make manages this lockfile: it is hidden from the file tree and Make\'s install regenerates it from package.json. ' +
+        `package.json is back at saved version ${short(receipt.makeBefore.versionGitSha)}, so let Make finish its install, then check make status. ` +
+        `If the lockfile still differs, restore saved version ${short(receipt.makeBefore.versionGitSha)} from Make's version history; do not edit the lockfile by hand. ` +
+        'Once the lockfile matches the saved version again, run --abort once more to close the receipt.');
+    }
+    if (!todo.length || round >= ROUNDS) {
+      const mismatch = status.workingTree !== receipt.makeBefore.tree
+        ? `working tree ${status.workingTree} != saved tree ${receipt.makeBefore.tree}`
+        : `pending paths ${JSON.stringify(pending)}`;
+      stopAbort(null, `Restored ${restored.size} file(s), but Make still differs from its saved version: ${mismatch}. Run --abort again.`);
+    }
+  }
+  const restoredPaths = [...restored];
   receipt.restored = restoredPaths;
   receipt.stage = 'aborted';
   receipt.outcome = 'aborted';
   receipt.error = null;
   saveReceipt(receipt);
-  return { ...result(receipt, `Aborted: restored ${restoredPaths.length} file(s); Make is back at its saved version ${short(receipt.makeBefore.versionGitSha)} and nothing was saved.`),
-    ...(status.persistence?.pendingPaths?.length ? { stillListedPending: status.persistence.pendingPaths } : {}) };
+  return { ...result(receipt, `Aborted: restored ${restoredPaths.length} file(s)` +
+    `${savedUncertain.size ? `, and ${savedUncertain.size} more whose write outcome is uncertain are at saved content` : ''}; ` +
+    `Make is back at its saved version ${short(receipt.makeBefore.versionGitSha)} and nothing was saved.`),
+  ...(savedUncertain.size ? { restoredUncertain: [...savedUncertain] } : {}) };
 }
 
 // --- verify ------------------------------------------------------------------
