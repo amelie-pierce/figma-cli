@@ -32,10 +32,10 @@ the command contract and `src/make-atomicaui.js` for the release format.
 New releases write archive parts, the manifest, its sidecar hash, and the latest
 pointer. The archive manifest still verifies every source file; the client
 also supports the earlier direct-source release layout.
-If a solo `add` is interrupted before its save, inspect the current Make state
-and use `add --file KEY --version X.Y.Z --resume` only for that exact release.
-It verifies every existing pending vendor file and refuses unrelated pending
-paths before completing one save.
+If a solo `add` or `upgrade` is interrupted before its save, inspect the
+current Make state and rerun it with `--file KEY`, the same version and
+`--resume`. It verifies every pending vendor, fix and wiring file and refuses
+unrelated pending paths before completing one save.
 
 The original writes (`replace`, `create`, `import`, `remove`) reach only the open
 session's working copy. It is lost when the Make file is reopened unless Make
