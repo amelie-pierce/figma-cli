@@ -902,6 +902,13 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
     todo = checked.files.filter(file => file.state !== 'before' && !noOriginal(file));
     const pending = status.persistence?.pendingPaths || [];
     if (!todo.length && status.workingTree === receipt.makeBefore.tree && !pending.length) break;
+    const unrestorable = checked.files.filter(file => noOriginal(file) && status.workingFlat.get(file.path)?.blob !== status.makeFlat.get(file.path)?.blob);
+    if (!todo.length && !pending.length && unrestorable.length) {
+      const named = unrestorable.map(file => `${file.path} (working sha256 ${status.workingSha256.get(file.path) ?? 'none'}, saved blob ${status.makeFlat.get(file.path)?.blob ?? 'none'})`);
+      stopAbort(null, `Restored ${restored.size} file(s), but Make's working tree ${status.workingTree} still differs from saved tree ${receipt.makeBefore.tree} in ` +
+        `${named.join(', ')}. Make's install changed it before the deploy started, so this deploy has no original to restore. ` +
+        `Revert it to saved version ${short(receipt.makeBefore.versionGitSha)} in Make by hand, then run --abort to finish, or deploy main with --resume.`);
+    }
     if (!todo.length || round >= ROUNDS) {
       const mismatch = status.workingTree !== receipt.makeBefore.tree
         ? `working tree ${status.workingTree} != saved tree ${receipt.makeBefore.tree}`
@@ -915,8 +922,7 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
   receipt.outcome = 'aborted';
   receipt.error = null;
   saveReceipt(receipt);
-  return { ...result(receipt, `Aborted: restored ${restoredPaths.length} file(s); Make is back at its saved version ${short(receipt.makeBefore.versionGitSha)} and nothing was saved.`),
-    ...(status.persistence?.pendingPaths?.length ? { stillListedPending: status.persistence.pendingPaths } : {}) };
+  return result(receipt, `Aborted: restored ${restoredPaths.length} file(s); Make is back at its saved version ${short(receipt.makeBefore.versionGitSha)} and nothing was saved.`);
 }
 
 // --- verify ------------------------------------------------------------------

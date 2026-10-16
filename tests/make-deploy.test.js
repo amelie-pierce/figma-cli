@@ -1001,7 +1001,7 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     assert.equal(s.make.saved.get('package.json').toString(), text(NEW_PKG));
   });
 
-  it('refuses to finish when an unbacked lockfile keeps the working tree different from the saved tree', async t => {
+  it('names an unbacked lockfile that keeps the working tree different, and finishes once it is reverted by hand', async t => {
     const s = dependencyChange(t);
     s.make.saved.set('package.json', Buffer.from(text(NEW_PKG)));
     s.make.working = new Map(s.make.saved);
@@ -1012,12 +1012,26 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => { receiptPath = error.receiptPath; return true; });
     s.make.hooks.beforeWrite = null;
     assert.ok(!readReceipt(receiptPath).completedWrites.some(write => write.path === 'pnpm-lock.yaml'), 'main\'s lockfile is not backed up as the original');
-    await refuses(deployAbort(s.make, { receiptPath }, s.deps), 'DEPLOY_WRITE_FAILED', /working tree .* != saved tree/);
+    const status = await s.make.projectStatus();
+    const message = new RegExp(`differs from saved tree ${readReceipt(receiptPath).makeBefore.tree} in pnpm-lock\\.yaml \\(working sha256 ${status.workingSha256.get('pnpm-lock.yaml')}, ` +
+      `saved blob ${status.makeFlat.get('pnpm-lock.yaml').blob}\\)\\. .*no original to restore.*by hand`);
+    for (let run = 1; run <= 2; run++) {
+      await assert.rejects(deployAbort(s.make, { receiptPath }, s.deps), error => {
+        assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+        assert.match(error.message, message);
+        assert.doesNotMatch(error.message, /Run --abort again/);
+        return true;
+      });
+    }
     assert.equal(readReceipt(receiptPath).stage, 'writing');
     assert.deepEqual(readReceipt(receiptPath).restored, ['src/App.tsx']);
     assert.equal(lock(s), lockFor(NEW_PKG));
     for (const [path, bytes] of s.make.saved) if (path !== 'pnpm-lock.yaml') assert.ok(s.make.working.get(path).equals(bytes), path);
     await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_UNFINISHED');
+    s.make.working.set('pnpm-lock.yaml', s.make.saved.get('pnpm-lock.yaml'));
+    const aborted = await deployAbort(s.make, { receiptPath }, s.deps);
+    assert.equal(aborted.outcome, 'aborted');
+    assert.equal((await s.make.projectStatus()).workingTree, readReceipt(receiptPath).makeBefore.tree);
   });
 
   it('still refuses unplanned content in a non-dependency file, a path outside the plan, or a lockfile with no backup', async t => {
