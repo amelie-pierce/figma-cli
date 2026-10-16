@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'nod
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { applySync, exportDelta, parseRequest, planSync, validatePlanDigest, writeApplyOutputs } from '../src/make-sync.js';
-import { digest, verifyGeneratedManifest } from '../src/make-drift.js';
+import { compareVendor, digest, vendorManifest, verifyGeneratedManifest } from '../src/make-drift.js';
+import { MakeClient } from '../src/make-client.js';
 
 const root = 'src/vendor/atomic-aui';
 const path = `${root}/lib/Button.tsx`;
@@ -106,6 +107,50 @@ test('scoped sync ignores a stale or broader workspace VENDOR candidate', () => 
         files: baseline.files.map(file => file.path === 'lib/Button.tsx' ? { ...file, ...info(text('next')) } : file) }]) {
       writeFileSync(location, `${JSON.stringify(stale)}\n`);
       assert.deepEqual(planSync(f.args).vendorBytes, computed);
+    }
+  } finally { f.dispose(); }
+});
+
+test('kit release files beside the vendored library never reach drift, sync plans or export deltas', async () => {
+  const f = fixture({ make: 'changed', workspace: 'base' });
+  try {
+    const kit = new Map([
+      ...[...f.args.contents].map(([name, bytes]) => [`${root}/${name}`, bytes]),
+      ['public/atomicaui/latest.json', text('{"version":"7.0.0"}')],
+      ['public/atomicaui/7.0.0/manifest.json', text('{}')],
+      ['public/atomicaui/7.0.0/atomicaui-7.0.0.tar.gz.b64.000', text('AAAA')],
+    ]);
+    const client = new MakeClient({ transport: { close() {} }, timeoutMs: 120000 });
+    client.fileKey = 'Scratch';
+    client._operation = async fn => fn(Date.now() + 120000);
+    client._driftState = async () => ({ state });
+    client._fileBridge = async () => ({ dispose: async () => {}, invoke: async (_fn, [type, data]) => {
+      assert.equal(type, 'fs/dir/list');
+      const directory = data.path.slice('code/'.length);
+      const entries = new Map();
+      for (const name of kit.keys()) {
+        if (!name.startsWith(`${directory}/`)) continue;
+        const [first, ...rest] = name.slice(directory.length + 1).split('/');
+        entries.set(first, rest.length > 0);
+      }
+      return { success: true, data: { path: data.path, files: [...entries].map(([name, isDirectory]) => ({ name, path: name,
+        isFile: !isDirectory, isDirectory, size: isDirectory ? undefined : kit.get(`${directory}/${name}`).length })) } };
+    } });
+    client._bridgeReadBytes = async (_bridge, name) => kit.get(name);
+    const scan = await client.inventoryVendor(root, { includeBytes: true });
+    const args = { ...f.args, inventory: scan.inventory, contents: scan.contents };
+    const release = value => String(value).includes('public/atomicaui');
+    const drift = compareVendor(vendorManifest(f.args.baselineBytes, root), scan.inventory,
+      { manifestFile: scan.inventory.get('VENDOR.json'), stateBefore: state, stateAfter: state });
+    const { plan } = planSync(args);
+    const delta = exportDelta({ ...args, who: 'Engineer' });
+    assert.deepEqual(drift.files.filter(file => file.status !== 'matched').map(file => file.path), ['lib/Button.tsx']);
+    assert.deepEqual(plan.actions.map(action => action.path), [path]);
+    assert.deepEqual(plan.outOfScopeDrift, []);
+    assert.deepEqual(delta.files.map(file => file.path), [path]);
+    for (const output of [drift.files.map(file => file.path), plan.beforeInventory.map(file => file.path), plan.outOfScopeDrift,
+      plan.actions.map(action => action.path), delta.files.map(file => file.path)]) {
+      assert.equal(output.some(release), false);
     }
   } finally { f.dispose(); }
 });
