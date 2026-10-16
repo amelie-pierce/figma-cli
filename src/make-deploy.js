@@ -890,7 +890,10 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
             stopAbort(error, `Abort stopped while restoring: ${error.message} Run --abort again.`);
           }
           const checked = await recheck();
-          if (checked.files.find(item => item.path === file.path).state === 'before') break;
+          if (checked.files.find(item => item.path === file.path).state === 'before') {
+            recordRestored(file.path);
+            break;
+          }
           continue;
         }
         recordRestored(file.path);

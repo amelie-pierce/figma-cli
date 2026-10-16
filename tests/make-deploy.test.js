@@ -974,6 +974,27 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     assert.equal(s.make.calls.filter(([kind]) => kind === 'save').length, 0);
   });
 
+  it('records a lockfile restore whose write landed before it reported an error', async t => {
+    const s = dependencyChange(t);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.beforeWrite = path => { if (path === 'pnpm-lock.yaml') throw new Error('Make operation timed out.'); };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => {
+      receiptPath = error.receiptPath;
+      return error.code === 'DEPLOY_WRITE_FAILED';
+    });
+    s.make.hooks.beforeWrite = path => {
+      if (path === 'pnpm-lock.yaml') {
+        s.make.working.set(path, s.make.saved.get(path));
+        throw new Error('Make operation timed out.');
+      }
+    };
+    const aborted = await deployAbort(s.make, { receiptPath }, s.deps);
+    assert.equal(aborted.outcome, 'aborted');
+    assert.equal(lock(s), s.make.saved.get('pnpm-lock.yaml').toString());
+    assert.deepEqual(new Set(readReceipt(receiptPath).restored), new Set(['src/App.tsx', 'package.json', 'pnpm-lock.yaml']));
+  });
+
   it('resumes over a planned lockfile Make regenerated', async t => {
     const { s, receiptPath } = await regeneratedAfterStop(t);
     const resumed = await deployResume(s.make, { ...s.opts, receiptPath }, s.deps);
