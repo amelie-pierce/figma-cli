@@ -601,19 +601,16 @@ export class MakeClient {
               if (observed.editor === 'matched') return 'editor-tree-vfs-sandbox-matched';
               editorDisagreed = true;
             } catch (error) {
-              // Deep vendor paths can exceed Make's virtualized tree viewport.
-              // The release installer already verified their bytes; this
-              // fallback still requires three independent live views to agree.
-              if (!editorDisagreed && vendorTreeFallback && (error.code === 'MAKE_NO_EDITOR' ||
-                  /Make source ancestry cannot fit in the file-tree viewport/.test(error.message))) {
-                return 'tree-vfs-sandbox-vendor-matched';
-              }
               if (!editorDisagreed && error.code === 'MAKE_NO_EDITOR') return 'tree-vfs-sandbox-matched';
               if (!editorDisagreed && error.code === 'MAKE_TREE_VIEWPORT') {
                 const editor = await this._editor({ type: 'inspect' }, deadline);
                 if (editor.editorCount === 0 || (editor.editorPath && editor.editorPath !== path)) {
                   return 'tree-vfs-sandbox-matched';
                 }
+                // Deep vendor paths can exceed Make's virtualized tree viewport
+                // while a mounted editor reports no path. The release installer
+                // already verified their bytes; three live views still agree.
+                if (vendorTreeFallback && !editor.editorPath) return 'tree-vfs-sandbox-vendor-matched';
               }
               observed.editor = editorDisagreed ? 'different' : 'unavailable';
             }

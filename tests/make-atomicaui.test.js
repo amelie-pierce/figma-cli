@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildRelease, DEFAULT_PART_BASE64_BYTES, downloadRelease, getBytes, installRelease, installedStatus, nextPatch,
+import { buildRelease, DEFAULT_PART_BASE64_BYTES, downloadRelease, getBytes, installRelease, installedStatus, nextPatch, vendorEdits,
   planBreakingFixes, releaseDependencies } from '../src/make-atomicaui.js';
 import { installSoloRelease, installTeamRelease, prepareTeamBranch, releaseAtomicaui, teamChangeReport,
   verifyAtomicauiRelease } from '../src/commands/make-atomicaui.js';
@@ -143,7 +143,7 @@ test('compact release serves only archive parts, manifest, sidecar and latest po
 test('large archive and source use configurable bounded base64 parts', async () => {
   const { source } = fixture();
   let seed = 0x7a00b00b;
-  const random = Buffer.alloc(700000);
+  const random = Buffer.alloc(3000000);
   for (let index = 0; index < random.length; index++) {
     seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
     random[index] = 33 + (seed >>> 0) % 90;
@@ -156,6 +156,7 @@ test('large archive and source use configurable bounded base64 parts', async () 
   const inventory = new Map([...contents].map(([path, bytes]) => [path, { path, bytes: bytes.length, sha256: hash(bytes) }]));
   const release = buildRelease({ contents, inventory, kitPackage: KIT_PACKAGE, version: '7.0.0' });
   assert.equal(release.manifest.partBase64Bytes, DEFAULT_PART_BASE64_BYTES);
+  assert.equal(DEFAULT_PART_BASE64_BYTES, 2 * 1024 * 1024);
   assert.ok(release.manifest.archive.parts.length > 1);
   assert.equal(release.manifest.files.find(item => item.path === 'src/large.ts').parts, undefined);
   for (const [path, bytes] of release.output) if (!path.endsWith('manifest.json')) {
@@ -168,6 +169,8 @@ test('large archive and source use configurable bounded base64 parts', async () 
   const smaller = buildRelease({ contents, inventory, kitPackage: KIT_PACKAGE, version: '7.0.0', partBase64Bytes: 256 * 1024 });
   assert.ok(smaller.manifest.archive.parts.length >= release.manifest.archive.parts.length);
   assert.throws(() => buildRelease({ contents, inventory, kitPackage: KIT_PACKAGE, version: '7.0.0', partBase64Bytes: 3 }), /part size/);
+  assert.throws(() => buildRelease({ contents, inventory, kitPackage: KIT_PACKAGE, version: '7.0.0',
+    partBase64Bytes: DEFAULT_PART_BASE64_BYTES + 4 }), /part size/);
 });
 
 test('client rejects Figma HTML 200, a wrong manifest hash, and a corrupted archive part', async () => {
@@ -387,8 +390,8 @@ test('fake solo Make client writes provider, stylesheet, sass, dependencies and 
   assert.match(files.get('src/main.tsx').toString(), /tokens\/index.scss/);
   assert.equal(JSON.parse(files.get('package.json')).devDependencies.sass, '^1.89.0');
   assert.deepEqual(JSON.parse(files.get('package.json')).dependencies, { react: '^19', '@base-ui/react': '^1.2.0' });
-  assert.deepEqual(result.report.dependencies, [{ name: '@base-ui/react', from: null, to: '^1.2.0' }]);
-  assert.match(result.summary, /Dependencies: @base-ui\/react \^1\.2\.0\./);
+  assert.deepEqual(result.report.dependencies, [{ name: '@base-ui/react', from: null, to: '^1.2.0' }, { name: 'sass', from: null, to: '^1.89.0' }]);
+  assert.match(result.summary, /Dependencies: @base-ui\/react \^1\.2\.0, sass \^1\.89\.0\./);
 });
 
 test('solo install raises an older compatible pin, keeps a newer one, and refuses a different major before any write', async () => {
@@ -400,11 +403,11 @@ test('solo install raises an older compatible pin, keeps a newer one, and refuse
   const raised = soloMake(app({ '@base-ui/react': '~1.0.3' }));
   const result = await installSoloRelease(raised.client, payload, { mode: 'add' });
   assert.equal(JSON.parse(raised.files.get('package.json')).dependencies['@base-ui/react'], '^1.2.0');
-  assert.deepEqual(result.report.dependencies, [{ name: '@base-ui/react', from: '~1.0.3', to: '^1.2.0' }]);
+  assert.deepEqual(result.report.dependencies, [{ name: '@base-ui/react', from: '~1.0.3', to: '^1.2.0' }, { name: 'sass', from: null, to: '^1.89.0' }]);
   const kept = soloMake(app({ '@base-ui/react': '^1.4.0' }));
   const keptResult = await installSoloRelease(kept.client, payload, { mode: 'add' });
   assert.equal(JSON.parse(kept.files.get('package.json')).dependencies['@base-ui/react'], '^1.4.0');
-  assert.deepEqual(keptResult.report.dependencies, []);
+  assert.deepEqual(keptResult.report.dependencies, [{ name: 'sass', from: null, to: '^1.89.0' }]);
   for (const pin of ['^2.0.0', 'latest']) {
     const conflict = soloMake(app({ '@base-ui/react': pin }));
     await assert.rejects(installSoloRelease(conflict.client, payload, { mode: 'add' }), /needs @base-ui\/react \^1\.2\.0, but package\.json dependencies pins/);
@@ -427,7 +430,7 @@ test('solo install checks peer and optional pins: a different major refuses, a p
   const lowerResult = await installSoloRelease(lower.client, payload, { mode: 'add' });
   const lowerPkg = JSON.parse(lower.files.get('package.json'));
   assert.deepEqual([lowerPkg.dependencies['@base-ui/react'], lowerPkg.peerDependencies['@base-ui/react']], ['^1.2.0', '^1.0.0']);
-  assert.deepEqual(lowerResult.report.dependencies, [{ name: '@base-ui/react', from: null, to: '^1.2.0' }]);
+  assert.deepEqual(lowerResult.report.dependencies, [{ name: '@base-ui/react', from: null, to: '^1.2.0' }, { name: 'sass', from: null, to: '^1.89.0' }]);
   const higher = soloMake(app({ peerDependencies: { '@base-ui/react': '^1.5.0' } }));
   await installSoloRelease(higher.client, payload, { mode: 'add' });
   const higherPkg = JSON.parse(higher.files.get('package.json'));
@@ -435,7 +438,7 @@ test('solo install checks peer and optional pins: a different major refuses, a p
   const optional = soloMake(app({ optionalDependencies: { '@base-ui/react': '^1.3.0' } }));
   const optionalResult = await installSoloRelease(optional.client, payload, { mode: 'add' });
   assert.deepEqual(JSON.parse(optional.files.get('package.json')).optionalDependencies, { '@base-ui/react': '^1.3.0' });
-  assert.deepEqual(optionalResult.report.dependencies, []);
+  assert.deepEqual(optionalResult.report.dependencies, [{ name: 'sass', from: null, to: '^1.89.0' }]);
 });
 
 test('solo add resumes only exact pending release files and saves them once', async () => {
@@ -784,4 +787,12 @@ test('continued team add refuses a conflicting branch package.json before touchi
   assert.ok(readFileSync(join(vendorDir, 'src/index.ts')).equals(vendorFile));
   assert.equal(team.git(team.clone, 'status', '--porcelain'), '');
   assert.equal(team.commands.some(command => command.startsWith('npm')), false);
+});
+
+test('vendor edits report missing, changed and added files against VENDOR.json records', () => {
+  const record = bytes => ({ bytes: bytes.length, sha256: hash(Buffer.from(bytes)) });
+  const vendorFiles = new Map([['a.ts', record('a')], ['b.ts', record('b')], ['c.ts', record('c')]]);
+  const inventory = new Map([['VENDOR.json', record('{}')], ['a.ts', record('a')], ['b.ts', record('B')], ['d.ts', record('d')]]);
+  assert.deepEqual(vendorEdits(inventory, vendorFiles), ['added d.ts', 'changed b.ts', 'missing c.ts']);
+  assert.deepEqual(vendorEdits(new Map([['a.ts', record('a')]]), new Map([['a.ts', record('a')]])), []);
 });

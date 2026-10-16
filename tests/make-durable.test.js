@@ -413,16 +413,16 @@ test('verified vendor write uses three live views only when deep ancestry cannot
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async () => ({ content: 'vendor bytes' });
   client._sourceTree = async () => [{ kind: 'file', path }];
-  client._read = async () => { throw new Error('Make source ancestry cannot fit in the file-tree viewport; selection was refused.'); };
+  client._read = async () => { throw Object.assign(new Error('Make source ancestry cannot fit in the file-tree viewport; selection was refused.'),
+    { code: 'MAKE_TREE_VIEWPORT' }); };
+  client._editor = async () => ({ editorCount: 1, editorPath: null });
   assert.equal(await client._durableAgreement(path, 'vendor bytes', Date.now() + 1000,
     { vendorTreeFallback: true }), 'tree-vfs-sandbox-vendor-matched');
-  client._read = async () => {
-    const error = new Error('Make shows no source editor for the selected vendor path.');
-    error.code = 'MAKE_NO_EDITOR';
-    throw error;
-  };
-  assert.equal(await client._durableAgreement(path, 'vendor bytes', Date.now() + 1000,
-    { vendorTreeFallback: true }), 'tree-vfs-sandbox-vendor-matched');
+  await assert.rejects(client._durableAgreement(path, 'vendor bytes', Date.now() + 300), /editor unavailable/);
+  client._editor = async () => ({ editorCount: 1, editorPath: path });
+  await assert.rejects(client._durableAgreement(path, 'vendor bytes', Date.now() + 300,
+    { vendorTreeFallback: true }), /editor unavailable/);
+  client._editor = async () => ({ editorCount: 1, editorPath: null });
   await assert.rejects(client._durableAgreement('src/App.tsx', 'vendor bytes', Date.now() + 1000,
     { vendorTreeFallback: true }), /limited to src\/vendor\/atomic-aui/);
   assert.throws(() => client.writeDurable('src/App.tsx', 'vendor bytes', { vendorTreeFallback: true }),

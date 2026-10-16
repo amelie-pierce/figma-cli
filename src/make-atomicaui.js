@@ -13,7 +13,7 @@ export const RELEASE_ROOT = 'public/atomicaui';
 const HASH = /^[a-f0-9]{64}$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const MAX_TEXT = 2 * 1024 * 1024;
-export const DEFAULT_PART_BASE64_BYTES = 512 * 1024;
+export const DEFAULT_PART_BASE64_BYTES = 2 * 1024 * 1024;
 export const RELEASE_LAYOUT = 'archive-only';
 const MAX_ARCHIVE = 128 * 1024 * 1024;
 const LEGACY_KEYS = ['archive', 'breakingChanges', 'files', 'partBase64Bytes', 'schema', 'vendorSha256', 'version'];
@@ -453,22 +453,28 @@ function localFiles(root) {
   return found;
 }
 
+// Local edits of a vendor inventory ({ sha256, bytes } by path) against VENDOR.json's file records.
+export function vendorEdits(inventory, vendorFiles) {
+  const edits = [];
+  for (const [path, item] of vendorFiles) {
+    const actual = inventory.get(path);
+    if (!actual) edits.push(`missing ${path}`);
+    else if (actual.bytes !== item.bytes || actual.sha256 !== item.sha256) edits.push(`changed ${path}`);
+  }
+  for (const path of inventory.keys()) if (path !== 'VENDOR.json' && !vendorFiles.has(path)) edits.push(`added ${path}`);
+  return edits.sort();
+}
+
 export function installedStatus(root) {
   const files = localFiles(root);
   if (!files.size) return { installed: false, version: null, localEdits: [] };
   const manifestBytes = files.get('VENDOR.json');
   if (!manifestBytes) return { installed: true, version: null, localEdits: ['VENDOR.json missing'] };
+  const inventory = new Map([...files].map(([path, bytes]) => [path, { sha256: sha(bytes), bytes: bytes.length }]));
   const vendor = vendorManifest(manifestBytes, ATOMICAUI_ROOT);
-  const edits = [];
-  for (const [path, item] of vendor.files) {
-    const bytes = files.get(path);
-    if (!bytes) edits.push(`missing ${path}`);
-    else if (bytes.length !== item.bytes || sha(bytes) !== item.sha256) edits.push(`changed ${path}`);
-  }
-  for (const path of files.keys()) if (path !== 'VENDOR.json' && !vendor.files.has(path)) edits.push(`added ${path}`);
   const metadata = parseJson(manifestBytes, 'AtomicAUI VENDOR.json');
   return { installed: true, version: metadata.atomicauiRelease?.version || null,
-    manifestSha256: metadata.atomicauiRelease?.manifestSha256 || null, localEdits: edits.sort(), files: vendor.files };
+    manifestSha256: metadata.atomicauiRelease?.manifestSha256 || null, localEdits: vendorEdits(inventory, vendor.files), files: vendor.files };
 }
 
 export function changeReport(before, release) {

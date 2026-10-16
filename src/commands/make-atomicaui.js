@@ -8,7 +8,7 @@ import { review } from '../make-team-review.js';
 import { listenNotice } from '../lavish-listen.js';
 import { digest, vendorManifest } from '../make-drift.js';
 import { ATOMICAUI_ROOT, ATOMICAUI_SITE, RELEASE_ROOT, buildRelease, changeReport, downloadRelease,
-  compareVersions, installRelease, installedStatus, latestRelease, mergeDependencies, nextPatch, planBreakingFixes, version } from '../make-atomicaui.js';
+  compareVersions, installRelease, installedStatus, latestRelease, mergeDependencies, nextPatch, planBreakingFixes, vendorEdits, version } from '../make-atomicaui.js';
 
 const format = value => `${JSON.stringify(value, null, 2)}\n`;
 const decode = bytes => new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
@@ -170,8 +170,11 @@ function providerChanges(main, pkg, dependencies) {
   const packageValue = JSON.parse(pkg);
   const added = mergeDependencies(packageValue, dependencies);
   const hasSass = packageValue.dependencies?.sass || packageValue.devDependencies?.sass;
-  if (!hasSass) packageValue.devDependencies = { ...packageValue.devDependencies, sass: '^1.89.0' };
-  const nextPackage = hasSass && !added.length ? pkg : format(packageValue);
+  if (!hasSass) {
+    packageValue.devDependencies = { ...packageValue.devDependencies, sass: '^1.89.0' };
+    added.push({ name: 'sass', from: null, to: '^1.89.0' });
+  }
+  const nextPackage = added.length ? format(packageValue) : pkg;
   return { files: new Map([['src/main.tsx', nextMain], ['package.json', nextPackage]]), dependencies: added };
 }
 function upgradeDirection(mode, before, release, pinned) {
@@ -342,16 +345,10 @@ export async function installSoloRelease(client, release, { mode, resume = false
     before = { installed: true, version: JSON.parse(decode(baselineVendor)).atomicauiRelease?.version || null,
       files: vendorManifest(baselineVendor, ATOMICAUI_ROOT).files };
   } else if (mode === 'upgrade') throw new Error('AtomicAUI VENDOR.json is missing.');
-  for (const [path, actual] of existing) {
-    if (path === 'VENDOR.json' || pendingSet.has(`${ATOMICAUI_ROOT}/${path}`)) continue;
-    if (mode === 'add') throw new Error('AtomicAUI vendor folder already exists. Use upgrade.');
-    const item = before.files.get(path);
-    if (!item) throw new Error(`AtomicAUI vendor has a local added file: ${path}`);
-    if (actual.sha256 !== item.sha256 || actual.bytes !== item.bytes) throw new Error(`Local AtomicAUI edit refuses upgrade: ${path}`);
-  }
-  for (const [path] of before.files) {
-    if (!existing.has(path) && !pendingSet.has(`${ATOMICAUI_ROOT}/${path}`)) throw new Error(`Local AtomicAUI edit refuses upgrade: missing ${path}`);
-  }
+  const settled = entries => new Map([...entries].filter(([path]) => path !== 'VENDOR.json' && !pendingSet.has(`${ATOMICAUI_ROOT}/${path}`)));
+  if (mode === 'add' && settled(existing).size) throw new Error('AtomicAUI vendor folder already exists. Use upgrade.');
+  const localEdits = vendorEdits(settled(existing), settled(before.files));
+  if (localEdits.length) throw new Error(`Local AtomicAUI edits refuse upgrade: ${localEdits.join(', ')}`);
   for (const path of pendingSet) {
     const rel = insideVendor(path) ? path.slice(ATOMICAUI_ROOT.length + 1) : null;
     if (!rel || rel === 'VENDOR.json') continue;
@@ -430,7 +427,7 @@ export function registerAtomicaui(make, print, failure) {
     .requiredOption('--file <key>', 'Exact AtomicAUI 7.0 Make file key')
     .option('--version <X.Y.Z>', 'Release version; defaults to the next patch')
     .option('--resume', 'Verify and continue an interrupted, unsaved release of the exact --version')
-    .option('--part-bytes <n>', 'Maximum base64 archive part size in bytes (default 524288)')
+    .option('--part-bytes <n>', 'Maximum base64 archive part size in bytes (default and maximum 2097152)')
     .option('--breaking-notes <json-file>', 'JSON array of breaking notes and exact app fixes')
     .action(async options => {
       try {
@@ -482,16 +479,8 @@ export function registerAtomicaui(make, print, failure) {
           const scan = await client.inventoryVendor(ATOMICAUI_ROOT, { includeBytes: true });
           const vendorBytes = scan.contents.get('VENDOR.json');
           if (!vendorBytes) return { mode: 'solo', installedVersion: null, localEdits: ['VENDOR.json missing'], latestVersion: latest.version };
-          const vendor = vendorManifest(vendorBytes, ATOMICAUI_ROOT);
-          const edits = [];
-          for (const [path, item] of vendor.files) {
-            const actual = scan.inventory.get(path);
-            if (!actual) edits.push(`missing ${path}`);
-            else if (actual.bytes !== item.bytes || actual.sha256 !== item.sha256) edits.push(`changed ${path}`);
-          }
-          for (const path of scan.inventory.keys()) if (path !== 'VENDOR.json' && !vendor.files.has(path)) edits.push(`added ${path}`);
           return { mode: 'solo', installedVersion: JSON.parse(decode(vendorBytes)).atomicauiRelease?.version || null,
-            localEdits: edits.sort(), latestVersion: latest.version, savedVersion: scan.state?.savedVersion || null };
+            localEdits: vendorEdits(scan.inventory, vendorManifest(vendorBytes, ATOMICAUI_ROOT).files), latestVersion: latest.version, savedVersion: scan.state?.savedVersion || null };
         }));
       } catch (error) { failure(error); }
     });
