@@ -300,8 +300,9 @@ async function scanTree(transport, { deadline, maxEntries, targetPath }) {
 
 const TREE_CHANGED = /Make file tree changed (?:before the requested action|during traversal)\./;
 
-function checkWrittenTree(beforeEntries, afterEntries, writtenPath, beforeRows, afterRows) {
-  if (!Array.isArray(beforeEntries) || !Array.isArray(beforeRows) || typeof writtenPath !== 'string') {
+function checkChangedTree({ beforeEntries, beforeRows, writtenPath, removedPath }, afterEntries, afterRows) {
+  const path = writtenPath ?? removedPath;
+  if (!Array.isArray(beforeEntries) || !Array.isArray(beforeRows) || typeof path !== 'string') {
     throw new Error('Make file tree changed before the requested action. Run the command again.');
   }
   const before = new Map(beforeEntries.map(entry => [entry.path, entry.kind]));
@@ -314,27 +315,30 @@ function checkWrittenTree(beforeEntries, afterEntries, writtenPath, beforeRows, 
   const afterMetadata = new Map(afterEntries.map(entry => [entry.path, {
     level: entry.level, height: afterByTop.get(entry.top)?.height,
   }]));
-  const parts = writtenPath.split('/');
+  const parts = path.split('/');
   const allowed = new Map(parts.map((_, index) => [parts.slice(0, index + 1).join('/'),
     index === parts.length - 1 ? 'file' : 'folder']));
-  if (before.has(writtenPath) || (after.has(writtenPath) && after.get(writtenPath) !== 'file')) {
-    throw new Error('Make file tree changed before the requested action. Run the command again.');
-  }
-  for (const [path, kind] of before) {
-    if (after.get(path) !== kind || beforeMetadata.get(path).level !== afterMetadata.get(path)?.level ||
-        !Number.isFinite(beforeMetadata.get(path).height) ||
-        beforeMetadata.get(path).height !== afterMetadata.get(path)?.height) {
+  const unexpected = (removedPath !== undefined ? before.get(removedPath) !== 'file' : before.has(writtenPath)) ||
+    (after.has(path) && after.get(path) !== 'file');
+  if (unexpected) throw new Error('Make file tree changed before the requested action. Run the command again.');
+  const emptied = folder => ![...after.keys()].some(entry => entry.startsWith(`${folder}/`));
+  for (const [entry, kind] of before) {
+    if (removedPath !== undefined && !after.has(entry) && allowed.get(entry) === kind &&
+        (entry === removedPath || emptied(entry))) continue;
+    if (after.get(entry) !== kind || beforeMetadata.get(entry).level !== afterMetadata.get(entry)?.level ||
+        !Number.isFinite(beforeMetadata.get(entry).height) ||
+        beforeMetadata.get(entry).height !== afterMetadata.get(entry)?.height) {
       throw new Error('Make file tree changed before the requested action. Run the command again.');
     }
   }
-  for (const [path, kind] of after) {
-    if (!before.has(path) && allowed.get(path) !== kind) {
+  for (const [entry, kind] of after) {
+    if (!before.has(entry) && (removedPath !== undefined || allowed.get(entry) !== kind)) {
       throw new Error('Make file tree changed before the requested action. Run the command again.');
     }
   }
 }
 
-async function scanAfterWrite(transport, options) {
+async function scanAfterChange(transport, options) {
   const { expectedChange, ...settings } = options;
   if (!expectedChange) return scanTree(transport, settings);
   let result;
@@ -342,17 +346,16 @@ async function scanAfterWrite(transport, options) {
     result = await scanTree(transport, settings);
   } catch (error) {
     if (!TREE_CHANGED.test(error.message)) throw error;
-    // A write may insert a folder between the read and a guarded DOM click.
-    // Re-read once, then accept only the exact path and missing ancestors.
+    // A write or delete may change folders between the read and a guarded DOM
+    // click. Re-read once, then accept only the exact path and its ancestors.
     result = await scanTree(transport, settings);
   }
-  checkWrittenTree(expectedChange.beforeEntries, result.entries, expectedChange.writtenPath,
-    expectedChange.beforeRows, result.rows);
+  checkChangedTree(expectedChange, result.entries, result.rows);
   return result;
 }
 
 export async function listMakeFiles(transport, options = {}) {
-  const result = await scanAfterWrite(transport, { ...optionsWithDeadline(options), expectedChange: options.expectedChange });
+  const result = await scanAfterChange(transport, { ...optionsWithDeadline(options), expectedChange: options.expectedChange });
   options.onSnapshot?.(result);
   return result.entries;
 }

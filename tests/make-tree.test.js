@@ -205,6 +205,60 @@ describe('Make virtualized DOM traversal', () => {
     await assert.rejects(listMakeFiles(transport, { expectedChange: { beforeEntries, writtenPath: 'src/field/Input.tsx' } }), /changed before/);
   });
 
+  it('refreshes once when a delete removes its file and the folder it emptied during a guarded tree action', async () => {
+    let removed = false;
+    let armed = false;
+    const transport = fixture([folder('src', [file('old.ts'), folder('field', [file('Input.tsx')])])], {
+      clientHeight: 320,
+      onAction(action, { nodes }) {
+        if (armed && action.type === 'expand' && !removed) {
+          nodes[0].children.splice(1, 1);
+          removed = true;
+        }
+      },
+    });
+    let beforeRows;
+    const beforeEntries = await listMakeFiles(transport, { onSnapshot: snapshot => { beforeRows = snapshot.rows; } });
+    assert.ok(beforeEntries.some(entry => entry.path === 'src/field/Input.tsx'));
+    transport.nodes[0].expanded = false;
+    armed = true;
+    const entries = await listMakeFiles(transport, { expectedChange: { beforeEntries, beforeRows, removedPath: 'src/field/Input.tsx' } });
+    assert.deepEqual(entries.map(entry => entry.path), ['src', 'src/old.ts']);
+    assert.equal(removed, true);
+  });
+
+  it('refuses an unrelated removal alongside the deleted file', async () => {
+    let removed = false;
+    let armed = false;
+    const transport = fixture([folder('src', [file('old.ts'), folder('field', [file('Input.tsx')])])], {
+      clientHeight: 320,
+      onAction(action, { nodes }) {
+        if (armed && action.type === 'expand' && !removed) {
+          nodes[0].children.splice(0, 2);
+          removed = true;
+        }
+      },
+    });
+    let beforeRows;
+    const beforeEntries = await listMakeFiles(transport, { onSnapshot: snapshot => { beforeRows = snapshot.rows; } });
+    transport.nodes[0].expanded = false;
+    armed = true;
+    await assert.rejects(listMakeFiles(transport, { expectedChange: { beforeEntries, beforeRows, removedPath: 'src/field/Input.tsx' } }), /changed before/);
+  });
+
+  it('waits for a delete and keeps its folder while it still holds other files', async () => {
+    const transport = fixture([folder('src', [folder('field', [file('Input.tsx'), file('Label.tsx')])])], { clientHeight: 320 });
+    let beforeRows;
+    const beforeEntries = await listMakeFiles(transport, { onSnapshot: snapshot => { beforeRows = snapshot.rows; } });
+    const unchanged = await listMakeFiles(transport, { expectedChange: { beforeEntries, beforeRows, removedPath: 'src/field/Input.tsx' } });
+    assert.deepEqual(unchanged.map(entry => entry.path), beforeEntries.map(entry => entry.path));
+    transport.nodes[0].children[0].children.splice(0, 1);
+    const entries = await listMakeFiles(transport, { expectedChange: { beforeEntries, beforeRows, removedPath: 'src/field/Input.tsx' } });
+    assert.deepEqual(entries.map(entry => entry.path), ['src', 'src/field', 'src/field/Label.tsx']);
+    transport.nodes[0].children.splice(0, 1);
+    await assert.rejects(listMakeFiles(transport, { expectedChange: { beforeEntries, beforeRows, removedPath: 'src/field/Input.tsx' } }), /changed before/);
+  });
+
   it('keeps every ancestor rendered with the leaf and returns root-to-parent metadata', async () => {
     const transport = fixture([folder('src', [folder('components', [file('App.tsx')], true)], true), file('package.json')],
       { clientHeight: 96 });

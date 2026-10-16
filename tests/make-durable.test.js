@@ -84,6 +84,23 @@ test('a new durable write authorizes only its own tree insertion after the VFS w
   assert.deepEqual(authorization, { beforeEntries, beforeRows, writtenPath: 'src/new.ts' });
 });
 
+test('a durable delete authorizes only its own tree removal after the VFS delete', async () => {
+  const { client } = fakeClient({ original: 'old' });
+  const beforeEntries = [{ path: 'src', kind: 'folder', level: 1, top: 0 }, { path: 'src/old.ts', kind: 'file', level: 2, top: 32 }];
+  const beforeRows = [{ name: 'src', kind: 'folder', level: 1, top: 0, height: 32 },
+    { name: 'old.ts', kind: 'file', level: 2, top: 32, height: 32 }];
+  let authorization;
+  client._durableAgreement = async (_path, content, _deadline, options) => {
+    if (content === 'old') {
+      options.treeState.entries = beforeEntries;
+      options.treeState.rows = beforeRows;
+    } else authorization = options.expectedChange;
+    return 'matched';
+  };
+  await client.deleteDurable('src/old.ts', { expectedSha256: hash('old') });
+  assert.deepEqual(authorization, { beforeEntries, beforeRows, removedPath: 'src/old.ts' });
+});
+
 test('save refuses unrelated pending changes before calling createVersion', async () => {
   const { client, calls } = fakeClient({ paths: ['src/ours.ts', 'src/other.ts'] });
   await assert.rejects(client.saveVersion('Save', ['src/ours.ts']), /unrelated/);

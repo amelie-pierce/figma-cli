@@ -18,6 +18,7 @@ import { lfsMatcher, PROJECT_EXCLUDES, PROJECT_MARKER, treeOf, workingFlat } fro
 import { SandboxGit } from './sandbox-git.js';
 
 const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
+const treeHidden = path => path.split('/').some(part => part.startsWith('.')) || TREE_HIDDEN_ROOT_FILES.includes(path);
 
 // createVersion may have run: the caller must inspect, never retry the save.
 function uncertainSave(message) {
@@ -538,7 +539,7 @@ export class MakeClient {
   // Returns which independent views agreed. On timeout, the error names the
   // last state of each view instead of a bare timeout.
   async _durableAgreement(path, expectedContent, deadline, { treeState, expectedChange } = {}) {
-    const hidden = path.split('/').some(part => part.startsWith('.')) || TREE_HIDDEN_ROOT_FILES.includes(path);
+    const hidden = treeHidden(path);
     let observed = null;
     let editorDisagreed = false;
     try {
@@ -645,8 +646,7 @@ export class MakeClient {
       try {
         const accepted = await this._durable({ type: 'write', path, content, expectedContent: existing.exists ? existing.content : null }, deadline);
         if (accepted?.refused) throw new Error(accepted.refused);
-        const expectedChange = !existing.exists && !path.split('/').some(part => part.startsWith('.')) &&
-          !TREE_HIDDEN_ROOT_FILES.includes(path)
+        const expectedChange = !existing.exists && !treeHidden(path)
           ? { beforeEntries: treeState.entries, beforeRows: treeState.rows, writtenPath: path } : undefined;
         verification = await this._durableAgreement(path, content, deadline, { expectedChange });
       } catch (cause) {
@@ -670,7 +670,8 @@ export class MakeClient {
       const original = await this._durable({ type: 'read', path }, deadline);
       if (!original.exists || sha256(original.content) !== expectedSha256.toLowerCase()) throw new Error('Make source is missing or changed; delete refused.');
       await this._requireListableAncestor(path, deadline);
-      await this._durableAgreement(path, original.content, deadline);
+      const treeState = {};
+      await this._durableAgreement(path, original.content, deadline, { treeState });
       const backupPath = await this._bounded(() => this._backup(path, original.content, { backupDir, operation: 'durable-delete' }), deadline);
       const immediate = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
       if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {
@@ -679,7 +680,9 @@ export class MakeClient {
       try {
         const accepted = await this._durable({ type: 'delete', path, expectedContent: original.content }, deadline);
         if (accepted?.refused) throw new Error(accepted.refused);
-        await this._durableAgreement(path, null, deadline);
+        const expectedChange = !treeHidden(path)
+          ? { beforeEntries: treeState.entries, beforeRows: treeState.rows, removedPath: path } : undefined;
+        await this._durableAgreement(path, null, deadline, { expectedChange });
       } catch (cause) {
         const error = new Error(`Make durable delete outcome is uncertain: ${cause.message}. Inspect before retrying.`);
         error.backupPath = backupPath;
