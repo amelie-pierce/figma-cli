@@ -691,7 +691,11 @@ package; they do not rebuild the site. The command prints these steps. New
 releases write only archive parts, the manifest, its sidecar hash, and the latest
 pointer. The manifest still lists every source file with size and hash. Archive
 base64 parts are at most 512 KiB by default (configurable up to 2 MiB with
-`--part-bytes`). The client also accepts older direct-source releases. After an interrupted, unsaved release, use
+`--part-bytes`). `--breaking-notes FILE` records breaking changes in the
+manifest: a JSON array of `{ "note", "fixes": [{ "path", "find", "replace" }] }`,
+where each fix targets `src/**` (outside the vendor folder) or `package.json`
+and `find` must match exactly once; `add` and `upgrade` apply these fixes in
+the same save or pull request. The client also accepts older direct-source releases. After an interrupted, unsaved release, use
 `--version X.Y.Z --resume`; it checks every pending path and byte before
 continuing. `make atomicaui verify-release --file KEY --version X.Y.Z`
 reads the saved release without writing and checks it against its own
