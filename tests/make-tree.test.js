@@ -169,6 +169,18 @@ describe('Make virtualized DOM traversal', () => {
     assert.deepEqual(transport.clicks, []);
   });
 
+  it('rescans without clicking when a just-written file appears before a folder expansion', async () => {
+    let added = false;
+    const transport = fixture([folder('src', [file('a')]), file('package.json')], {
+      onAction(action, { nodes }) {
+        if (action.type === 'expand' && !added) { added = true; nodes.splice(1, 0, file('new.ts')); }
+      },
+    });
+    assert.deepEqual((await listMakeFiles(transport)).map((entry) => entry.path),
+      ['src', 'src/a', 'new.ts', 'package.json']);
+    assert.deepEqual(transport.clicks, ['src']);
+  });
+
   it('keeps every ancestor rendered with the leaf and returns root-to-parent metadata', async () => {
     const transport = fixture([folder('src', [folder('components', [file('App.tsx')], true)], true), file('package.json')],
       { clientHeight: 96 });
