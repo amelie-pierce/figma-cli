@@ -21,8 +21,11 @@ keep the existing address. The address can return 404 for about a minute.
 **Update kit** and **Publish kit** do not rebuild the site.
 After an interrupted unsaved release, use `release --version X.Y.Z --resume`;
 after a save, use `verify-release --file KEY --version X.Y.Z` for a read-only
-full path and hash check. Kit-only `public/atomicaui/**` files are excluded
-from vendor drift, sync plans and export deltas.
+full path and hash check. Kit-only `public/atomicaui/**` files sit outside
+`src/vendor/atomic-aui/`, so vendor drift, sync plans and export deltas never
+see them. An older release than the current latest keeps `latest.json`
+unchanged; `upgrade` without `--to` never moves an app backward, and
+`upgrade --to` a lower version is labelled a downgrade.
 “Add AtomicAUI to this app” maps to `add`, “update AtomicAUI in this app” to
 `upgrade`, and “is AtomicAUI up to date?” to `status`. Direct solo Make writes
 always require the exact `--file KEY`; team clone commands use `--dir` or the

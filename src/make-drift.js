@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 
 export const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 export const driftExitCode = result => result.ok ? 0 : 1;
-export const isAtomicauiReleasePath = path => path === 'public/atomicaui' || path.startsWith('public/atomicaui/');
 const HASH = /^[a-f0-9]{64}$/;
 
 export function sourcePath(path) {
@@ -55,7 +54,7 @@ export function externalReceipt(bytes, { fileKey, manifestSha256 }) {
 export function compareVendor(manifest, inventory, { manifestFile, stateBefore, stateAfter, receipt } = {}) {
   const files = [];
   const counts = { matched: 0, mismatched: 0, missing: 0, extra: 0 };
-  const paths = new Set([...manifest.files.keys(), ...inventory.keys()].filter(path => !isAtomicauiReleasePath(path)));
+  const paths = new Set([...manifest.files.keys(), ...inventory.keys()]);
   paths.delete('VENDOR.json');
   for (const path of [...paths].sort()) {
     const expected = manifest.files.get(path);

@@ -8,7 +8,8 @@ date: 2026-10-16
 
 `make atomicaui release` builds a versioned payload under
 `public/atomicaui/<version>/` and moves `public/atomicaui/latest.json` after
-writing the full payload. New releases contain only bounded archive base64
+writing the full payload, unless the version is older than the current latest
+(a backport keeps its folder and leaves the pointer alone). New releases contain only bounded archive base64
 parts, `manifest.json`, `manifest.sha256`, and the latest pointer. The manifest
 records hashes and sizes for every source file and decoded archive
 parts (`src/make-atomicaui.js:113`, `src/commands/make-atomicaui.js:32`). The
@@ -40,8 +41,9 @@ the client VFS, sandbox, and rendered tree for paths under
 (`src/make-client.js:498-566`, `tests/make-durable.test.js`).
 
 `public/atomicaui/**` is kit-only data. Vendor drift, workspace-to-Make sync,
-and Make-to-workspace export deltas exclude those paths
-(`src/make-drift.js:4`, `src/make-sync.js:152`, `src/make-sync.js:268`). Older
+and Make-to-workspace export deltas work on `inventoryVendor('src/vendor/atomic-aui')`,
+which lists only that folder, so release assets never reach them
+(`tests/make-drift.test.js`). Older
 kits without `tokens/generated.manifest.json` can verify an unchanged
 generated tree against the supplied committed package manifest during a
 read-only component sync plan (`src/make-sync.js:175`). Tests for the release
