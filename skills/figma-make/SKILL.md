@@ -29,6 +29,13 @@ always require the exact `--file KEY`; team clone commands use `--dir` or the
 current clone and open a normal review PR. These commands verify the public
 HTTPS release before installation. See `src/commands/make-atomicaui.js` for
 the command contract and `src/make-atomicaui.js` for the release format.
+New releases write archive parts, the manifest, its sidecar hash, and the latest
+pointer. The archive manifest still verifies every source file; the client
+also supports the earlier direct-source release layout.
+If a solo `add` is interrupted before its save, inspect the current Make state
+and use `add --file KEY --version X.Y.Z --resume` only for that exact release.
+It verifies every existing pending vendor file and refuses unrelated pending
+paths before completing one save.
 
 The original writes (`replace`, `create`, `import`, `remove`) reach only the open
 session's working copy. It is lost when the Make file is reopened unless Make

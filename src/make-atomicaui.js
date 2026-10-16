@@ -12,6 +12,7 @@ const HASH = /^[a-f0-9]{64}$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const MAX_TEXT = 2 * 1024 * 1024;
 export const DEFAULT_PART_BASE64_BYTES = 512 * 1024;
+export const RELEASE_LAYOUT = 'archive-only';
 const MAX_ARCHIVE = 128 * 1024 * 1024;
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = value => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
@@ -114,10 +115,11 @@ export function unpackArchive(archive, expected) {
 }
 
 export function buildRelease({ inventory, contents, version: releaseVersion, breakingChanges = [],
-  partBase64Bytes = DEFAULT_PART_BASE64_BYTES }) {
+  partBase64Bytes = DEFAULT_PART_BASE64_BYTES, layout = RELEASE_LAYOUT }) {
   version(releaseVersion);
   validateBreakingChanges(breakingChanges);
   partLimit(partBase64Bytes);
+  if (layout !== RELEASE_LAYOUT && layout !== 'direct-and-archive') throw new Error('Unknown AtomicAUI release layout.');
   const vendorBytes = contents.get('VENDOR.json');
   if (!vendorBytes) throw new Error('Kit VENDOR.json is missing.');
   const vendor = vendorManifest(vendorBytes, ATOMICAUI_ROOT);
@@ -131,26 +133,29 @@ export function buildRelease({ inventory, contents, version: releaseVersion, bre
   }
   const records = [...files].sort(([a], [b]) => a.localeCompare(b))
     .map(([path, bytes]) => ({ path, bytes: bytes.length, sha256: sha(bytes) }));
-  const recordsByPath = new Map(records.map(item => [item.path, item]));
   const archive = packArchive(files);
   const output = new Map();
   const base = `${RELEASE_ROOT}/${releaseVersion}`;
   const archiveOutput = new Map();
   const parts = encodeParts(archive, `atomicaui-${releaseVersion}.tar.gz.b64`, archiveOutput, partBase64Bytes);
   for (const [path, bytes] of archiveOutput) output.set(`${base}/${path}`, bytes);
-  for (const [path, bytes] of files) {
-    new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    if (bytes.length <= partBase64Bytes) {
-      output.set(`${base}/files/${path}`, bytes);
-      continue;
+  if (layout === 'direct-and-archive') {
+    const recordsByPath = new Map(records.map(item => [item.path, item]));
+    for (const [path, bytes] of files) {
+      new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      if (bytes.length <= partBase64Bytes) {
+        output.set(`${base}/files/${path}`, bytes);
+        continue;
+      }
+      const sourceOutput = new Map();
+      const sourceParts = encodeParts(bytes, `file-parts/${sha(Buffer.from(path))}/part.b64`, sourceOutput, partBase64Bytes);
+      recordsByPath.get(path).parts = sourceParts;
+      for (const [partPath, encoded] of sourceOutput) output.set(`${base}/${partPath}`, encoded);
     }
-    const sourceOutput = new Map();
-    const sourceParts = encodeParts(bytes, `file-parts/${sha(Buffer.from(path))}/part.b64`, sourceOutput, partBase64Bytes);
-    recordsByPath.get(path).parts = sourceParts;
-    for (const [partPath, encoded] of sourceOutput) output.set(`${base}/${partPath}`, encoded);
   }
   const manifest = { schema: 'figma-cli/atomicaui-release@1', version: releaseVersion, vendorSha256: sha(vendorBytes),
-    partBase64Bytes, files: records, archive: { bytes: archive.length, sha256: sha(archive), parts }, breakingChanges };
+    ...(layout === RELEASE_LAYOUT ? { layout } : {}), partBase64Bytes, files: records,
+    archive: { bytes: archive.length, sha256: sha(archive), parts }, breakingChanges };
   const manifestBytes = json(manifest);
   const latest = { schema: 'figma-cli/atomicaui-latest@1', version: releaseVersion,
     manifest: `${releaseVersion}/manifest.json`, manifestSha256: sha(manifestBytes) };
@@ -174,6 +179,7 @@ function validateManifest(bytes, expectedHash, expectedVersion) {
   if (!HASH.test(expectedHash || '') || sha(bytes) !== expectedHash) throw new Error('AtomicAUI manifest SHA-256 differs.');
   const manifest = parseJson(bytes, 'AtomicAUI manifest');
   if (manifest?.schema !== 'figma-cli/atomicaui-release@1' || version(manifest.version) !== expectedVersion ||
+      (manifest.layout !== undefined && manifest.layout !== RELEASE_LAYOUT) ||
       !Array.isArray(manifest.files) || manifest.files.length < 1 || manifest.files.length > 10000 ||
       !Array.isArray(manifest.archive?.parts) || manifest.archive.parts.length < 1 ||
       !HASH.test(manifest.archive.sha256 || '') || !Number.isSafeInteger(manifest.archive.bytes) ||
@@ -185,10 +191,10 @@ function validateManifest(bytes, expectedHash, expectedVersion) {
     if (!HASH.test(item.sha256 || '') || !Number.isSafeInteger(item.bytes) || item.bytes < 0 || folded.has(path.toLowerCase())) {
       throw new Error(`Invalid AtomicAUI release file: ${path}`);
     }
-    if (item.bytes > manifest.partBase64Bytes && (!Array.isArray(item.parts) || !item.parts.length)) {
+    if (manifest.layout !== RELEASE_LAYOUT && item.bytes > manifest.partBase64Bytes && (!Array.isArray(item.parts) || !item.parts.length)) {
       throw new Error(`Large AtomicAUI source is missing parts: ${path}`);
     }
-    if (item.bytes <= manifest.partBase64Bytes && item.parts != null) {
+    if ((manifest.layout === RELEASE_LAYOUT || item.bytes <= manifest.partBase64Bytes) && item.parts != null) {
       throw new Error(`Small AtomicAUI source has unexpected parts: ${path}`);
     }
     folded.add(path.toLowerCase()); files.set(path, item);
@@ -310,11 +316,13 @@ export async function downloadRelease({ site = ATOMICAUI_SITE, version: pinned, 
   const archive = await fetchParts(manifest.archive.parts, 'archive');
   if (archive.length !== manifest.archive.bytes || sha(archive) !== manifest.archive.sha256) throw new Error('AtomicAUI archive SHA-256 differs.');
   const files = unpackArchive(archive, expected);
-  for (const item of manifest.files) {
-    const served = item.parts ? await fetchParts(item.parts, 'source') :
-      await getBytes(`${base}/files/${encodedPath(item.path)}`, opts);
-    if (served.length !== item.bytes || sha(served) !== item.sha256 || !served.equals(files.get(item.path))) {
-      throw new Error(`AtomicAUI source file differs: ${item.path}`);
+  if (manifest.layout !== RELEASE_LAYOUT) {
+    for (const item of manifest.files) {
+      const served = item.parts ? await fetchParts(item.parts, 'source') :
+        await getBytes(`${base}/files/${encodedPath(item.path)}`, opts);
+      if (served.length !== item.bytes || sha(served) !== item.sha256 || !served.equals(files.get(item.path))) {
+        throw new Error(`AtomicAUI source file differs: ${item.path}`);
+      }
     }
   }
   const vendor = vendorManifest(files.get('VENDOR.json'), ATOMICAUI_ROOT);

@@ -539,9 +539,12 @@ export class MakeClient {
 
   // Returns which independent views agreed. On timeout, the error names the
   // last state of each view instead of a bare timeout.
-  async _durableAgreement(path, expectedContent, deadline, { releaseAsset = false } = {}) {
+  async _durableAgreement(path, expectedContent, deadline, { releaseAsset = false, vendorTreeFallback = false } = {}) {
     if (releaseAsset && !path.startsWith('public/atomicaui/')) {
       throw new Error('Three-view release verification is limited to public/atomicaui/.');
+    }
+    if (vendorTreeFallback && !path.startsWith('src/vendor/atomic-aui/')) {
+      throw new Error('Vendor tree fallback is limited to src/vendor/atomic-aui/.');
     }
     const hidden = path.split('/').some(part => part.startsWith('.')) || TREE_HIDDEN_ROOT_FILES.includes(path);
     let observed = null;
@@ -598,6 +601,13 @@ export class MakeClient {
               if (observed.editor === 'matched') return 'editor-tree-vfs-sandbox-matched';
               editorDisagreed = true;
             } catch (error) {
+              // Deep vendor paths can exceed Make's virtualized tree viewport.
+              // The release installer already verified their bytes; this
+              // fallback still requires three independent live views to agree.
+              if (!editorDisagreed && vendorTreeFallback && (error.code === 'MAKE_NO_EDITOR' ||
+                  /Make source ancestry cannot fit in the file-tree viewport/.test(error.message))) {
+                return 'tree-vfs-sandbox-vendor-matched';
+              }
               if (!editorDisagreed && error.code === 'MAKE_NO_EDITOR') return 'tree-vfs-sandbox-matched';
               if (!editorDisagreed && error.code === 'MAKE_TREE_VIEWPORT') {
                 const editor = await this._editor({ type: 'inspect' }, deadline);
@@ -626,11 +636,14 @@ export class MakeClient {
 
   // rewrite: write even when Make already holds this content, so Make's client
   // owns it (createVersion skips a lockfile only Make's install rewrote).
-  writeDurable(path, content, { expectedSha256, firstVersion = false, rewrite = false, releaseAsset = false,
+  writeDurable(path, content, { expectedSha256, firstVersion = false, rewrite = false, releaseAsset = false, vendorTreeFallback = false,
     backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     sourcePath(path);
     if (releaseAsset && !path.startsWith('public/atomicaui/')) {
       throw new Error('Three-view release verification is limited to public/atomicaui/.');
+    }
+    if (vendorTreeFallback && !path.startsWith('src/vendor/atomic-aui/')) {
+      throw new Error('Vendor tree fallback is limited to src/vendor/atomic-aui/.');
     }
     if (typeof content !== 'string') throw new Error('Make durable write requires UTF-8 text.');
     if (expectedSha256 != null && !/^[a-fA-F0-9]{64}$/.test(expectedSha256)) throw new Error('Invalid expected SHA-256.');
@@ -643,7 +656,7 @@ export class MakeClient {
       const originalSha256 = existing.exists ? sha256(existing.content) : null;
       if (existing.exists && originalSha256 !== expectedSha256.toLowerCase()) throw new Error('Make source changed; SHA-256 does not match.');
       if (!existing.exists) await this._requireListableAncestor(path, deadline);
-      await this._durableAgreement(path, existing.exists ? existing.content : null, deadline, { releaseAsset });
+      await this._durableAgreement(path, existing.exists ? existing.content : null, deadline, { releaseAsset, vendorTreeFallback });
       if (existing.exists && existing.content === content && !rewrite) return { fileKey: this.fileKey, path, changed: false, sha256: originalSha256, verification: 'unchanged' };
       const backupPath = existing.exists ? await this._bounded(() => this._backup(path, existing.content, {
         backupDir, operation: 'durable-write', replacementSha256: sha256(content),
@@ -656,7 +669,7 @@ export class MakeClient {
       try {
         const accepted = await this._durable({ type: 'write', path, content, expectedContent: existing.exists ? existing.content : null }, deadline);
         if (accepted?.refused) throw new Error(accepted.refused);
-        verification = await this._durableAgreement(path, content, deadline, { releaseAsset });
+        verification = await this._durableAgreement(path, content, deadline, { releaseAsset, vendorTreeFallback });
       } catch (cause) {
         const error = new Error(`Make durable write outcome is uncertain: ${cause.message}. Inspect before retrying.`);
         error.backupPath = backupPath;
@@ -668,8 +681,12 @@ export class MakeClient {
     });
   }
 
-  deleteDurable(path, { expectedSha256, firstVersion = false, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
+  deleteDurable(path, { expectedSha256, firstVersion = false, vendorTreeFallback = false,
+    backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     sourcePath(path);
+    if (vendorTreeFallback && !path.startsWith('src/vendor/atomic-aui/')) {
+      throw new Error('Vendor tree fallback is limited to src/vendor/atomic-aui/.');
+    }
     if (!/^[a-fA-F0-9]{64}$/.test(expectedSha256 || '')) throw new Error('Make durable delete requires expected SHA-256.');
     return this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
@@ -678,7 +695,7 @@ export class MakeClient {
       const original = await this._durable({ type: 'read', path }, deadline);
       if (!original.exists || sha256(original.content) !== expectedSha256.toLowerCase()) throw new Error('Make source is missing or changed; delete refused.');
       await this._requireListableAncestor(path, deadline);
-      await this._durableAgreement(path, original.content, deadline);
+      await this._durableAgreement(path, original.content, deadline, { vendorTreeFallback });
       const backupPath = await this._bounded(() => this._backup(path, original.content, { backupDir, operation: 'durable-delete' }), deadline);
       const immediate = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
       if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {

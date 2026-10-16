@@ -232,9 +232,39 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
   if (!unresolved.length) verifyGeneratedManifest(manifestBytes, finalTokens);
   const sameBaseline = expected.size === baseline.files.size && [...expected]
     .every(([path, entry]) => same(entry, baseline.files.get(path)));
-  const vendorBytes = sameBaseline ? baselineBytes : Buffer.from(`${JSON.stringify({ ...JSON.parse(baselineBytes.toString('utf8')),
+  let vendorBytes = sameBaseline ? baselineBytes : Buffer.from(`${JSON.stringify({ ...JSON.parse(baselineBytes.toString('utf8')),
     files: [...expected.values()].filter(file => file.path !== 'VENDOR.json')
       .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) }, null, 2)}\n`);
+  // A full workspace vendor candidate carries the source commit and date as
+  // well as the file inventory. Accept its exact bytes only when every other
+  // metadata field and every planned file entry is unchanged or reviewed.
+  const candidateVendorPath = join(resolve(candidateDir), VENDOR_ROOT, 'VENDOR.json');
+  if (lstatSync(candidateVendorPath, { throwIfNoEntry: false })?.isFile()) {
+    const candidateBytes = readArtifact(candidateDir, `${VENDOR_ROOT}/VENDOR.json`);
+    const candidate = json(candidateBytes, 'Workspace VENDOR.json');
+    const original = json(baselineBytes, 'Trusted VENDOR.json');
+    const candidateSource = candidate.source;
+    const originalSource = original.source;
+    const candidateOther = { ...candidate };
+    const originalOther = { ...original };
+    delete candidateOther.source;
+    delete candidateOther.files;
+    delete originalOther.source;
+    delete originalOther.files;
+    if (JSON.stringify(candidateOther) !== JSON.stringify(originalOther) ||
+        candidateSource?.repository !== originalSource?.repository ||
+        candidateSource?.path !== originalSource?.path ||
+        candidateSource?.commit !== request.workspaceCommit ||
+        typeof candidateSource?.commitDate !== 'string' ||
+        JSON.stringify({ ...candidateSource, commit: originalSource.commit, commitDate: originalSource.commitDate }) !== JSON.stringify(originalSource)) {
+      throw new Error('Workspace VENDOR.json metadata differs outside source commit and date.');
+    }
+    const parsed = vendorManifest(candidateBytes, VENDOR_ROOT);
+    if (parsed.files.size !== expected.size || [...expected].some(([path, entry]) => !same(entry, parsed.files.get(path)))) {
+      throw new Error('Workspace VENDOR.json file inventory differs from reviewed sync result.');
+    }
+    vendorBytes = candidateBytes;
+  }
   const vendorAfter = fileInfo(vendorBytes);
   const plan = { schema: 'figma-cli/make-sync-plan@1', fileKey, requestId: request.requestId, who: request.who,
     requestedAt: request.requestedAt, direction: request.direction, workspaceCommit: packageData.manifest.source.commit,
@@ -321,13 +351,14 @@ export async function applySync(client, { plan, vendorBytes, packageData, candid
   try {
     for (const { action, content } of prepared) {
       const result = action.operation === 'delete'
-        ? await client.deleteDurable(action.path, { expectedSha256: action.before.sha256, backupDir })
-        : await client.writeDurable(action.path, content, { expectedSha256: action.before?.sha256, backupDir });
+        ? await client.deleteDurable(action.path, { expectedSha256: action.before.sha256, backupDir, vendorTreeFallback: true })
+        : await client.writeDurable(action.path, content, { expectedSha256: action.before?.sha256, backupDir,
+          vendorTreeFallback: true });
       writes.push({ path: action.path, before: action.before, after: action.after, backupPath: result.backupPath });
     }
     if (vendorContent !== null) {
       const result = await client.writeDurable(`${VENDOR_ROOT}/VENDOR.json`, vendorContent,
-        { expectedSha256: plan.vendorBefore.sha256, backupDir });
+        { expectedSha256: plan.vendorBefore.sha256, backupDir, vendorTreeFallback: true });
       writes.push({ path: `${VENDOR_ROOT}/VENDOR.json`, before: plan.vendorBefore,
         after: plan.vendorAfter, backupPath: result.backupPath });
     }

@@ -372,6 +372,48 @@ test('an editor that disagreed earlier refuses the deep viewport fallback', asyn
   await assert.rejects(client._durableAgreement(path, 'expected', Date.now() + 300), /editor different/);
 });
 
+test('verified vendor write uses three live views only when deep ancestry cannot fit the tree viewport', async () => {
+  const path = 'src/vendor/atomic-aui/lib/drawer/use-recipe.ts';
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
+  client.fileKey = 'ScratchKey';
+  client._durable = async () => ({ exists: true, content: 'vendor bytes' });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._bridgeRead = async () => ({ content: 'vendor bytes' });
+  client._sourceTree = async () => [{ kind: 'file', path }];
+  client._read = async () => { throw new Error('Make source ancestry cannot fit in the file-tree viewport; selection was refused.'); };
+  assert.equal(await client._durableAgreement(path, 'vendor bytes', Date.now() + 1000,
+    { vendorTreeFallback: true }), 'tree-vfs-sandbox-vendor-matched');
+  client._read = async () => {
+    const error = new Error('Make shows no source editor for the selected vendor path.');
+    error.code = 'MAKE_NO_EDITOR';
+    throw error;
+  };
+  assert.equal(await client._durableAgreement(path, 'vendor bytes', Date.now() + 1000,
+    { vendorTreeFallback: true }), 'tree-vfs-sandbox-vendor-matched');
+  await assert.rejects(client._durableAgreement('src/App.tsx', 'vendor bytes', Date.now() + 1000,
+    { vendorTreeFallback: true }), /limited to src\/vendor\/atomic-aui/);
+  assert.throws(() => client.writeDurable('src/App.tsx', 'vendor bytes', { vendorTreeFallback: true }),
+    /limited to src\/vendor\/atomic-aui/);
+  client._bridgeRead = async () => ({ content: 'different bytes' });
+  const error = await client._durableAgreement(path, 'vendor bytes', Date.now() + 300,
+    { vendorTreeFallback: true }).catch(cause => cause);
+  assert.match(error.message, /sandbox different/);
+});
+
+test('vendor tree fallback does not accept a missing editor for another reason', async () => {
+  const path = 'src/vendor/atomic-aui/lib/drawer/use-recipe.ts';
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
+  client.fileKey = 'ScratchKey';
+  client._durable = async () => ({ exists: true, content: 'vendor bytes' });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._bridgeRead = async () => ({ content: 'vendor bytes' });
+  client._sourceTree = async () => [{ kind: 'file', path }];
+  client._read = async () => { throw new Error('Make editor is temporarily unavailable.'); };
+  const error = await client._durableAgreement(path, 'vendor bytes', Date.now() + 300,
+    { vendorTreeFallback: true }).catch(cause => cause);
+  assert.match(error.message, /editor unavailable/);
+});
+
 test('immutable release assets use VFS, sandbox and tree without mounting an editor', async () => {
   const path = 'public/atomicaui/7.0.0/files/lib/field/index.ts';
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });

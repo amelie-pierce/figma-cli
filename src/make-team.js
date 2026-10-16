@@ -862,7 +862,10 @@ export function pr(ctx, { title, message, body } = {}) {
     : !hits.length ? `no area in ${PROJECT_MARKER} covers the changed files` : 'you own every area these changes touch';
   let existing = findPr(ctx, branch);
   let url;
-  if (existing) url = existing.url;
+  if (existing) {
+    url = existing.url;
+    if (body) ctx.gh(['pr', 'edit', url, '--repo', ctx.repo(), '--body', body], 'Updating the pull request summary');
+  }
   else {
     const task = ctx.tryGit(['config', '--get', `branch.${branch}.figmaCliTask`]).stdout.trim() || null;
     const review = noReviewer ? `No reviewer was requested automatically: ${noReviewer}. Ask a teammate to review.`
