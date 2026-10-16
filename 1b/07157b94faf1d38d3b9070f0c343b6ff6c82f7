@@ -1,0 +1,24 @@
+tests/make-durable.test.js
+  s_9ba6f0f199387f::t_801a08889c92f8 358,368-373
+_vaults/figma-cli/wiki/make/persistence.md
+  s_9ba6f0f199387f::t_801a08889c92f8 30
+src/make-client.js
+  s_9ba6f0f199387f::t_703dd83af54f03 573-574
+  s_9ba6f0f199387f::t_5ad82f6b44ccda 581-583
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1b07157b94faf1d38d3b9070f0c343b6ff6c82f7",
+  "prompts": {},
+  "sessions": {
+    "s_9ba6f0f199387f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3825fd6e-beb4-44dd-8802-07125f522dca",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
