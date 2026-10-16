@@ -637,7 +637,7 @@ describe('make deploy recovery', () => {
     assert.equal((await s.make.projectStatus()).workingTree, readReceipt(receiptPath).makeBefore.tree);
   });
 
-  it('does not count a path whose only apply write was uncertain and never landed as restored', async t => {
+  it('does not count a path whose only apply write was uncertain and never landed as restored, and lists it apart', async t => {
     const s = setup(t);
     landChange(s, { 'src/App.tsx': 'v2\n', 'src/Board.tsx': 'board\n' });
     const plan = await deployPlan(s.make, s.opts, s.deps);
@@ -660,6 +660,42 @@ describe('make deploy recovery', () => {
     const aborted = await deployAbort(s.make, { receiptPath }, s.deps);
     assert.equal(aborted.outcome, 'aborted');
     assert.deepEqual(readReceipt(receiptPath).restored, ['src/App.tsx']);
+    assert.deepEqual(aborted.restoredUncertain, ['src/Board.tsx']);
+  });
+
+  it('keeps a path whose uncertain write landed and a partial abort restored, listed apart as at saved content', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'v2\n', 'src/Board.tsx': 'board\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.beforeWrite = path => {
+      if (path === 'src/Board.tsx') {
+        s.make.working.set(path, Buffer.from('board\n'));
+        throw Object.assign(new Error('Make operation timed out.'), { backupPath: join(s.p.home, 'uncertain-board') });
+      }
+    };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => {
+      receiptPath = error.receiptPath;
+      return error.code === 'DEPLOY_WRITE_FAILED';
+    });
+    assert.equal(s.make.working.get('src/Board.tsx').toString(), 'board\n', 'the uncertain write landed');
+    // The partial abort removes the board, then reports an error and stops.
+    s.make.hooks.beforeWrite = path => {
+      if (path === 'src/Board.tsx') {
+        s.make.working.delete(path);
+        throw new Error('Make operation timed out.');
+      }
+    };
+    await refuses(deployAbort(s.make, { receiptPath }, s.deps), 'DEPLOY_WRITE_FAILED');
+    assert.deepEqual(readReceipt(receiptPath).restored, ['src/App.tsx']);
+    s.make.hooks.beforeWrite = null;
+    const aborted = await deployAbort(s.make, { receiptPath }, s.deps);
+    assert.equal(aborted.outcome, 'aborted');
+    assert.deepEqual(readReceipt(receiptPath).restored, ['src/App.tsx']);
+    assert.deepEqual(aborted.restoredUncertain, ['src/Board.tsx']);
+    assert.deepEqual(readReceipt(receiptPath).restoredUncertain, ['src/Board.tsx']);
+    assert.match(aborted.summary, /1 more whose write outcome is uncertain/);
+    assert.equal((await s.make.projectStatus()).workingTree, readReceipt(receiptPath).makeBefore.tree);
   });
 
   it('waits and rechecks the plan when Make changes pending files under an abort delete', async t => {

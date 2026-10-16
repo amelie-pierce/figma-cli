@@ -850,14 +850,18 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
   const contents = new Map(files.filter(file => !noOriginal(file) && (file.state === 'after' || file.state === 'regenerated')).map(file => [file.path, restoreOf(file)]));
   const restored = new Set(receipt.restored || []);
   // Older abort retries replaced this list. Recover paths that this deploy
-  // wrote and a previous abort already returned to their starting content.
+  // wrote and a previous abort already returned to their starting content;
+  // a path whose only write was uncertain is listed apart, at saved content.
+  const savedUncertain = new Set();
   if (receipt.restored?.length) {
     for (const file of files) {
-      if (file.state === 'before' && receipt.completedWrites.some(write => write.path === file.path && !write.backupOnly && !write.uncertain)) {
-        restored.add(file.path);
-      }
+      const writes = receipt.completedWrites.filter(write => write.path === file.path && !write.backupOnly);
+      if (file.state !== 'before' || restored.has(file.path) || !writes.length) continue;
+      if (writes.some(write => !write.uncertain)) restored.add(file.path);
+      else savedUncertain.add(file.path);
     }
   }
+  if (savedUncertain.size) receipt.restoredUncertain = [...savedUncertain];
   const recordRestored = path => {
     restored.add(path);
     receipt.restored = [...restored];
@@ -928,7 +932,10 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
   receipt.outcome = 'aborted';
   receipt.error = null;
   saveReceipt(receipt);
-  return result(receipt, `Aborted: restored ${restoredPaths.length} file(s); Make is back at its saved version ${short(receipt.makeBefore.versionGitSha)} and nothing was saved.`);
+  return { ...result(receipt, `Aborted: restored ${restoredPaths.length} file(s)` +
+    `${savedUncertain.size ? `, and ${savedUncertain.size} more whose write outcome is uncertain are at saved content` : ''}; ` +
+    `Make is back at its saved version ${short(receipt.makeBefore.versionGitSha)} and nothing was saved.`),
+  ...(savedUncertain.size ? { restoredUncertain: [...savedUncertain] } : {}) };
 }
 
 // --- verify ------------------------------------------------------------------
