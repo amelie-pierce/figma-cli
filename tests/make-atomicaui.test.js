@@ -306,6 +306,7 @@ test('solo add resumes only exact pending release files and saves them once', as
     _driftState: async () => ({ state }),
     files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
     read: async path => ({ content: files.get(path).toString(), sha256: hash(files.get(path)) }),
+    readSaved: async paths => new Map(paths.map(path => [path, path === first || !files.has(path) ? null : files.get(path).toString()])),
     inventoryVendor: async () => {
       const contents = new Map([...files].filter(([path]) => path.startsWith('src/vendor/atomic-aui/'))
         .map(([path, bytes]) => [path.slice('src/vendor/atomic-aui/'.length), bytes]));
@@ -349,7 +350,7 @@ function soloPayload(version = '7.0.0', source = { 'src/index.ts': 'export const
     files: new Map(release.manifest.files.map(item => [item.path, release.output.get(`public/atomicaui/${version}/files/${item.path}`)])),
     site: 'https://example.test' };
 }
-function soloMake(files, pendingPaths = []) {
+function soloMake(files, pendingPaths = [], saved = new Map(files)) {
   const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40), pendingPaths: [...pendingPaths],
     isLoading: false, error: false, pendingCount: pendingPaths.length };
   const writes = [], saves = [];
@@ -365,6 +366,7 @@ function soloMake(files, pendingPaths = []) {
     files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
     read: async path => ({ content: files.get(path).toString(), sha256: hash(files.get(path)) }),
     inventoryVendor: async () => vendorScan(),
+    readSaved: async paths => new Map(paths.map(path => [path, saved.has(path) ? saved.get(path).toString() : null])),
     writeDurable: async (path, content, { expectedSha256 } = {}) => {
       assert.equal(expectedSha256 || null, files.has(path) ? hash(files.get(path)) : null);
       writes.push(path); files.set(path, Buffer.from(content)); touch(path);
@@ -400,7 +402,7 @@ test('interrupted solo add resumes after wiring or VENDOR.json was written, and 
   for (const written of [changedPaths.filter(path => path !== vendorPath), changedPaths]) {
     const files = plainApp();
     for (const path of written) files.set(path, finished.get(path));
-    const make = soloMake(files, written);
+    const make = soloMake(files, written, plainApp());
     const result = await installSoloRelease(make.client, payload, { mode: 'add', resume: true });
     assert.deepEqual(make.writes, changedPaths.filter(path => !written.includes(path)));
     assert.deepEqual([...make.saves[0]].sort(), [...changedPaths].sort());
@@ -409,33 +411,44 @@ test('interrupted solo add resumes after wiring or VENDOR.json was written, and 
   }
   const foreign = plainApp();
   foreign.set('src/main.tsx', Buffer.from("import App from './App'\n<App />\n// my own edit\n"));
-  const refused = soloMake(foreign, ['src/main.tsx']);
+  const refused = soloMake(foreign, ['src/main.tsx'], plainApp());
   await assert.rejects(installSoloRelease(refused.client, payload, { mode: 'add', resume: true }), /differs from the verified release: src\/main.tsx/);
   const fixed = plainApp();
   fixed.set('src/App.tsx', Buffer.from('render(somethingElse)\n'));
-  const wrongFix = soloMake(fixed, ['src/App.tsx']);
+  const wrongFix = soloMake(fixed, ['src/App.tsx'], plainApp());
   await assert.rejects(installSoloRelease(wrongFix.client, payload, { mode: 'add', resume: true }), /src\/App.tsx/);
   assert.deepEqual([...refused.writes, ...wrongFix.writes], []);
 });
 
-test('interrupted solo upgrade resumes with exact pending vendor files and reports from the saved version', async () => {
+test('interrupted solo upgrade resumes from the saved version and refuses foreign pending app edits', async () => {
   const older = soloPayload('7.0.0', { 'src/index.ts': 'one\n', 'src/old.ts': 'old\n' });
   const newer = soloPayload('7.0.1', { 'src/index.ts': 'two\n', 'src/new.ts': 'new\n' });
   const installed = soloMake(plainApp());
   await installSoloRelease(installed.client, older, { mode: 'add' });
-  const files = new Map(installed.files);
-  files.set('src/vendor/atomic-aui/src/index.ts', newer.files.get('src/index.ts'));
-  files.delete('src/vendor/atomic-aui/src/old.ts');
-  const make = soloMake(files, ['src/vendor/atomic-aui/src/index.ts', 'src/vendor/atomic-aui/src/old.ts']);
-  const result = await installSoloRelease(make.client, newer, { mode: 'upgrade', resume: true });
-  assert.equal(result.report.from, '7.0.0');
-  assert.deepEqual(result.report.removed, ['src/old.ts']);
-  assert.deepEqual(make.writes, ['src/vendor/atomic-aui/src/new.ts', 'src/vendor/atomic-aui/VENDOR.json']);
-  assert.equal(JSON.parse(make.files.get('src/vendor/atomic-aui/VENDOR.json')).atomicauiRelease.version, '7.0.1');
-  const stale = new Map(installed.files);
+  const savedFiles = new Map(installed.files);
+  const complete = soloMake(new Map(savedFiles));
+  await installSoloRelease(complete.client, newer, { mode: 'upgrade' });
+  const vendorPath = 'src/vendor/atomic-aui/VENDOR.json';
+  const steps = ['src/vendor/atomic-aui/src/index.ts', 'src/vendor/atomic-aui/src/old.ts', 'src/vendor/atomic-aui/src/new.ts', vendorPath];
+  for (const done of [steps.slice(0, 2), steps]) {
+    const files = new Map(savedFiles);
+    for (const path of done) if (complete.files.has(path)) files.set(path, complete.files.get(path)); else files.delete(path);
+    const make = soloMake(files, done, savedFiles);
+    const result = await installSoloRelease(make.client, newer, { mode: 'upgrade', resume: true });
+    assert.deepEqual([result.report.from, result.report.added, result.report.changed, result.report.removed],
+      ['7.0.0', ['src/new.ts'], ['src/index.ts'], ['src/old.ts']]);
+    assert.deepEqual(make.writes, steps.filter(path => !done.includes(path)));
+    for (const [path, value] of complete.files) assert.ok(make.files.get(path).equals(value), path);
+  }
+  const wired = new Map(savedFiles);
+  wired.set('src/main.tsx', Buffer.from(`${savedFiles.get('src/main.tsx')}// my own edit\n`));
+  const foreign = soloMake(wired, ['src/main.tsx'], savedFiles);
+  await assert.rejects(installSoloRelease(foreign.client, newer, { mode: 'upgrade', resume: true }), /differs from the verified release: src\/main.tsx/);
+  const stale = new Map(savedFiles);
   stale.set('src/vendor/atomic-aui/src/index.ts', Buffer.from('half written'));
-  const refused = soloMake(stale, ['src/vendor/atomic-aui/src/index.ts']);
+  const refused = soloMake(stale, ['src/vendor/atomic-aui/src/index.ts'], savedFiles);
   await assert.rejects(installSoloRelease(refused.client, newer, { mode: 'upgrade', resume: true }), /differs from the verified release/);
+  assert.deepEqual([...foreign.writes, ...refused.writes], []);
 });
 
 test('team pull request report lists the files actually changed and the breaking notes', t => {

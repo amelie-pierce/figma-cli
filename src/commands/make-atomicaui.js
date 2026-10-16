@@ -282,20 +282,11 @@ export async function installTeamRelease(directory, release, { mode } = {}) {
     summary: `${started.continued ? 'Continuing your earlier AtomicAUI update. ' : ''}${changeSummary(report)} Opened ${pullRequest.url} on ${started.branch}.` };
 }
 
-function reverseFixes(fixes, content) {
-  let text = content;
-  for (const fix of [...fixes].reverse()) {
-    const at = text.indexOf(fix.replace);
-    if (!fix.replace || at < 0 || text.indexOf(fix.replace, at + fix.replace.length) >= 0) return null;
-    text = text.slice(0, at) + fix.find + text.slice(at + fix.replace.length);
-  }
-  return text;
-}
 export async function installSoloRelease(client, release, { mode, resume = false, file } = {}) {
   await checkWriteMode(client, {});
-  const allFixes = release.manifest.breakingChanges.flatMap(item => item.fixes);
-  const fixPaths = new Set(allFixes.map(fix => fix.path));
-  const ownPath = path => insideVendor(path) || path === 'src/main.tsx' || path === 'package.json' || fixPaths.has(path);
+  const fixPaths = new Set(release.manifest.breakingChanges.flatMap(item => item.fixes).map(fix => fix.path));
+  const appPaths = [...new Set(['src/main.tsx', 'package.json', ...fixPaths])];
+  const ownPath = path => insideVendor(path) || appPaths.includes(path);
   const allowed = state => resume && Array.isArray(state?.pendingPaths) ? new Set(state.pendingPaths.filter(ownPath)) : null;
   const pending = (await client._driftState(Date.now() + 120000)).state;
   requireClean(pending, allowed(pending));
@@ -312,61 +303,49 @@ export async function installSoloRelease(client, release, { mode, resume = false
   vendor.atomicauiRelease = { version: release.manifest.version, manifestSha256: release.manifestSha256, site: release.site };
   const vendorContent = format(vendor);
   const vendorPath = `${ATOMICAUI_ROOT}/VENDOR.json`;
-  const currentVendor = scan.contents.get('VENDOR.json');
-  const metadataDone = resume && pendingSet.has(vendorPath) && !!currentVendor && decode(currentVendor) === vendorContent;
-  if (pendingSet.has(vendorPath) && !metadataDone) differs(vendorPath);
   const existing = scan.inventory;
+  const savedText = resume ? await client.readSaved([...appPaths, vendorPath]) : null;
+  const baselineVendor = resume ? (savedText.get(vendorPath) === null ? null : Buffer.from(savedText.get(vendorPath))) : scan.contents.get('VENDOR.json');
+  const metadataDone = pendingSet.has(vendorPath);
+  if (metadataDone && (!scan.contents.get('VENDOR.json') || decode(scan.contents.get('VENDOR.json')) !== vendorContent)) differs(vendorPath);
   let before = { installed: false, version: null, files: new Map() };
-  if (currentVendor && !metadataDone) {
+  if (baselineVendor) {
     if (mode === 'add') throw new Error('AtomicAUI vendor folder already exists. Use upgrade.');
-    const old = vendorManifest(currentVendor, ATOMICAUI_ROOT);
-    for (const [path, item] of old.files) {
-      const actual = existing.get(path);
-      if (pendingSet.has(`${ATOMICAUI_ROOT}/${path}`)) continue;
-      if (!actual || actual.sha256 !== item.sha256 || actual.bytes !== item.bytes) throw new Error(`Local AtomicAUI edit refuses upgrade: ${path}`);
-    }
-    before = { installed: true, version: JSON.parse(decode(currentVendor)).atomicauiRelease?.version || null, files: old.files };
-  } else if (!currentVendor && mode === 'upgrade') throw new Error('AtomicAUI VENDOR.json is missing.');
+    before = { installed: true, version: JSON.parse(decode(baselineVendor)).atomicauiRelease?.version || null,
+      files: vendorManifest(baselineVendor, ATOMICAUI_ROOT).files };
+  } else if (mode === 'upgrade') throw new Error('AtomicAUI VENDOR.json is missing.');
   for (const [path, actual] of existing) {
-    if (path === 'VENDOR.json') continue;
-    const wanted = release.files.get(path);
-    const matches = wanted && actual.sha256 === digest(wanted) && actual.bytes === wanted.length;
-    if (pendingSet.has(`${ATOMICAUI_ROOT}/${path}`)) { if (!matches) differs(`${ATOMICAUI_ROOT}/${path}`); continue; }
-    if (mode === 'add' && !metadataDone) throw new Error('AtomicAUI vendor folder already exists. Use upgrade.');
-    if (metadataDone ? !matches : !before.files.has(path)) throw new Error(`AtomicAUI vendor has a local added file: ${path}`);
+    if (path === 'VENDOR.json' || pendingSet.has(`${ATOMICAUI_ROOT}/${path}`)) continue;
+    if (mode === 'add') throw new Error('AtomicAUI vendor folder already exists. Use upgrade.');
+    const item = before.files.get(path);
+    if (!item) throw new Error(`AtomicAUI vendor has a local added file: ${path}`);
+    if (actual.sha256 !== item.sha256 || actual.bytes !== item.bytes) throw new Error(`Local AtomicAUI edit refuses upgrade: ${path}`);
+  }
+  for (const [path] of before.files) {
+    if (!existing.has(path) && !pendingSet.has(`${ATOMICAUI_ROOT}/${path}`)) throw new Error(`Local AtomicAUI edit refuses upgrade: missing ${path}`);
   }
   for (const path of pendingSet) {
     const rel = insideVendor(path) ? path.slice(ATOMICAUI_ROOT.length + 1) : null;
     if (!rel || rel === 'VENDOR.json') continue;
-    if (release.files.has(rel) ? !existing.has(rel)
-      : existing.has(rel) || mode !== 'upgrade' || !(metadataDone || before.files.has(rel))) differs(path);
+    const wanted = release.files.get(rel), actual = existing.get(rel);
+    if (wanted ? !actual || actual.sha256 !== digest(wanted) || actual.bytes !== wanted.length : actual || !before.files.has(rel)) differs(path);
   }
-  const report = metadataDone && mode === 'upgrade'
-    ? { from: null, to: release.manifest.version, resumed: true, added: [],
-      changed: [...pendingSet].filter(path => insideVendor(path) && path !== vendorPath && release.files.has(path.slice(ATOMICAUI_ROOT.length + 1)))
-        .map(path => path.slice(ATOMICAUI_ROOT.length + 1)).sort(),
-      removed: [...pendingSet].filter(path => insideVendor(path) && !release.files.has(path.slice(ATOMICAUI_ROOT.length + 1)))
-        .map(path => path.slice(ATOMICAUI_ROOT.length + 1)).sort(),
-      breakingChanges: release.manifest.breakingChanges }
-    : changeReport(before, release);
+  const report = changeReport(before, release);
   const reads = new Map();
   const readCurrent = async path => {
     if (!reads.has(path)) reads.set(path, await client.read(path, { remote: true }));
     return reads.get(path);
   };
-  const fixes = await planBreakingFixes(release.manifest, async path => {
-    const current = (await readCurrent(path)).content;
-    if (!pendingSet.has(path)) return current;
-    const original = reverseFixes(allFixes.filter(fix => fix.path === path), current);
-    if (original === null) differs(path);
-    return original;
-  });
-  const main = await readCurrent('src/main.tsx');
-  const pkg = await readCurrent('package.json');
-  const wiring = providerChanges(fixes.get('src/main.tsx')?.content || main.content,
-    fixes.get('package.json')?.content || pkg.content);
+  const baseContent = async path => resume ? savedText.get(path) : (await readCurrent(path)).content;
+  const fixes = await planBreakingFixes(release.manifest, baseContent);
+  const wiring = providerChanges(fixes.get('src/main.tsx')?.content ?? await baseContent('src/main.tsx'),
+    fixes.get('package.json')?.content ?? await baseContent('package.json'));
   const appWrites = new Map([...fixes].map(([path, entry]) => [path, entry.content]).concat([...wiring]));
-  for (const [path, content] of appWrites) if (pendingSet.has(path) && (await readCurrent(path)).content !== content) differs(path);
+  for (const path of appPaths) {
+    if (!pendingSet.has(path)) continue;
+    const expected = appWrites.get(path) ?? savedText.get(path);
+    if (expected === savedText.get(path) || (await readCurrent(path)).content !== expected) differs(path);
+  }
   const writes = [...pendingSet];
   const write = async (path, content, expectedSha256, vendorTreeFallback = false) => {
     const result = await client.writeDurable(path, content, { expectedSha256, vendorTreeFallback });

@@ -25,10 +25,12 @@ archive-only layout keeps those bytes in the verified archive with a handful
 of Make writes; the downloader still accepts the first release's direct paths.
 
 An interrupted solo `add` or `upgrade` can resume with the exact `--file`,
-version and `--resume`. `VENDOR.json` is written last; pending vendor files
-must equal the release, pending fix targets must round-trip through the
-planned fixes, and pending wiring must equal the planned wiring before the
-single save (`src/commands/make-atomicaui.js`).
+version and `--resume`. `VENDOR.json` is written last. The saved version's
+own files are read from the sandbox git objects (`MakeClient.readSaved`):
+the change report uses the saved `VENDOR.json`, pending vendor files must
+equal the release, and each pending app file must equal the fixes and wiring
+applied to its saved text (and differ from it) before the single save
+(`src/commands/make-atomicaui.js`).
 Deep vendor paths may exceed the Make file-tree viewport, which prevents the
 editor selector from proving their ancestry (`src/make-tree.js:342`). For this
 selection refusal or a selected vendor path with no source editor, solo
