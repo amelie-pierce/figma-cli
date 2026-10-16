@@ -9,6 +9,7 @@ date: 2026-10-14
 Updated 2026-10-13: git-mode client-VFS writes and version creation are implemented and proven in the scratch Make file. Snapshot mode remains separate.
 Updated 2026-10-14: preview-only files (Markdown) and Make's unlisted root files; see the two sections below.
 Updated 2026-10-14: first version of a never-saved git-mode file (`--first-version`); see "First version" below.
+Updated 2026-10-16: durable read-back for unopened source files and deep tree paths.
 
 ## Saving modes
 
@@ -26,7 +27,7 @@ The 2026-10-13 scratch test saved version 3. After the exact scratch tab reprovi
 
 ## Files without an editor
 
-Make shows Markdown as a preview, with no source editor (`editorCount` stays 0). The read-back used to wait for an editor read that never came, so `make write` on a `.md` path stalled until its timeout. `_read` now takes `editorWaitMs` and throws `MAKE_NO_EDITOR` when no editor appears in that window (`src/make-client.js:300`, window `EDITOR_WAIT_MS` at `src/make-client.js:20`). For `.md` paths only, `_durableAgreement` then accepts client VFS, sandbox and rendered-tree agreement as the proof, `tree-vfs-sandbox-matched`. Every other path waits for its editor until the deadline and must match through it; a slow or missing editor is a failure, never this fallback (`src/make-client.js:522`). At the deadline the error names the last state of each view instead of a bare timeout.
+Make shows Markdown as a preview, with no source editor; it may also leave an unopened source file without one. `_read` uses a bounded editor wait and reports `MAKE_NO_EDITOR` if none mounts (`src/make-client.js:333`). `_durableAgreement` then accepts matching client VFS and sandbox bytes plus a rendered tree entry for any such file (`src/make-client.js:530`). A deep path whose ancestry cannot fit in the tree viewport also takes that fallback when the currently selected editor belongs to another file (`src/make-client.js:581`). A mounted editor with different bytes, a missing tree entry, or a VFS or sandbox mismatch still fails (`src/make-client.js:558`, `src/make-client.js:578`). The same shared check is called before and after durable writes, including deploy writes (`src/make-client.js:622`, `src/make-client.js:635`). At the deadline the error names the last state of each view instead of a bare timeout (`src/make-client.js:596`).
 
 New-file absence is proven by listing the nearest existing ancestor through the bridge. The bridge lets `code` itself only be listed, for [status.md](status.md) (`src/make-rpc.js:113`), and the write path never lists it. A new file directly under the root or in a new top-level folder is therefore refused before any change (`src/make-client.js:469`). Hidden top-level folders are not in the rendered tree and are still attempted.
 

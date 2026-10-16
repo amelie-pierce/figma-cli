@@ -44,8 +44,8 @@ function saveRequest(title, expectedPaths) {
 // write timed out live. Such a call gets 100 ms more per KiB it carries.
 const payloadTimeout = bytes => 5000 + Math.ceil(bytes / 1024) * 100;
 
-// How long a selected Markdown file may show no source editor before it is
-// treated as preview-only, which is how Make renders Markdown.
+// How long a selected file may show no source editor before durable read-back
+// uses the agreeing client VFS, sandbox and rendered tree instead.
 const EDITOR_WAIT_MS = 3000;
 
 // Serialized into the Make page, with no dependency on private application stores.
@@ -530,6 +530,7 @@ export class MakeClient {
   async _durableAgreement(path, expectedContent, deadline) {
     const hidden = path.split('/').some(part => part.startsWith('.')) || TREE_HIDDEN_ROOT_FILES.includes(path);
     let observed = null;
+    let editorDisagreed = false;
     try {
       for (;;) {
         const vfs = await this._durable({ type: 'read', path }, deadline);
@@ -567,17 +568,24 @@ export class MakeClient {
             // Make's rendered tree deliberately omits dotfiles and root lockfiles. VFS and sandbox
             // agreement is the available independent proof for those paths.
             if (hidden) return 'vfs-sandbox-matched';
-            // Make shows Markdown as a preview with no editor to read. The client
-            // VFS, sandbox and rendered tree are the proof for those files only;
-            // every other file must still match through its editor.
-            const preview = path.endsWith('.md');
+            // Make need not mount an editor for a file that is not open. If it
+            // does mount one, its bytes must also agree. Deep paths may be
+            // listed in the tree even when the viewport cannot select them.
             try {
-              const editor = await this._read(path, deadline, preview ? { editorWaitMs: EDITOR_WAIT_MS } : {});
+              const editor = await this._read(path, deadline, { editorWaitMs: EDITOR_WAIT_MS });
               observed.editor = editor.content === expectedContent ? 'matched' : 'different';
               if (observed.editor === 'matched') return 'editor-tree-vfs-sandbox-matched';
+              editorDisagreed = true;
             } catch (error) {
-              if (preview && error.code === 'MAKE_NO_EDITOR') return 'tree-vfs-sandbox-matched';
-              observed.editor = 'unavailable';
+              if (!editorDisagreed && error.code === 'MAKE_NO_EDITOR') return 'tree-vfs-sandbox-matched';
+              if (!editorDisagreed && error.message?.startsWith('Make source ancestry cannot fit in the file-tree viewport;')) {
+                const editor = await this._editor({ type: 'inspect' }, deadline);
+                const leaf = path.split('/').at(-1);
+                if (editor.editorCount === 0 || (editor.selectedName && editor.selectedName !== leaf)) {
+                  return 'tree-vfs-sandbox-matched';
+                }
+              }
+              observed.editor = editorDisagreed ? 'different' : 'unavailable';
             }
           }
         }
