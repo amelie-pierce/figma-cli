@@ -684,9 +684,11 @@ General**. If the site is already published, click **Unpublish**, then
 **Publish**. Set **Who can view** to **Anyone on the web**, leave the password
 off, and keep the same site address. The address can return 404 for about a
 minute during republishing. **Update kit** and **Publish kit** update the kit
-package; they do not rebuild the site. The command prints these steps. Archive and oversized
-source files use base64 parts of at most 512 KiB by default (configurable up to
-2 MiB with `--part-bytes`). After an interrupted, unsaved release, use
+package; they do not rebuild the site. The command prints these steps. New
+releases write only archive parts, the manifest, its sidecar hash, and the latest
+pointer. The manifest still lists every source file with size and hash. Archive
+base64 parts are at most 512 KiB by default (configurable up to 2 MiB with
+`--part-bytes`). The client also accepts older direct-source releases. After an interrupted, unsaved release, use
 `--version X.Y.Z --resume`; it checks every pending path and byte before
 continuing. `make atomicaui verify-release --file KEY --version X.Y.Z`
 independently reads the saved release path set and hashes without writing.
@@ -699,6 +701,9 @@ rejects HTML fallbacks and redirects, verifies the manifest, every archive
 part, and every source file, then checks local vendor edits before installing.
 The change report lists added, changed, and removed paths and any breaking
 notes carried by the manifest.
+An interrupted solo `add` can continue with `--file KEY --version X.Y.Z
+--resume`. It accepts only the exact pending files of that release and refuses
+changed bytes or unrelated pending paths before writing or saving.
 
 `public/atomicaui/**` is kit-only release data. Vendor drift, sync plans, and
 export deltas exclude it. An older kit without `tokens/generated.manifest.json`

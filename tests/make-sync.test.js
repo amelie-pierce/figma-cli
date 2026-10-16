@@ -33,7 +33,9 @@ function fixture({ base = 'base', make = base, workspace = 'next', choice, direc
     ['tokens/generated/splash-bootstrap.js', tokens.get('splash-bootstrap.js')],
     ['tokens/generated.manifest.json', generationBytes],
   ].filter(([, bytes]) => bytes));
-  const baselineBytes = text(JSON.stringify({ files: [...baseline].map(([name, bytes]) => ({ path: name, ...info(bytes) })) }));
+  const baselineBytes = text(JSON.stringify({ source: { repository: 'example/repo', path: 'modules/design/atomic-aui/src',
+    commit: 'e'.repeat(40), commitDate: '2026-10-12T00:00:00Z' },
+  files: [...baseline].map(([name, bytes]) => ({ path: name, ...info(bytes) })) }));
   const contents = new Map([...baseline]);
   if (make == null) contents.delete('lib/Button.tsx'); else contents.set('lib/Button.tsx', text(make));
   contents.set('VENDOR.json', baselineBytes);
@@ -67,6 +69,22 @@ test('source-only plan records hashes, diff, scope and digest', () => {
     assert.deepEqual(plan.unresolved, []);
     validatePlanDigest(plan);
     assert.throws(() => validatePlanDigest({ ...plan, makeVersion: '0'.repeat(40) }), /digest mismatch/);
+  } finally { f.dispose(); }
+});
+
+test('workspace VENDOR candidate pins the new source commit and exact reviewed inventory', () => {
+  const f = fixture();
+  try {
+    const baseline = JSON.parse(f.args.baselineBytes);
+    const candidate = { ...baseline, source: { ...baseline.source, commit, commitDate: '2026-10-15T00:00:00Z' },
+      files: baseline.files.map(file => file.path === 'lib/Button.tsx' ? { ...file, ...info(text('next')) } : file) };
+    const bytes = text(`${JSON.stringify(candidate)}\n`);
+    const location = join(f.directory, root, 'VENDOR.json');
+    writeFileSync(location, bytes);
+    assert.deepEqual(planSync(f.args).vendorBytes, bytes);
+    candidate.files[0].sha256 = '0'.repeat(64);
+    writeFileSync(location, JSON.stringify(candidate));
+    assert.throws(() => planSync(f.args), /file inventory differs/);
   } finally { f.dispose(); }
 });
 
@@ -251,6 +269,7 @@ test('apply uses durable paths, saves exact set and checks drift; unresolved ref
     const written = new Map();
     const client = { writeDurable: async (name, value, options) => {
       written.set(name, value);
+      assert.equal(options.vendorTreeFallback, true);
       calls.push(['write', name, options.expectedSha256]);
       return { backupPath: '/private/backup' };
     }, deleteDurable: async () => { throw new Error('unexpected delete'); },

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { MakeClient } from '../make-client.js';
 import { checkWriteMode } from '../make-project.js';
-import { teamContext, start, save, pr } from '../make-team.js';
+import { teamContext, start, save, pr, TRUNK } from '../make-team.js';
 import { digest, vendorManifest } from '../make-drift.js';
 import { ATOMICAUI_ROOT, ATOMICAUI_SITE, RELEASE_ROOT, buildRelease, changeReport, downloadRelease,
   installRelease, installedStatus, latestRelease, nextPatch, planBreakingFixes, version } from '../make-atomicaui.js';
@@ -125,7 +125,8 @@ export async function verifyAtomicauiRelease(client, requestedVersion) {
   try { manifest = JSON.parse(decode(manifestBytes)); }
   catch { throw new Error('Saved AtomicAUI manifest is invalid JSON.'); }
   const release = buildRelease({ inventory: source.inventory, contents: source.contents, version: selected,
-    breakingChanges: manifest.breakingChanges, partBase64Bytes: manifest.partBase64Bytes });
+    breakingChanges: manifest.breakingChanges, partBase64Bytes: manifest.partBase64Bytes,
+    layout: manifest.layout || 'direct-and-archive' });
   const expected = new Map([...release.output].map(([path, bytes]) => [path.slice(`${RELEASE_ROOT}/`.length),
     { bytes: bytes.length, sha256: digest(bytes) }]));
   const currentPaths = [...actual.inventory.keys()].filter(path => path === 'latest.json' || path.startsWith(`${selected}/`));
@@ -193,7 +194,12 @@ export async function installTeamRelease(directory, release, { mode } = {}) {
   }
   const readSource = async path => existsSync(join(root, path)) ? readFileSync(join(root, path), 'utf8') : null;
   await planBreakingFixes(release.manifest, readSource);
-  const started = start(ctx, `atomicaui-${mode}-${release.manifest.version}`);
+  const currentBranch = ctx.git(['branch', '--show-current']);
+  const reuseUpgradeBranch = mode === 'upgrade' && currentBranch !== TRUNK && currentBranch.startsWith(`${ctx.login()}/`);
+  if (reuseUpgradeBranch && ctx.git(['status', '--porcelain'])) {
+    throw new Error('AtomicAUI upgrade requires a clean team branch before applying the new release.');
+  }
+  const started = reuseUpgradeBranch ? { branch: currentBranch } : start(ctx, `atomicaui-${mode}-${release.manifest.version}`);
   const afterStart = installedStatus(vendorDir);
   if (afterStart.localEdits.length || (mode === 'add' ? afterStart.installed : !afterStart.installed)) {
     throw new Error('AtomicAUI project changed after starting the branch; install refused.');
@@ -221,15 +227,36 @@ export async function installTeamRelease(directory, release, { mode } = {}) {
     pullRequest: pullRequest.url };
 }
 
-export async function installSoloRelease(client, release, { mode } = {}) {
+export async function installSoloRelease(client, release, { mode, resume = false } = {}) {
   await checkWriteMode(client, {});
-  requireClean((await client._driftState(Date.now() + 120000)).state);
+  if (resume && mode !== 'add') throw new Error('Only an interrupted solo AtomicAUI add can be resumed.');
+  const pending = (await client._driftState(Date.now() + 120000)).state;
+  const resumePaths = new Set([...release.files.keys()].map(path => `${ATOMICAUI_ROOT}/${path}`));
+  requireClean(pending, resume ? resumePaths : null);
   const names = fileNames(await client.files());
   const hasVendor = [...names].some(path => path.startsWith(`${ATOMICAUI_ROOT}/`));
-  if (mode === 'add' && hasVendor) throw new Error('AtomicAUI vendor folder already exists. Use upgrade.');
+  if (mode === 'add' && hasVendor && !resume) throw new Error('AtomicAUI vendor folder already exists. Use upgrade.');
+  if (resume && !hasVendor) throw new Error('No interrupted AtomicAUI add exists to resume.');
   if (mode === 'upgrade' && !hasVendor) throw new Error('AtomicAUI is not installed. Use add.');
   let before = { installed: false, version: null, files: new Map(), localEdits: [] }, existing = new Map();
-  if (hasVendor) {
+  if (resume) {
+    const scan = await client.inventoryVendor(ATOMICAUI_ROOT, { includeBytes: true });
+    requireClean(scan.state, resumePaths);
+    if (scan.inventory.has('VENDOR.json') || !scan.inventory.size) {
+      throw new Error('Interrupted AtomicAUI add has no safe partial vendor inventory.');
+    }
+    const actualPaths = [...scan.inventory.keys()].map(path => `${ATOMICAUI_ROOT}/${path}`).sort();
+    if (JSON.stringify(actualPaths) !== JSON.stringify([...scan.state.pendingPaths].sort())) {
+      throw new Error('Interrupted AtomicAUI add has pending files outside its partial vendor inventory.');
+    }
+    for (const [path, actual] of scan.inventory) {
+      const wanted = release.files.get(path);
+      if (!wanted || actual.sha256 !== digest(wanted) || actual.bytes !== wanted.length) {
+        throw new Error(`Interrupted AtomicAUI add differs from the verified release: ${path}`);
+      }
+    }
+    existing = scan.inventory;
+  } else if (hasVendor) {
     const scan = await client.inventoryVendor(ATOMICAUI_ROOT, { includeBytes: true });
     requireClean(scan.state);
     const vendorBytes = scan.contents.get('VENDOR.json');
@@ -256,21 +283,23 @@ export async function installSoloRelease(client, release, { mode } = {}) {
     fixes.get('package.json')?.content || pkg.content);
   const vendor = JSON.parse(decode(release.files.get('VENDOR.json')));
   vendor.atomicauiRelease = { version: release.manifest.version, manifestSha256: release.manifestSha256, site: release.site };
-  const writes = [];
-  const write = async (path, content, expectedSha256) => {
-    const result = await client.writeDurable(path, content, { expectedSha256 });
+  const writes = resume ? [...pending.pendingPaths] : [];
+  const write = async (path, content, expectedSha256, vendorTreeFallback = false) => {
+    const result = await client.writeDurable(path, content, { expectedSha256, vendorTreeFallback });
     if (result.changed) writes.push(path);
   };
   try {
     for (const [path, bytes] of release.files) {
       if (path === 'VENDOR.json') continue;
-      await write(`${ATOMICAUI_ROOT}/${path}`, decode(bytes), existing.get(path)?.sha256);
+      if (resume && existing.has(path)) continue;
+      await write(`${ATOMICAUI_ROOT}/${path}`, decode(bytes), existing.get(path)?.sha256, true);
     }
     for (const path of report.removed) {
-      await client.deleteDurable(`${ATOMICAUI_ROOT}/${path}`, { expectedSha256: existing.get(path).sha256 });
+      await client.deleteDurable(`${ATOMICAUI_ROOT}/${path}`, { expectedSha256: existing.get(path).sha256,
+        vendorTreeFallback: true });
       writes.push(`${ATOMICAUI_ROOT}/${path}`);
     }
-    await write(`${ATOMICAUI_ROOT}/VENDOR.json`, format(vendor), existing.get('VENDOR.json')?.sha256);
+    await write(`${ATOMICAUI_ROOT}/VENDOR.json`, format(vendor), existing.get('VENDOR.json')?.sha256, true);
     for (const [path, entry] of fixes) {
       if (path !== 'src/main.tsx' && path !== 'package.json') await write(path, entry.content, fixReads.get(path).sha256);
     }
@@ -323,11 +352,13 @@ export function registerAtomicaui(make, report, failure) {
     .option('--file <key>', 'Exact solo Make file key; required for direct Make writes')
     .option('--dir <path>', 'Team-mode project clone (defaults to current directory)')
     .option(mode === 'add' ? '--version <X.Y.Z>' : '--to <X.Y.Z>', 'Pin a release version instead of latest')
+    .option('--resume', 'Continue an interrupted, unsaved solo add after verifying every partial file')
     .action(async options => {
       try {
         if (options.file && options.dir) throw new Error('Use --file for solo Make or --dir for a team clone, not both.');
+        if (options.resume && (!options.file || mode !== 'add')) throw new Error('--resume is only for solo Make add with --file.');
         const release = await downloadRelease({ version: options.version || options.to });
-        report(options.file ? await withMake(options.file, client => installSoloRelease(client, release, { mode }))
+        report(options.file ? await withMake(options.file, client => installSoloRelease(client, release, { mode, resume: options.resume }))
           : await installTeamRelease(options.dir || '.', release, { mode }));
       } catch (error) { failure(error); }
     });
