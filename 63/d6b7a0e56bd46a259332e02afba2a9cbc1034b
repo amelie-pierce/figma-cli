@@ -1,0 +1,19 @@
+_vaults/figma-cli/wiki/make/deploy.md
+  s_45fbe7f0bfe956::t_7c52a3b4ade1ac 79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "63d6b7a0e56bd46a259332e02afba2a9cbc1034b",
+  "prompts": {},
+  "sessions": {
+    "s_45fbe7f0bfe956": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e5cd6059-efbe-467f-9ced-62f689a82745",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
