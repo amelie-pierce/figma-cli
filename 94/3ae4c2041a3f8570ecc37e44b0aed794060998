@@ -1,0 +1,50 @@
+REFERENCE.md
+  s_2ac1da875b83e9::t_1901357507b79b 681-687
+src/commands/team.js
+  s_2ac1da875b83e9::t_067d1a5d323a59 1,64-71
+README.md
+  s_2ac1da875b83e9::t_1901357507b79b 29-39
+_vaults/figma-cli/wiki/make/atomicaui-release.md
+  s_2ac1da875b83e9::t_1901357507b79b 16-21
+tests/make-atomicaui.test.js
+  s_2ac1da875b83e9::t_ea364d2bbe0025 159-160
+src/commands/make-atomicaui.js
+  s_2ac1da875b83e9::t_292de630c298aa 169,172-175,181,212
+  s_2ac1da875b83e9::t_affe02a4e35f16 214-219
+  s_2ac1da875b83e9::t_75c8b08a9d1fc9 184-185,344
+  s_2ac1da875b83e9::t_1901357507b79b 13-17
+  s_2ac1da875b83e9::t_067d1a5d323a59 170-171,176-180
+  s_2ac1da875b83e9::t_937231b325b231 5
+  s_2ac1da875b83e9::t_71d03080e34984 213
+skills/figma-make/SKILL.md
+  s_2ac1da875b83e9::t_1901357507b79b 17-21
+src/make-team.js
+  s_2ac1da875b83e9::t_5860639dd178ff 41
+  s_2ac1da875b83e9::t_affe02a4e35f16 850
+  s_2ac1da875b83e9::t_067d1a5d323a59 378
+  s_0db7938d4cd762::t_fc982875ae5f0b 40,871
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "943ae4c2041a3f8570ecc37e44b0aed794060998",
+  "prompts": {},
+  "sessions": {
+    "s_0db7938d4cd762": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbfdbbba-55b2-44f1-9a3a-04ba4dfe81bb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_2ac1da875b83e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a13e5c-4710-7b12-b24e-010bb9bffce1",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
