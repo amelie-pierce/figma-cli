@@ -43,7 +43,7 @@ the client VFS, sandbox, and rendered tree for paths under
 `public/atomicaui/**` is kit-only data. Vendor drift, workspace-to-Make sync,
 and Make-to-workspace export deltas work on `inventoryVendor('src/vendor/atomic-aui')`,
 which lists only that folder, so release assets never reach them
-(`tests/make-drift.test.js`). Older
+(`tests/make-sync.test.js`, kit release files beside the vendored library). Older
 kits without `tokens/generated.manifest.json` can verify an unchanged
 generated tree against the supplied committed package manifest during a
 read-only component sync plan (`src/make-sync.js:175`). Tests for the release

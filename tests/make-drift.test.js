@@ -191,35 +191,3 @@ test('a 265-file inventory is split into bounded renderer batches', async () => 
   assert.equal(batches, 12);
   assert.equal(calls, 266);
 });
-
-test('vendor inventory lists only src/vendor/atomic-aui, so kit release assets never reach drift, sync or export', async () => {
-  const tree = new Map([
-    ...Object.entries(expected).map(([path, bytes]) => [`${root}/${path}`, bytes]),
-    [`${root}/VENDOR.json`, manifestBytes],
-    ['public/atomicaui/latest.json', Buffer.from('release pointer')],
-    ['public/atomicaui/7.0.0/manifest.json', Buffer.from('release manifest')],
-  ]);
-  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 120000 });
-  client.fileKey = 'Scratch';
-  client._operation = async fn => fn(Date.now() + 120000);
-  client._driftState = async () => ({ state: clean });
-  const listed = [];
-  client._fileBridge = async () => ({ dispose: async () => {}, invoke: async (_fn, [type, data]) => {
-    assert.equal(type, 'fs/dir/list');
-    const directory = data.path.slice('code/'.length);
-    listed.push(directory);
-    const names = new Map();
-    for (const path of tree.keys()) {
-      if (!path.startsWith(`${directory}/`)) continue;
-      const [name, ...rest] = path.slice(directory.length + 1).split('/');
-      names.set(name, rest.length > 0);
-    }
-    return { success: true, data: { path: data.path, files: [...names].map(([name, isDirectory]) =>
-      ({ name, path: name, isFile: !isDirectory, isDirectory, size: isDirectory ? undefined : tree.get(`${directory}/${name}`).length })) } };
-  } });
-  client._bridgeReadBytes = async (_bridge, path) => tree.get(path);
-  const scan = await client.inventoryVendor(root);
-  assert.deepEqual([...scan.inventory.keys()].sort(), ['VENDOR.json', 'a.ts', 'tokens/generated/.generated']);
-  assert.ok(listed.every(directory => directory.startsWith(root)));
-  assert.equal(compare(scan.inventory).ok, true);
-});
