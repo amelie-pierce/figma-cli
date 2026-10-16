@@ -33,6 +33,7 @@ src/make-client.js
   s_2ac1da875b83e9::t_d55017a006b43c 1160-1166,1224-1227
   s_2ac1da875b83e9::t_ba7871acffafd3 470-472,1323-1324
   s_0db7938d4cd762::t_4bf7d0392366a4 631
+  s_e7c3ae5e0f70b3::t_307cb78a2f330e 543,649,664
 tests/make-durable.test.js
   s_2ac1da875b83e9::t_55ff27a57180fd 408-423
 REFERENCE.md
@@ -72,6 +73,14 @@ tests/make-drift.test.js
         "tool": "codex",
         "id": "01a13e5c-4710-7b12-b24e-010bb9bffce1",
         "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_e7c3ae5e0f70b3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0dc8364-ab2c-4e7b-a848-1c69dd52a353",
+        "model": "claude-opus-5-5"
       },
       "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
     }
