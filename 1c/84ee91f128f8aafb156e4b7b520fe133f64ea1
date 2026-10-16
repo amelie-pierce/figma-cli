@@ -1,0 +1,22 @@
+tests/make-tree.test.js
+  s_ecf9171df84dbb::t_fdad25912c24df 172-183
+src/make-tree.js
+  s_ecf9171df84dbb::t_7ac7939e802f3e 296
+  s_ecf9171df84dbb::t_3ac5a711f59645 292-293,295,297
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1c84ee91f128f8aafb156e4b7b520fe133f64ea1",
+  "prompts": {},
+  "sessions": {
+    "s_ecf9171df84dbb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc951eec-f877-4639-aeb6-01eab63e9b58",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
