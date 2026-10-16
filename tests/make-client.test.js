@@ -595,6 +595,24 @@ test('replacement works for a deeply nested file whose folder chain cannot fit i
   assert.equal(state.dispatches.length, 0);
 });
 
+test('durable read-back of a deep unselectable file accepts three views only while the editor shows another path', async (t) => {
+  const extraFolders = ['components', 'lib', 'forms', 'fields'];
+  const path = 'src/components/lib/forms/fields/Field.tsx';
+  const { client, state } = await setup(t, { workspace: true, extraFolders, rowName: 'Field.tsx', heading: 'Field.tsx', clientHeight: 64 });
+  client._durable = async ({ path: target }) => ({ exists: Object.hasOwn(state.fs, target), content: state.fs[target] });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._bridgeRead = async (_bridge, target) => ({ content: state.fs[target] });
+  const expected = state.fs[path];
+  await assert.rejects(client.diagnostics(path), error => error.code === 'MAKE_TREE_VIEWPORT');
+  assert.equal(await client._durableAgreement(path, expected, Date.now() + 5000), 'tree-vfs-sandbox-matched');
+  Object.assign(state, { breadcrumbFolder: 'src/components/lib/forms/fields', breadcrumbLeaf: 'Field.tsx' });
+  await assert.rejects(client._durableAgreement(path, expected, Date.now() + 1500), /editor unavailable/);
+  state.workspace = false;
+  await assert.rejects(client._durableAgreement(path, expected, Date.now() + 1500), /editor unavailable/);
+  state.editorCount = 0;
+  assert.equal(await client._durableAgreement(path, expected, Date.now() + 5000), 'tree-vfs-sandbox-matched');
+});
+
 test('Markdown reads through the bridge, where the editor shows no source document', async (t) => {
   const { client, state } = await setup(t, { rowName: 'Guidelines.md', heading: 'Guidelines.md', editorCount: 0 });
   const content = '# Guidelines\n\nUse the kit.\n';

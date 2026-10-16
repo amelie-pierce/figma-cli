@@ -53,8 +53,8 @@ session's working copy and are lost when the file is reopened unless the user
 saves them in Make, which creates a new version through the file's saving mode.
 Git-mode `write` and `delete` use Make's client VFS. They check the prior hash,
 back up replaced or removed bytes, and verify the editor, tree, VFS and sandbox.
-Markdown has no Make editor, so its writes are verified by tree, VFS and sandbox
-(`verification: "tree-vfs-sandbox-matched"`). A new file directly under the
+Markdown, and an unopened or too-deep source file, may have no Make editor; then
+tree, VFS and sandbox must agree (`verification: "tree-vfs-sandbox-matched"`). A new file directly under the
 project root, or in a new top-level folder, is refused before writing.
 They remain pending until `save-version` receives the complete changed-path set,
 creates a Make version and confirms a clean pending state. Root `AGENTS.md` and

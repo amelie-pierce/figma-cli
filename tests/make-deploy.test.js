@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gitBlobSha, gitTreeSha } from '../src/git-tree.js';
+import { MakeClient } from '../src/make-client.js';
 import { deployAbort, deployApply, deployPlan, deployResume, deployVerify, readReceipt } from '../src/make-deploy.js';
 import { markerContent } from '../src/make-mode.js';
 import { PROJECT_MARKER } from '../src/make-project.js';
@@ -171,6 +172,7 @@ class FakeMake {
     this.working.set(path, Buffer.from(content));
     this.clientWrote.add(path);
     this.installAfter(path);
+    await this.hooks.afterWrite?.(path);
     return { path, changed: true, backupPath };
   }
   async deleteDurable(path, { expectedSha256, backupDir } = {}) {
@@ -286,6 +288,51 @@ function landChange(s, changes = { 'src/App.tsx': 'export const App = () => "v2"
   s.p.pull();
   return sha;
 }
+
+const DEEP_PATH = 'src/vendor/atomic-aui/lib/datepicker/use-recipe.ts';
+function checkUnopenedReadback(make) {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
+  client.fileKey = KEY;
+  client._durable = async ({ path }) => ({ exists: make.working.has(path), content: make.working.get(path)?.toString() });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._bridgeRead = async (_bridge, path) => ({ content: make.working.get(path).toString() });
+  client._sourceTree = async () => [{ kind: 'file', path: DEEP_PATH }];
+  client._read = async () => { throw Object.assign(new Error('Make shows no source editor.'), { code: 'MAKE_NO_EDITOR' }); };
+  make.hooks.afterWrite = async path => {
+    if (path === DEEP_PATH) make.deepReadback = await client._durableAgreement(path, make.working.get(path).toString(), Date.now() + 1000);
+  };
+}
+
+describe('make deploy unopened deep-file read-back', () => {
+  it('applies and saves a deep file with three matching views', async t => {
+    const s = setup(t, { files: { ...BASE, [DEEP_PATH]: 'old\n' } });
+    landChange(s, { [DEEP_PATH]: 'new\n' });
+    checkUnopenedReadback(s.make);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(s.make.deepReadback, 'tree-vfs-sandbox-matched');
+    assert.equal(applied.stage, 'deployed');
+    assert.equal(s.make.saved.get(DEEP_PATH).toString(), 'new\n');
+  });
+
+  it('resumes across a deep file after an earlier write failed', async t => {
+    const s = setup(t, { files: { ...BASE, [DEEP_PATH]: 'old\n' } });
+    landChange(s, { 'src/App.tsx': 'updated\n', [DEEP_PATH]: 'new\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.beforeWrite = path => { if (path === DEEP_PATH) throw new Error('Make operation timed out.'); };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => {
+      receiptPath = error.receiptPath;
+      return error.code === 'DEPLOY_WRITE_FAILED';
+    });
+    s.make.hooks.beforeWrite = null;
+    checkUnopenedReadback(s.make);
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath }, s.deps);
+    assert.equal(s.make.deepReadback, 'tree-vfs-sandbox-matched');
+    assert.equal(resumed.stage, 'deployed');
+    assert.equal(s.make.saved.get(DEEP_PATH).toString(), 'new\n');
+  });
+});
 
 describe('make deploy guards', () => {
   it('refuses a solo file, which has nothing to deploy from', async t => {

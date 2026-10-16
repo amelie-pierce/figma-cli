@@ -328,7 +328,8 @@ export async function selectMakeFile(transport, path, options = {}) {
   // Keep the entire ancestor chain and leaf rendered together, or refuse.
   const selectionTop = ancestors[0]?.top ?? entry.top;
   if (entry.top + expectedRow.height - selectionTop > result.clientHeight + POSITION_TOLERANCE) {
-    throw new Error('Make source ancestry cannot fit in the file-tree viewport; selection was refused. Enlarge the Code panel or use a shallower source path.');
+    throw Object.assign(new Error('Make source ancestry cannot fit in the file-tree viewport; selection was refused. Enlarge the Code panel or use a shallower source path.'),
+      { code: 'MAKE_TREE_VIEWPORT' });
   }
   await evaluateTree(transport, { type: 'scroll', top: selectionTop }, settings.deadline);
   let state = await evaluateTree(transport, { type: 'select', row: expectedRow,
