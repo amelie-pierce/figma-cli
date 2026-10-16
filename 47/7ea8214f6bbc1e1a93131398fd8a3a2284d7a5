@@ -1,0 +1,37 @@
+tests/make-durable.test.js
+  s_3456c8df08a2ce::t_04b916c4cc57ca 308
+  s_3456c8df08a2ce::t_358c270f5b7e66 314,324-370
+src/make-client.js
+  s_3456c8df08a2ce::t_358c270f5b7e66 588
+  s_3456c8df08a2ce::t_75ddcbe60fd1ad 47-48,533,571-573,575,578,580-587
+_vaults/figma-cli/wiki/make/persistence.md
+  s_3456c8df08a2ce::t_6d39b04124526e 30
+  s_3456c8df08a2ce::t_d202467474f645 12
+tests/make-deploy.test.js
+  s_3456c8df08a2ce::t_4b897c8b276fda 8,175,292-335
+  s_1ed3b2880eaa2d::t_b274af347e0d1d 336
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "477ea8214f6bbc1e1a93131398fd8a3a2284d7a5",
+  "prompts": {},
+  "sessions": {
+    "s_1ed3b2880eaa2d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a13619-3485-7663-a1e5-4f589bc899ae",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_3456c8df08a2ce": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a142f4-45fc-7de1-bea6-eae6a7187db9",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
