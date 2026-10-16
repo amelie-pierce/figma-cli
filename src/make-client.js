@@ -570,20 +570,17 @@ export class MakeClient {
             if (hidden) return 'vfs-sandbox-matched';
             // Make need not mount an editor for a file that is not open. If it
             // does mount one, its bytes must also agree. Deep paths may be
-            // listed in the tree even when the viewport cannot select them.
+            // listed in the tree even when the viewport cannot select them, so
+            // whatever editor is mounted then belongs to another file.
             try {
               const editor = await this._read(path, deadline, { editorWaitMs: EDITOR_WAIT_MS });
               observed.editor = editor.content === expectedContent ? 'matched' : 'different';
               if (observed.editor === 'matched') return 'editor-tree-vfs-sandbox-matched';
               editorDisagreed = true;
             } catch (error) {
-              if (!editorDisagreed && error.code === 'MAKE_NO_EDITOR') return 'tree-vfs-sandbox-matched';
-              if (!editorDisagreed && error.message?.startsWith('Make source ancestry cannot fit in the file-tree viewport;')) {
-                const editor = await this._editor({ type: 'inspect' }, deadline);
-                const leaf = path.split('/').at(-1);
-                if (editor.editorCount === 0 || (editor.selectedName && editor.selectedName !== leaf)) {
-                  return 'tree-vfs-sandbox-matched';
-                }
+              if (!editorDisagreed && (error.code === 'MAKE_NO_EDITOR' ||
+                  error.message?.startsWith('Make source ancestry cannot fit in the file-tree viewport;'))) {
+                return 'tree-vfs-sandbox-matched';
               }
               observed.editor = editorDisagreed ? 'different' : 'unavailable';
             }
