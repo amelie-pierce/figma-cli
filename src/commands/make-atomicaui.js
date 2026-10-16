@@ -8,7 +8,7 @@ import { review } from '../make-team-review.js';
 import { listenNotice } from '../lavish-listen.js';
 import { digest, vendorManifest } from '../make-drift.js';
 import { ATOMICAUI_ROOT, ATOMICAUI_SITE, RELEASE_ROOT, buildRelease, changeReport, downloadRelease,
-  compareVersions, installRelease, installedStatus, latestRelease, nextPatch, planBreakingFixes, version } from '../make-atomicaui.js';
+  compareVersions, installRelease, installedStatus, latestRelease, mergeDependencies, nextPatch, planBreakingFixes, version } from '../make-atomicaui.js';
 
 const format = value => `${JSON.stringify(value, null, 2)}\n`;
 const decode = bytes => new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
@@ -56,12 +56,14 @@ export async function releaseAtomicaui(client, { requestedVersion, breakingChang
   const existingRelease = [...tree].filter(path => path.startsWith(prefix));
   if (!resume && existingRelease.length) throw new Error(`AtomicAUI ${selected} already exists. Release folders are immutable.`);
   if (resume && !existingRelease.length) throw new Error(`AtomicAUI ${selected} has no interrupted release to resume.`);
+  if (!tree.has('package.json')) throw new Error('Kit package.json is missing.');
+  const kitPackage = Buffer.from((await client.read('package.json', { remote: true })).content);
   const scan = await client.inventoryVendor(ATOMICAUI_ROOT, { includeBytes: true });
   releasePending(scan.state);
   if (resume && (!scan.state.pendingCount || existingRelease.some(path => !scan.state.pendingPaths.includes(path)))) {
     throw new Error(`AtomicAUI ${selected} is not an entirely unsaved release folder; immutable release refused.`);
   }
-  const release = buildRelease({ inventory: scan.inventory, contents: scan.contents, version: selected, breakingChanges,
+  const release = buildRelease({ inventory: scan.inventory, contents: scan.contents, kitPackage, version: selected, breakingChanges,
     ...(partBase64Bytes === undefined ? {} : { partBase64Bytes }) });
   const movesLatest = !current || compareVersions(selected, current.version) >= 0;
   const output = new Map([...release.output].filter(([path]) => movesLatest || path !== latestPath));
@@ -154,7 +156,7 @@ export async function verifyAtomicauiRelease(client, requestedVersion) {
     verification: 'saved-version-clean-pending; manifest-chain-matched' };
 }
 
-function providerChanges(main, pkg) {
+function providerChanges(main, pkg, dependencies) {
   const mainPath = 'src/main.tsx';
   let nextMain = main;
   if (!main.includes("./vendor/atomic-aui/tokens/index.scss")) {
@@ -166,15 +168,16 @@ function providerChanges(main, pkg) {
       .replace('<App />', '<AuiIdentityProvider brand="atomic" theme="light"><App /></AuiIdentityProvider>');
   }
   const packageValue = JSON.parse(pkg);
+  const added = mergeDependencies(packageValue, dependencies);
   const hasSass = packageValue.dependencies?.sass || packageValue.devDependencies?.sass;
   if (!hasSass) packageValue.devDependencies = { ...packageValue.devDependencies, sass: '^1.89.0' };
-  const nextPackage = hasSass ? pkg : format(packageValue);
-  return new Map([['src/main.tsx', nextMain], ['package.json', nextPackage]]);
+  const nextPackage = hasSass && !added.length ? pkg : format(packageValue);
+  return { files: new Map([['src/main.tsx', nextMain], ['package.json', nextPackage]]), dependencies: added };
 }
 function upgradeDirection(mode, before, release, pinned) {
   if (mode !== 'upgrade' || !/^\d+\.\d+\.\d+$/.test(before.version || '')) return 'forward';
   const order = compareVersions(release.manifest.version, before.version);
-  if (pinned) return order < 0 ? 'downgrade' : 'forward';
+  if (pinned) return order < 0 ? 'downgrade' : order > 0 ? 'forward' : 'current';
   return order > 0 ? 'forward' : 'current';
 }
 function installReport(mode, before, release, pinned) {
@@ -183,11 +186,14 @@ function installReport(mode, before, release, pinned) {
   return { ...changeReport(before, release), ...(direction === 'downgrade' ? { downgrade: true } : {}) };
 }
 const alreadyNewest = (where, before, release) => ({ mode: where, installedVersion: before.version, latestVersion: release.manifest.version,
-  upToDate: true, summary: `AtomicAUI ${before.version} is already the newest release; nothing was changed.` });
+  upToDate: true, summary: before.version === release.manifest.version ? `AtomicAUI ${before.version} is already installed; nothing was changed.`
+    : `AtomicAUI ${before.version} is already the newest release; nothing was changed.` });
+const dependencyNote = change => `${change.name} ${change.to}${change.from ? ` (was ${change.from})` : ''}`;
 function changeSummary(report) {
   const notes = report.breakingChanges.map(item => typeof item === 'string' ? item : item.note);
   return `${report.downgrade ? 'Downgrade: ' : ''}AtomicAUI ${report.from || 'not installed'} to ${report.to}: ${report.added.length} added, ${report.changed.length} changed, ` +
-    `${report.removed.length} removed files.${notes.length ? ` Breaking changes: ${notes.join('; ')}.` : ''}`;
+    `${report.removed.length} removed files.${report.dependencies?.length ? ` Dependencies: ${report.dependencies.map(dependencyNote).join(', ')}.` : ''}` +
+    `${notes.length ? ` Breaking changes: ${notes.join('; ')}.` : ''}`;
 }
 export function teamChangeReport(ctx, report) {
   const changed = ctx.git(['-c', 'core.quotePath=false', 'diff', '--name-only', '--no-renames', `${ORIGIN_TRUNK}...HEAD`], 'Listing the changed files')
@@ -196,6 +202,7 @@ export function teamChangeReport(ctx, report) {
   return [`${report.downgrade ? 'Downgrade: ' : ''}AtomicAUI ${report.from || 'not installed'} to ${report.to}.`, '',
     `- ${ATOMICAUI_ROOT}/: ${report.added.length} added, ${report.changed.length} changed, ${report.removed.length} removed`,
     ...changed.map(path => `- ${path}`),
+    ...(report.dependencies?.length ? ['', 'Dependencies added or raised in package.json:', ...report.dependencies.map(change => `- ${dependencyNote(change)}`)] : []),
     ...(notes.length ? ['', 'Breaking changes fixed in this pull request:', ...notes.map(note => `- ${note}`)] : [])].join('\n');
 }
 function installDependencies(ctx, root) {
@@ -260,9 +267,9 @@ export function prepareTeamBranch(ctx, { mode, manifest }) {
   ctx.warn('Continuing your earlier AtomicAUI update.');
   return { branch, continued: true };
 }
-export async function installTeamRelease(directory, release, { mode, pinned = false } = {}) {
+export async function installTeamRelease(directory, release, { mode, pinned = false, run } = {}) {
   const root = resolve(directory);
-  const ctx = teamContext({ dir: root, warn: message => console.error(message) });
+  const ctx = teamContext({ dir: root, ...(run ? { run } : {}), warn: message => console.error(message) });
   ctx.repo(); // A GitHub origin is sufficient when a team marker has not been created yet.
   const vendorDir = join(root, ATOMICAUI_ROOT);
   const preflight = installedStatus(vendorDir);
@@ -273,17 +280,20 @@ export async function installTeamRelease(directory, release, { mode, pinned = fa
   if (mode === 'upgrade' && !before.installed) throw new Error('AtomicAUI is not installed. Use add.');
   const report = installReport(mode, before, release, pinned);
   if (!report) return alreadyNewest('team', before, release);
-  if (showAt(ctx, ORIGIN_TRUNK, 'src/main.tsx') === null || showAt(ctx, ORIGIN_TRUNK, 'package.json') === null) {
+  const trunkMain = showAt(ctx, ORIGIN_TRUNK, 'src/main.tsx'), trunkPackage = showAt(ctx, ORIGIN_TRUNK, 'package.json');
+  if (trunkMain === null || trunkPackage === null) {
     throw new Error('AtomicAUI needs src/main.tsx and package.json for provider wiring.');
   }
   const fixes = await planBreakingFixes(release.manifest, async path => showAt(ctx, ORIGIN_TRUNK, path));
+  report.dependencies = providerChanges(fixes.get('src/main.tsx')?.content ?? trunkMain, fixes.get('package.json')?.content ?? trunkPackage,
+    release.manifest.dependencies).dependencies;
   const started = prepareTeamBranch(ctx, { mode, manifest: release.manifest });
   if (installedStatus(vendorDir).localEdits.length) throw new Error('AtomicAUI project changed after starting the branch; install refused.');
   installRelease(root, release);
   const wiring = providerChanges(fixes.get('src/main.tsx')?.content || readFileSync(join(root, 'src/main.tsx'), 'utf8'),
-    fixes.get('package.json')?.content || readFileSync(join(root, 'package.json'), 'utf8'));
+    fixes.get('package.json')?.content || readFileSync(join(root, 'package.json'), 'utf8'), release.manifest.dependencies);
   const changed = new Map([...fixes].filter(([path]) => path !== 'src/main.tsx' && path !== 'package.json')
-    .map(([path, entry]) => [path, entry.content]).concat([...wiring]));
+    .map(([path, entry]) => [path, entry.content]).concat([...wiring.files]));
   for (const [path, content] of changed) {
     if (!existsSync(join(root, path)) || readFileSync(join(root, path), 'utf8') !== content) writeFileSync(join(root, path), content);
   }
@@ -358,8 +368,9 @@ export async function installSoloRelease(client, release, { mode, resume = false
   const baseContent = async path => resume ? savedText.get(path) : (await readCurrent(path)).content;
   const fixes = await planBreakingFixes(release.manifest, baseContent);
   const wiring = providerChanges(fixes.get('src/main.tsx')?.content ?? await baseContent('src/main.tsx'),
-    fixes.get('package.json')?.content ?? await baseContent('package.json'));
-  const appWrites = new Map([...fixes].map(([path, entry]) => [path, entry.content]).concat([...wiring]));
+    fixes.get('package.json')?.content ?? await baseContent('package.json'), release.manifest.dependencies);
+  report.dependencies = wiring.dependencies;
+  const appWrites = new Map([...fixes].map(([path, entry]) => [path, entry.content]).concat([...wiring.files]));
   for (const path of appPaths) {
     if (!pendingSet.has(path)) continue;
     const expected = appWrites.get(path) ?? savedText.get(path);
@@ -419,7 +430,7 @@ export function registerAtomicaui(make, print, failure) {
     .requiredOption('--file <key>', 'Exact AtomicAUI 7.0 Make file key')
     .option('--version <X.Y.Z>', 'Release version; defaults to the next patch')
     .option('--resume', 'Verify and continue an interrupted, unsaved release of the exact --version')
-    .option('--part-bytes <n>', 'Maximum base64 part and direct source size in bytes (default 524288)')
+    .option('--part-bytes <n>', 'Maximum base64 archive part size in bytes (default 524288)')
     .option('--breaking-notes <json-file>', 'JSON array of breaking notes and exact app fixes')
     .action(async options => {
       try {

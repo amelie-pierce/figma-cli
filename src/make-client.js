@@ -467,9 +467,7 @@ export class MakeClient {
       const existing = await listMakeFiles(this._treeTransport(deadline), {
         timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
       });
-      const hidden = path.split('/').some(part => part.startsWith('.')) || TREE_HIDDEN_ROOT_FILES.includes(path);
-      if (!hidden && !path.startsWith('node_modules/') &&
-          !existing.some(entry => entry.kind === 'file' && entry.path === path)) {
+      if (!path.startsWith('node_modules/') && !existing.some(entry => entry.kind === 'file' && entry.path === path)) {
         throw new Error(`Make source file is missing: ${path}`);
       }
       let bridge;
@@ -1362,8 +1360,7 @@ export class MakeClient {
         timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
       });
       for (const file of validated) {
-        const hidden = file.path.split('/').some(part => part.startsWith('.')) || TREE_HIDDEN_ROOT_FILES.includes(file.path);
-        if (!hidden && !existing.some(entry => entry.kind === 'file' && entry.path === file.path)) {
+        if (!existing.some(entry => entry.kind === 'file' && entry.path === file.path)) {
           throw new Error(`Make source file is missing: ${file.path}`);
         }
       }

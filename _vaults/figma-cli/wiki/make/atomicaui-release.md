@@ -12,7 +12,7 @@ writing the full payload, unless the version is older than the current latest
 (a backport keeps its folder and leaves the pointer alone). New releases contain only bounded archive base64
 parts, `manifest.json`, `manifest.sha256`, and the latest pointer. The manifest
 records hashes and sizes for every source file and decoded archive
-parts (`src/make-atomicaui.js:160`, `src/commands/make-atomicaui.js:37`). The
+parts (`src/make-atomicaui.js:214`, `src/commands/make-atomicaui.js:37`). The
 save requires the exact release path set, and `verify-release` replays the
 client download chain over the saved Make files: the release's own sidecar,
 manifest, parts and archive plus the exact folder path set; `latest.json` is
@@ -23,7 +23,12 @@ password, and keep the address. The address can return 404 for about a minute
 during republishing. **Update kit** and **Publish kit** do not rebuild the site.
 The first saved release contained 265 source files in 270 release paths. The
 archive-only layout keeps those bytes in the verified archive with a handful
-of Make writes; the downloader still accepts the first release's direct paths.
+of Make writes; the downloader still accepts the first release's direct paths,
+only for a manifest with exactly that older key set. New manifests carry
+`dependencies` built from the kit `package.json` ranges of the packages the
+library imports; add and upgrade merge them into the app `package.json`
+without lowering a pin and refuse another major version before writing
+(`src/make-atomicaui.js`, `mergeDependencies`).
 
 An interrupted solo `add` or `upgrade` can resume with the exact `--file`,
 version and `--resume`. `VENDOR.json` is written last. The saved version's
@@ -38,7 +43,7 @@ selection refusal or a selected vendor path with no source editor, solo
 installation and workspace sync accept agreement among
 the client VFS, sandbox, and rendered tree for paths under
 `src/vendor/atomic-aui/`; other editor failures still stop the write
-(`src/make-client.js:542-612`, `tests/make-durable.test.js`).
+(`src/make-client.js:541-612`, `tests/make-durable.test.js`).
 
 `public/atomicaui/**` is kit-only data. Vendor drift, workspace-to-Make sync,
 and Make-to-workspace export deltas work on `inventoryVendor('src/vendor/atomic-aui')`,

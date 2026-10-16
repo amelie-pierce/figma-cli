@@ -6,21 +6,41 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRelease, DEFAULT_PART_BASE64_BYTES, downloadRelease, getBytes, installRelease, installedStatus, nextPatch,
-  planBreakingFixes } from '../src/make-atomicaui.js';
-import { installSoloRelease, prepareTeamBranch, releaseAtomicaui, teamChangeReport, verifyAtomicauiRelease } from '../src/commands/make-atomicaui.js';
+  planBreakingFixes, releaseDependencies } from '../src/make-atomicaui.js';
+import { installSoloRelease, installTeamRelease, prepareTeamBranch, releaseAtomicaui, teamChangeReport,
+  verifyAtomicauiRelease } from '../src/commands/make-atomicaui.js';
 import { defaultRun, teamContext } from '../src/make-team.js';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-function fixture(version = '7.0.0', layout = 'direct-and-archive') {
+const KIT_PACKAGE = Buffer.from(JSON.stringify({ dependencies: { '@base-ui/react': '^1.2.0', react: '^19.1.0' } }));
+function fixture(version = '7.0.0') {
   const source = new Map([
-    ['src/index.ts', Buffer.from('export const Button = 1\n')],
+    ['src/index.ts', Buffer.from("import { Collapsible } from '@base-ui/react/collapsible'\nimport type { FC } from 'react'\nexport const Button = 1\n")],
     ['tokens/index.scss', Buffer.from(':root { --theme-surface: white; }\n')],
   ]);
   const vendor = Buffer.from(JSON.stringify({ schema: 1, name: 'atomic-aui', files: [...source].map(([path, bytes]) =>
     ({ path, bytes: bytes.length, sha256: hash(bytes) })) }));
   const contents = new Map([...source, ['VENDOR.json', vendor]]);
   const inventory = new Map([...contents].map(([path, bytes]) => [path, { path, bytes: bytes.length, sha256: hash(bytes) }]));
-  return { source, contents, inventory, release: buildRelease({ contents, inventory, version, layout }) };
+  const release = buildRelease({ contents, inventory, kitPackage: KIT_PACKAGE, version });
+  const payload = { manifest: release.manifest, manifestSha256: hash(release.output.get(`public/atomicaui/${version}/manifest.json`)),
+    files: contents, site: 'https://example.test' };
+  return { source, contents, inventory, release, payload };
+}
+function legacyOutput(contents, version) {
+  const { output, manifest } = buildRelease({ contents, inventory: new Map([...contents].map(([path, bytes]) =>
+    [path, { path, bytes: bytes.length, sha256: hash(bytes) }])), kitPackage: KIT_PACKAGE, version });
+  const legacy = { ...manifest };
+  delete legacy.layout; delete legacy.dependencies;
+  const base = `public/atomicaui/${version}`;
+  const files = new Map([...output].filter(([path]) => path.includes('.tar.gz.b64.')));
+  for (const [path, bytes] of contents) files.set(`${base}/files/${path}`, bytes);
+  const manifestBytes = Buffer.from(`${JSON.stringify(legacy, null, 2)}\n`);
+  files.set(`${base}/manifest.json`, manifestBytes);
+  files.set(`${base}/manifest.sha256`, Buffer.from(`${hash(manifestBytes)}\n`));
+  files.set('public/atomicaui/latest.json', Buffer.from(JSON.stringify({ schema: 'figma-cli/atomicaui-latest@1', version,
+    manifest: `${version}/manifest.json`, manifestSha256: hash(manifestBytes) })));
+  return files;
 }
 async function served(files, fn) {
   const server = createServer((request, response) => {
@@ -36,7 +56,7 @@ async function served(files, fn) {
 }
 
 test('release archive and HTTPS client verify the complete chain through a local HTTP fixture', async () => {
-  const { release } = fixture();
+  const { release, contents } = fixture();
   assert.equal(release.manifest.files.length, 3);
   assert.equal(release.manifest.archive.parts.length, 1);
   assert.equal(nextPatch('7.0.0'), '7.0.1');
@@ -44,16 +64,48 @@ test('release archive and HTTPS client verify the complete chain through a local
     const fetched = await downloadRelease({ site, allowHttp: true });
     assert.equal(fetched.manifest.version, '7.0.0');
     assert.deepEqual([...fetched.files], [...new Map([...fetched.files].sort(([a], [b]) => a.localeCompare(b)))]);
-    for (const [path, bytes] of fetched.files) {
-      const expected = path === 'VENDOR.json' ? release.output.get('public/atomicaui/7.0.0/files/VENDOR.json')
-        : release.output.get(`public/atomicaui/7.0.0/files/${path}`);
-      assert.ok(bytes.equals(expected));
-    }
+    for (const [path, bytes] of fetched.files) assert.ok(bytes.equals(contents.get(path)));
   });
 });
 
+test('client installs a release published in the 7.0.0 direct-source layout, and only in that exact shape', async () => {
+  const { contents } = fixture();
+  const files = legacyOutput(contents, '7.0.0');
+  await served(files, async site => {
+    const fetched = await downloadRelease({ site, allowHttp: true });
+    assert.equal(fetched.manifest.layout, undefined);
+    for (const [path, bytes] of fetched.files) assert.ok(bytes.equals(contents.get(path)));
+    const root = mkdtempSync(join(tmpdir(), 'figma-atomicaui-legacy-'));
+    try {
+      assert.deepEqual(installRelease(root, fetched).added, ['src/index.ts', 'tokens/index.scss']);
+      assert.equal(installedStatus(join(root, 'src/vendor/atomic-aui')).version, '7.0.0');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  const tampered = new Map(files);
+  tampered.set('public/atomicaui/7.0.0/files/src/index.ts', Buffer.from('export const Button = 2\n'));
+  await served(tampered, site => assert.rejects(downloadRelease({ site, allowHttp: true }), /source file differs/));
+  const mixed = new Map(files);
+  const manifest = JSON.parse(files.get('public/atomicaui/7.0.0/manifest.json'));
+  const manifestBytes = Buffer.from(JSON.stringify({ ...manifest, dependencies: {} }));
+  mixed.set('public/atomicaui/7.0.0/manifest.json', manifestBytes);
+  mixed.set('public/atomicaui/latest.json', Buffer.from(JSON.stringify({ schema: 'figma-cli/atomicaui-latest@1', version: '7.0.0',
+    manifest: '7.0.0/manifest.json', manifestSha256: hash(manifestBytes) })));
+  await served(mixed, site => assert.rejects(downloadRelease({ site, allowHttp: true }), /Invalid AtomicAUI release manifest/));
+});
+
+test('release dependencies come from the kit package.json entries the library imports at runtime', () => {
+  const { release } = fixture();
+  assert.deepEqual(release.manifest.dependencies, { '@base-ui/react': '^1.2.0' });
+  const files = [['lib/a.tsx', Buffer.from("import x from 'clsx'\nimport('motion/react')\nimport fs from 'node:fs'\nimport './local'\n")]];
+  assert.deepEqual(releaseDependencies(Buffer.from(JSON.stringify({ dependencies: { clsx: '2.1.1' }, devDependencies: { motion: '~12.4.0' } })), files),
+    { clsx: '2.1.1', motion: '~12.4.0' });
+  assert.throws(() => releaseDependencies(Buffer.from(JSON.stringify({ dependencies: { clsx: '2.1.1' } })), files), /version for motion/);
+  assert.throws(() => releaseDependencies(Buffer.from(JSON.stringify({ dependencies: { clsx: 'latest', motion: '^12.0.0' } })), files), /version for clsx/);
+  assert.throws(() => releaseDependencies(null, files), /Kit package.json is missing/);
+});
+
 test('compact release serves only archive parts, manifest, sidecar and latest pointer', async () => {
-  const { contents, release } = fixture('7.0.1', 'archive-only');
+  const { contents, release } = fixture('7.0.1');
   const paths = [...release.output.keys()].sort();
   assert.equal(release.manifest.layout, 'archive-only');
   assert.equal(paths.length, release.manifest.archive.parts.length + 3);
@@ -79,10 +131,10 @@ test('large archive and source use configurable bounded base64 parts', async () 
     ({ path, bytes: bytes.length, sha256: hash(bytes) })) }));
   const contents = new Map([...source, ['VENDOR.json', vendor]]);
   const inventory = new Map([...contents].map(([path, bytes]) => [path, { path, bytes: bytes.length, sha256: hash(bytes) }]));
-  const release = buildRelease({ contents, inventory, version: '7.0.0', layout: 'direct-and-archive' });
+  const release = buildRelease({ contents, inventory, kitPackage: KIT_PACKAGE, version: '7.0.0' });
   assert.equal(release.manifest.partBase64Bytes, DEFAULT_PART_BASE64_BYTES);
   assert.ok(release.manifest.archive.parts.length > 1);
-  assert.ok(release.manifest.files.find(item => item.path === 'src/large.ts').parts.length > 1);
+  assert.equal(release.manifest.files.find(item => item.path === 'src/large.ts').parts, undefined);
   for (const [path, bytes] of release.output) if (!path.endsWith('manifest.json')) {
     assert.ok(bytes.length <= DEFAULT_PART_BASE64_BYTES, path);
   }
@@ -90,10 +142,9 @@ test('large archive and source use configurable bounded base64 parts', async () 
     const fetched = await downloadRelease({ site, allowHttp: true });
     assert.ok(fetched.files.get('src/large.ts').equals(large));
   });
-  const smaller = buildRelease({ contents, inventory, version: '7.0.0', partBase64Bytes: 256 * 1024,
-    layout: 'direct-and-archive' });
+  const smaller = buildRelease({ contents, inventory, kitPackage: KIT_PACKAGE, version: '7.0.0', partBase64Bytes: 256 * 1024 });
   assert.ok(smaller.manifest.archive.parts.length >= release.manifest.archive.parts.length);
-  assert.throws(() => buildRelease({ contents, inventory, version: '7.0.0', partBase64Bytes: 3 }), /part size/);
+  assert.throws(() => buildRelease({ contents, inventory, kitPackage: KIT_PACKAGE, version: '7.0.0', partBase64Bytes: 3 }), /part size/);
 });
 
 test('client rejects Figma HTML 200, a wrong manifest hash, and a corrupted archive part', async () => {
@@ -127,12 +178,9 @@ test('client rejects non-200 responses and verifies a pinned version via its sid
 });
 
 test('local install stages files and refuses edited vendor files', async () => {
-  const { release } = fixture();
+  const { payload } = fixture();
   const root = mkdtempSync(join(tmpdir(), 'figma-atomicaui-'));
   try {
-    const payload = { manifest: release.manifest, manifestSha256: hash(release.output.get('public/atomicaui/7.0.0/manifest.json')),
-      files: new Map([...release.manifest.files].map(item => [item.path, release.output.get(`public/atomicaui/7.0.0/files/${item.path}`)])),
-      site: 'https://example.test' };
     const report = installRelease(root, payload);
     assert.equal(report.added.length, 2);
     const vendorDir = join(root, 'src/vendor/atomic-aui');
@@ -146,7 +194,7 @@ test('local install stages files and refuses edited vendor files', async () => {
 
 test('fake Make client receives an immutable release folder and one exact save', async () => {
   const { inventory, contents } = fixture();
-  const files = new Map([['public/favicon.svg', Buffer.from('<svg/>')]]);
+  const files = new Map([['public/favicon.svg', Buffer.from('<svg/>')], ['package.json', KIT_PACKAGE]]);
   const saved = [];
   const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40), pendingPaths: [], isLoading: false, error: false, pendingCount: 0 };
   const client = {
@@ -170,7 +218,7 @@ test('fake Make client receives an immutable release folder and one exact save',
   };
   const result = await releaseAtomicaui(client, { requestedVersion: '7.0.0' });
   assert.equal(saved.length, 1);
-  assert.deepEqual(saved[0], [...files.keys()].filter(path => path !== 'public/favicon.svg').sort());
+  assert.deepEqual(saved[0], [...files.keys()].filter(path => path.startsWith('public/atomicaui/')).sort());
   assert.equal(result.savedVersion, 18);
   assert.ok(result.publishSteps.some(line => line.includes('Anyone on the web')));
   assert.ok(result.publishSteps.some(line => line.includes('Unpublish')));
@@ -179,7 +227,7 @@ test('fake Make client receives an immutable release folder and one exact save',
 
 test('an older release keeps its folder but leaves latest.json at the newest release', async () => {
   const { inventory, contents } = fixture();
-  const files = new Map();
+  const files = new Map([['package.json', KIT_PACKAGE]]);
   const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40), pendingPaths: [], isLoading: false, error: false, pendingCount: 0 };
   const written = [];
   const client = {
@@ -212,7 +260,7 @@ test('an older release keeps its folder but leaves latest.json at the newest rel
 
 test('saved release verifier checks an older release against its own manifest and every saved path', async () => {
   const older = fixture('7.0.0').release;
-  const newer = fixture('7.0.1', 'archive-only').release;
+  const newer = fixture('7.0.1').release;
   const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40),
     pendingPaths: [], isLoading: false, error: false, pendingCount: 0 };
   const actualContents = new Map([...older.output, ...newer.output].map(([path, bytes]) =>
@@ -245,10 +293,10 @@ test('saved release verifier checks an older release against its own manifest an
 });
 
 test('interrupted release keeps a matching part, rewrites a mismatched part and saves exact paths once', async () => {
-  const { inventory, contents, release } = fixture('7.0.0', 'archive-only');
+  const { inventory, contents, release } = fixture('7.0.0');
   const firstPath = [...release.output.keys()][0];
   const manifestPath = 'public/atomicaui/7.0.0/manifest.json';
-  const files = new Map([[firstPath, release.output.get(firstPath)], [manifestPath, Buffer.from('corrupted')]]);
+  const files = new Map([[firstPath, release.output.get(firstPath)], [manifestPath, Buffer.from('corrupted')], ['package.json', KIT_PACKAGE]]);
   const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40),
     pendingPaths: [firstPath, manifestPath], isLoading: false, error: false, pendingCount: 2 };
   const writes = [], saves = [];
@@ -282,11 +330,8 @@ test('interrupted release keeps a matching part, rewrites a mismatched part and 
   await assert.rejects(releaseAtomicaui(client, { requestedVersion: '7.0.0', resume: true }), /immutable release/);
 });
 
-test('fake solo Make client writes provider, stylesheet, sass and vendor in one saved version', async () => {
-  const { release } = fixture();
-  const payload = { manifest: release.manifest, manifestSha256: hash(release.output.get('public/atomicaui/7.0.0/manifest.json')),
-    files: new Map(release.manifest.files.map(item => [item.path, release.output.get(`public/atomicaui/7.0.0/files/${item.path}`)])),
-    site: 'https://example.test' };
+test('fake solo Make client writes provider, stylesheet, sass, dependencies and vendor in one saved version', async () => {
+  const { payload } = fixture();
   const files = new Map([
     ['src/main.tsx', Buffer.from("import App from './App'\n<App />\n")],
     ['package.json', Buffer.from(JSON.stringify({ dependencies: { react: '^19' }, devDependencies: {} }))],
@@ -318,13 +363,34 @@ test('fake solo Make client writes provider, stylesheet, sass and vendor in one 
   assert.match(files.get('src/main.tsx').toString(), /AuiIdentityProvider/);
   assert.match(files.get('src/main.tsx').toString(), /tokens\/index.scss/);
   assert.equal(JSON.parse(files.get('package.json')).devDependencies.sass, '^1.89.0');
+  assert.deepEqual(JSON.parse(files.get('package.json')).dependencies, { react: '^19', '@base-ui/react': '^1.2.0' });
+  assert.deepEqual(result.report.dependencies, [{ name: '@base-ui/react', from: null, to: '^1.2.0' }]);
+  assert.match(result.summary, /Dependencies: @base-ui\/react \^1\.2\.0\./);
+});
+
+test('solo install raises an older compatible pin, keeps a newer one, and refuses a different major before any write', async () => {
+  const { payload } = fixture();
+  const app = dependencies => new Map([
+    ['src/main.tsx', Buffer.from("import App from './App'\n<App />\n")],
+    ['package.json', Buffer.from(JSON.stringify({ dependencies }))],
+  ]);
+  const raised = soloMake(app({ '@base-ui/react': '~1.0.3' }));
+  const result = await installSoloRelease(raised.client, payload, { mode: 'add' });
+  assert.equal(JSON.parse(raised.files.get('package.json')).dependencies['@base-ui/react'], '^1.2.0');
+  assert.deepEqual(result.report.dependencies, [{ name: '@base-ui/react', from: '~1.0.3', to: '^1.2.0' }]);
+  const kept = soloMake(app({ '@base-ui/react': '^1.4.0' }));
+  const keptResult = await installSoloRelease(kept.client, payload, { mode: 'add' });
+  assert.equal(JSON.parse(kept.files.get('package.json')).dependencies['@base-ui/react'], '^1.4.0');
+  assert.deepEqual(keptResult.report.dependencies, []);
+  for (const pin of ['^2.0.0', 'latest']) {
+    const conflict = soloMake(app({ '@base-ui/react': pin }));
+    await assert.rejects(installSoloRelease(conflict.client, payload, { mode: 'add' }), /needs @base-ui\/react \^1\.2\.0, but package\.json pins/);
+    assert.deepEqual([conflict.writes, conflict.saves], [[], []]);
+  }
 });
 
 test('solo add resumes only exact pending release files and saves them once', async () => {
-  const { release } = fixture();
-  const payload = { manifest: release.manifest, manifestSha256: hash(release.output.get('public/atomicaui/7.0.0/manifest.json')),
-    files: new Map(release.manifest.files.map(item => [item.path, release.output.get(`public/atomicaui/7.0.0/files/${item.path}`)])),
-    site: 'https://example.test' };
+  const { payload } = fixture();
   const first = 'src/vendor/atomic-aui/src/index.ts';
   const files = new Map([
     [first, payload.files.get('src/index.ts')],
@@ -378,10 +444,9 @@ function soloPayload(version = '7.0.0', source = { 'src/index.ts': 'export const
     ({ path, bytes: value.length, sha256: hash(value) })) }));
   const contents = new Map([...bytes, ['VENDOR.json', vendor]]);
   const inventory = new Map([...contents].map(([path, value]) => [path, { path, bytes: value.length, sha256: hash(value) }]));
-  const release = buildRelease({ contents, inventory, version, breakingChanges, layout: 'direct-and-archive' });
+  const release = buildRelease({ contents, inventory, kitPackage: Buffer.from('{}'), version, breakingChanges });
   return { manifest: release.manifest, manifestSha256: hash(release.output.get(`public/atomicaui/${version}/manifest.json`)),
-    files: new Map(release.manifest.files.map(item => [item.path, release.output.get(`public/atomicaui/${version}/files/${item.path}`)])),
-    site: 'https://example.test' };
+    files: contents, site: 'https://example.test' };
 }
 function soloMake(files, pendingPaths = [], saved = new Map(files)) {
   const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40), pendingPaths: [...pendingPaths],
@@ -493,7 +558,7 @@ test('unpinned solo upgrade never moves backward; a pinned lower version is a la
     const make = soloMake(new Map(installed.files));
     const result = await installSoloRelease(make.client, target, { mode: 'upgrade' });
     assert.deepEqual([result.upToDate, result.installedVersion, make.writes, make.saves], [true, '7.0.1', [], []]);
-    assert.match(result.summary, /already the newest/);
+    assert.match(result.summary, target === older ? /already the newest/ : /already installed/);
   }
   const make = soloMake(new Map(installed.files));
   const result = await installSoloRelease(make.client, older, { mode: 'upgrade', pinned: true });
@@ -501,6 +566,10 @@ test('unpinned solo upgrade never moves backward; a pinned lower version is a la
   assert.deepEqual([result.report.from, result.report.to, result.report.changed], ['7.0.1', '7.0.0', ['src/index.ts']]);
   assert.deepEqual(make.titles, ['AtomicAUI 7.0.0 downgrade']);
   assert.match(result.summary, /^Downgrade: AtomicAUI 7\.0\.1 to 7\.0\.0/);
+  const same = soloMake(new Map(installed.files));
+  const pinnedSame = await installSoloRelease(same.client, newer, { mode: 'upgrade', pinned: true });
+  assert.deepEqual([pinnedSame.upToDate, same.writes, same.saves], [true, [], []]);
+  assert.match(pinnedSame.summary, /7\.0\.1 is already installed; nothing was changed/);
   const forward = soloMake(new Map(installed.files));
   const pinnedNewer = await installSoloRelease(forward.client, soloPayload('7.0.2', { 'src/index.ts': 'three\n' }), { mode: 'upgrade', pinned: true });
   assert.equal(pinnedNewer.report.downgrade, undefined);
@@ -527,9 +596,10 @@ test('team pull request report lists the files actually changed and the breaking
 
 test('breaking notes require an exact app fix before the installation writes', async () => {
   const { inventory, contents } = fixture();
-  assert.throws(() => buildRelease({ inventory, contents, version: '7.0.1', breakingChanges: [{ note: 'Button changed' }] }), /needs one or more app fixes/);
+  assert.throws(() => buildRelease({ inventory, contents, kitPackage: KIT_PACKAGE, version: '7.0.1', breakingChanges: [{ note: 'Button changed' }] }),
+    /needs one or more app fixes/);
   const breakingChanges = [{ note: 'Button changed', fixes: [{ path: 'src/App.tsx', find: 'oldButton', replace: 'Button' }] }];
-  const { manifest } = buildRelease({ inventory, contents, version: '7.0.1', breakingChanges });
+  const { manifest } = buildRelease({ inventory, contents, kitPackage: KIT_PACKAGE, version: '7.0.1', breakingChanges });
   const fixes = await planBreakingFixes(manifest, async () => 'render(oldButton)');
   assert.equal(fixes.get('src/App.tsx').content, 'render(Button)');
   await assert.rejects(planBreakingFixes(manifest, async () => 'oldButton + oldButton'), /exactly one match/);
@@ -611,4 +681,41 @@ test('team add refuses to continue a branch with foreign saves, paths or unsaved
       error => ['TEAM_BRANCH_EXISTS', 'TEAM_UNSAVED'].includes(error.code) && /Nothing was changed/.test(error.message));
     assert.deepEqual(team.warnings, []);
   }
+});
+
+function teamApp(t, dependencies) {
+  const team = teamClone(t);
+  team.commitAs({ 'src/main.tsx': "import App from './App'\n<App />\n", 'package.json': `${JSON.stringify({ dependencies })}\n` });
+  team.git(team.clone, 'push', '-q', 'origin', 'main');
+  const commands = [];
+  const run = (command, args, options) => {
+    commands.push([command, ...args].join(' '));
+    if (command === 'npm') return { status: 0, stdout: '', stderr: '' };
+    if (command === 'git' || (command === 'gh' && args[0] === 'api') || (command === 'gh' && args[1] === 'list')) return team.ctx().run(command, args, options);
+    return { status: 1, stdout: '', stderr: `stopped at ${command} ${args.join(' ')}` };
+  };
+  return { ...team, run, commands };
+}
+
+test('team add wires the release dependencies into package.json on its own branch', async t => {
+  const { payload } = fixture();
+  const team = teamApp(t, { react: '^19.0.0' });
+  await assert.rejects(installTeamRelease(team.clone, payload, { mode: 'add', run: team.run }), /Opening the pull request failed/);
+  assert.equal(team.git(team.clone, 'branch', '--show-current'), BRANCH);
+  assert.ok(team.commands.includes('npm install --ignore-scripts'));
+  const pkg = JSON.parse(team.git(team.clone, 'show', `${BRANCH}:package.json`));
+  assert.deepEqual(pkg.dependencies, { react: '^19.0.0', '@base-ui/react': '^1.2.0' });
+  assert.match(team.git(team.clone, 'show', `${BRANCH}:src/main.tsx`), /AuiIdentityProvider/);
+  const create = team.commands.find(command => command.startsWith('gh pr create'));
+  assert.ok(create.includes('- package.json\n'));
+  assert.ok(create.includes('Dependencies added or raised in package.json:\n- @base-ui/react ^1.2.0'));
+});
+
+test('team add refuses a different major dependency before it starts a branch or writes', async t => {
+  const { payload } = fixture();
+  const team = teamApp(t, { '@base-ui/react': '^0.9.0' });
+  await assert.rejects(installTeamRelease(team.clone, payload, { mode: 'add', run: team.run }), /different major version/);
+  assert.equal(team.git(team.clone, 'branch', '--show-current'), 'main');
+  assert.equal(team.git(team.clone, 'status', '--porcelain'), '');
+  assert.equal(team.commands.some(command => command.startsWith('npm') || command.includes('push')), false);
 });

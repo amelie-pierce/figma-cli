@@ -697,7 +697,15 @@ base64 parts are at most 512 KiB by default (configurable up to 2 MiB with
 manifest: a JSON array of `{ "note", "fixes": [{ "path", "find", "replace" }] }`,
 where each fix targets `src/**` (outside the vendor folder) or `package.json`
 and `find` must match exactly once; `add` and `upgrade` apply these fixes in
-the same save or pull request. The client also accepts older direct-source releases. After an interrupted, unsaved release, use
+the same save or pull request. The manifest also carries `dependencies`: each
+package the library imports at runtime, with the exact range from the kit's
+`package.json` (the release refuses an import the kit does not pin as
+`X.Y.Z`, `^X.Y.Z` or `~X.Y.Z`). `add` and `upgrade` merge them into the app's
+`package.json`, raising an older compatible pin but never lowering one, list
+them in the change report, and refuse a different major version before any
+write. The client also accepts releases published in the older direct-source
+layout (7.0.0), only in that exact manifest shape; those carry no
+dependencies. After an interrupted, unsaved release, use
 `--version X.Y.Z --resume`; it checks every pending path and byte before
 continuing. `make atomicaui verify-release --file KEY --version X.Y.Z`
 reads the saved release without writing and checks it against its own

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { builtinModules } from 'node:module';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, lstatSync, renameSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
@@ -14,6 +15,13 @@ const MAX_TEXT = 2 * 1024 * 1024;
 export const DEFAULT_PART_BASE64_BYTES = 512 * 1024;
 export const RELEASE_LAYOUT = 'archive-only';
 const MAX_ARCHIVE = 128 * 1024 * 1024;
+const LEGACY_KEYS = ['archive', 'breakingChanges', 'files', 'partBase64Bytes', 'schema', 'vendorSha256', 'version'];
+const RELEASE_KEYS = [...LEGACY_KEYS, 'dependencies', 'layout'].sort();
+const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+const RELEASE_RANGE = /^[~^]?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
+const APP_RANGE = /^[~^]?v?(\d+)(?:\.(\d+|[x*]))?(?:\.(\d+|[x*]))?(?:-[0-9A-Za-z.-]+)?$/;
+const SOURCE_FILE = /\.[cm]?[jt]sx?$/;
+const IMPORT = /\b(?:import|export)\s+(type\s+)?(?:[\w$\s{},*]*?\sfrom\s*)?['"]([^'"\n]+)['"]|\bimport\s*\(\s*['"]([^'"\n]+)['"]\s*\)/g;
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = value => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
 function partLimit(bytes) {
@@ -118,12 +126,72 @@ export function unpackArchive(archive, expected) {
   return files;
 }
 
-export function buildRelease({ inventory, contents, version: releaseVersion, breakingChanges = [],
-  partBase64Bytes = DEFAULT_PART_BASE64_BYTES, layout = RELEASE_LAYOUT }) {
+function packageOf(specifier) {
+  if (/^[./#~]|^@\/|:/.test(specifier) || builtinModules.includes(specifier.split('/')[0])) return null;
+  const name = specifier.split('/').slice(0, specifier.startsWith('@') ? 2 : 1).join('/');
+  if (!PACKAGE_NAME.test(name)) throw new Error(`AtomicAUI imports an invalid package name: ${specifier}`);
+  return name;
+}
+
+export function releaseDependencies(kitPackage, files) {
+  if (!kitPackage) throw new Error('Kit package.json is missing.');
+  const kit = parseJson(kitPackage, 'Kit package.json');
+  const declared = { ...kit?.peerDependencies, ...kit?.devDependencies, ...kit?.dependencies };
+  const names = new Set();
+  for (const [path, bytes] of files) {
+    if (!SOURCE_FILE.test(path) || path.endsWith('.d.ts')) continue;
+    for (const match of new TextDecoder('utf-8', { fatal: true }).decode(bytes).matchAll(IMPORT)) {
+      const name = match[1] ? null : packageOf(match[2] ?? match[3]);
+      if (name) names.add(name);
+    }
+  }
+  const dependencies = {};
+  for (const name of [...names].sort()) {
+    if (typeof declared[name] !== 'string' || !RELEASE_RANGE.test(declared[name])) {
+      throw new Error(`Kit package.json needs an X.Y.Z, ^X.Y.Z or ~X.Y.Z version for ${name}, which the library imports.`);
+    }
+    dependencies[name] = declared[name];
+  }
+  return dependencies;
+}
+
+function validateDependencies(dependencies) {
+  if (!dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies) || Object.keys(dependencies).length > 500 ||
+      Object.entries(dependencies).some(([name, range]) => !PACKAGE_NAME.test(name) || typeof range !== 'string' || !RELEASE_RANGE.test(range))) {
+    throw new Error('Invalid AtomicAUI release dependencies.');
+  }
+}
+
+const floor = match => [match[1], match[2], match[3]].map(part => /^\d+$/.test(part || '') ? Number(part) : 0);
+const line = match => match[1] === '0' ? `0.${match[2] ?? 'x'}` : match[1];
+
+export function mergeDependencies(pkg, dependencies = {}) {
+  validateDependencies(dependencies);
+  const changes = [];
+  for (const [name, range] of Object.entries(dependencies)) {
+    const field = ['dependencies', 'devDependencies'].find(key => typeof pkg[key]?.[name] === 'string');
+    if (!field) {
+      pkg.dependencies = { ...pkg.dependencies, [name]: range };
+      changes.push({ name, from: null, to: range });
+      continue;
+    }
+    const current = pkg[field][name], have = APP_RANGE.exec(current.trim()), want = RELEASE_RANGE.exec(range);
+    if (!have || line(have) !== line(want)) {
+      throw new Error(`AtomicAUI needs ${name} ${range}, but package.json pins ${current}, a different major version. Nothing was changed.`);
+    }
+    const [a, b] = [floor(have), floor(want)];
+    if ((a[0] - b[0] || a[1] - b[1] || a[2] - b[2]) >= 0) continue;
+    pkg[field][name] = range;
+    changes.push({ name, from: current, to: range });
+  }
+  return changes;
+}
+
+export function buildRelease({ inventory, contents, kitPackage, version: releaseVersion, breakingChanges = [],
+  partBase64Bytes = DEFAULT_PART_BASE64_BYTES }) {
   version(releaseVersion);
   validateBreakingChanges(breakingChanges);
   partLimit(partBase64Bytes);
-  if (layout !== RELEASE_LAYOUT && layout !== 'direct-and-archive') throw new Error('Unknown AtomicAUI release layout.');
   const vendorBytes = contents.get('VENDOR.json');
   if (!vendorBytes) throw new Error('Kit VENDOR.json is missing.');
   const vendor = vendorManifest(vendorBytes, ATOMICAUI_ROOT);
@@ -135,31 +203,17 @@ export function buildRelease({ inventory, contents, version: releaseVersion, bre
         bytes.length !== item.bytes || sha(bytes) !== item.sha256) throw new Error(`Kit vendor differs from VENDOR.json: ${path}`);
     files.set(path, bytes);
   }
+  const dependencies = releaseDependencies(kitPackage, [...files].filter(([path]) => path !== 'VENDOR.json'));
   const records = [...files].sort(([a], [b]) => a.localeCompare(b))
     .map(([path, bytes]) => ({ path, bytes: bytes.length, sha256: sha(bytes) }));
   const archive = packArchive(files);
-  const output = new Map();
   const base = `${RELEASE_ROOT}/${releaseVersion}`;
   const archiveOutput = new Map();
   const parts = encodeParts(archive, `atomicaui-${releaseVersion}.tar.gz.b64`, archiveOutput, partBase64Bytes);
-  for (const [path, bytes] of archiveOutput) output.set(`${base}/${path}`, bytes);
-  if (layout === 'direct-and-archive') {
-    const recordsByPath = new Map(records.map(item => [item.path, item]));
-    for (const [path, bytes] of files) {
-      new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-      if (bytes.length <= partBase64Bytes) {
-        output.set(`${base}/files/${path}`, bytes);
-        continue;
-      }
-      const sourceOutput = new Map();
-      const sourceParts = encodeParts(bytes, `file-parts/${sha(Buffer.from(path))}/part.b64`, sourceOutput, partBase64Bytes);
-      recordsByPath.get(path).parts = sourceParts;
-      for (const [partPath, encoded] of sourceOutput) output.set(`${base}/${partPath}`, encoded);
-    }
-  }
+  const output = new Map([...archiveOutput].map(([path, bytes]) => [`${base}/${path}`, bytes]));
   const manifest = { schema: 'figma-cli/atomicaui-release@1', version: releaseVersion, vendorSha256: sha(vendorBytes),
-    ...(layout === RELEASE_LAYOUT ? { layout } : {}), partBase64Bytes, files: records,
-    archive: { bytes: archive.length, sha256: sha(archive), parts }, breakingChanges };
+    layout: RELEASE_LAYOUT, partBase64Bytes, files: records,
+    archive: { bytes: archive.length, sha256: sha(archive), parts }, breakingChanges, dependencies };
   const manifestBytes = json(manifest);
   const latest = { schema: 'figma-cli/atomicaui-latest@1', version: releaseVersion,
     manifest: `${releaseVersion}/manifest.json`, manifestSha256: sha(manifestBytes) };
@@ -182,23 +236,26 @@ function parseJson(bytes, what) {
 function validateManifest(bytes, expectedHash, expectedVersion) {
   if (!HASH.test(expectedHash || '') || sha(bytes) !== expectedHash) throw new Error('AtomicAUI manifest SHA-256 differs.');
   const manifest = parseJson(bytes, 'AtomicAUI manifest');
+  const keys = JSON.stringify(Object.keys(manifest || {}).sort());
+  const legacy = keys === JSON.stringify(LEGACY_KEYS);
   if (manifest?.schema !== 'figma-cli/atomicaui-release@1' || version(manifest.version) !== expectedVersion ||
-      (manifest.layout !== undefined && manifest.layout !== RELEASE_LAYOUT) ||
+      !(legacy || (keys === JSON.stringify(RELEASE_KEYS) && manifest.layout === RELEASE_LAYOUT)) ||
       !Array.isArray(manifest.files) || manifest.files.length < 1 || manifest.files.length > 10000 ||
       !Array.isArray(manifest.archive?.parts) || manifest.archive.parts.length < 1 ||
       !HASH.test(manifest.archive.sha256 || '') || !Number.isSafeInteger(manifest.archive.bytes) ||
       !HASH.test(manifest.vendorSha256 || '') || !Array.isArray(manifest.breakingChanges)) throw new Error('Invalid AtomicAUI release manifest.');
   partLimit(manifest.partBase64Bytes);
+  if (!legacy) validateDependencies(manifest.dependencies);
   const files = new Map(), folded = new Set();
   for (const item of manifest.files) {
     const path = sourcePath(item.path);
     if (!HASH.test(item.sha256 || '') || !Number.isSafeInteger(item.bytes) || item.bytes < 0 || folded.has(path.toLowerCase())) {
       throw new Error(`Invalid AtomicAUI release file: ${path}`);
     }
-    if (manifest.layout !== RELEASE_LAYOUT && item.bytes > manifest.partBase64Bytes && (!Array.isArray(item.parts) || !item.parts.length)) {
+    if (legacy && item.bytes > manifest.partBase64Bytes && (!Array.isArray(item.parts) || !item.parts.length)) {
       throw new Error(`Large AtomicAUI source is missing parts: ${path}`);
     }
-    if ((manifest.layout === RELEASE_LAYOUT || item.bytes <= manifest.partBase64Bytes) && item.parts != null) {
+    if ((!legacy || item.bytes <= manifest.partBase64Bytes) && item.parts != null) {
       throw new Error(`Small AtomicAUI source has unexpected parts: ${path}`);
     }
     folded.add(path.toLowerCase()); files.set(path, item);
@@ -224,7 +281,7 @@ function validateManifest(bytes, expectedHash, expectedVersion) {
   for (const item of manifest.files) if (item.parts) {
     validateParts(item.parts, `file-parts/${sha(Buffer.from(item.path))}/part.b64.`, `source ${item.path}`, item.bytes);
   }
-  return { manifest, files };
+  return { manifest, files, legacy };
 }
 
 function validateBreakingChanges(notes) {
@@ -301,7 +358,7 @@ export async function downloadRelease({ site = ATOMICAUI_SITE, version: pinned, 
   }
   const base = `${site}/atomicaui/${selected}`;
   const encodedPath = path => path.split('/').map(encodeURIComponent).join('/');
-  const { manifest, files: expected } = validateManifest(await getBytes(`${base}/manifest.json`, opts), expectedHash, selected);
+  const { manifest, files: expected, legacy } = validateManifest(await getBytes(`${base}/manifest.json`, opts), expectedHash, selected);
   const fetchParts = async (parts, label) => {
     const chunks = [];
     for (const part of parts) {
@@ -320,7 +377,7 @@ export async function downloadRelease({ site = ATOMICAUI_SITE, version: pinned, 
   const archive = await fetchParts(manifest.archive.parts, 'archive');
   if (archive.length !== manifest.archive.bytes || sha(archive) !== manifest.archive.sha256) throw new Error('AtomicAUI archive SHA-256 differs.');
   const files = unpackArchive(archive, expected);
-  if (manifest.layout !== RELEASE_LAYOUT) {
+  if (legacy) {
     for (const item of manifest.files) {
       const served = item.parts ? await fetchParts(item.parts, 'source') :
         await getBytes(`${base}/files/${encodedPath(item.path)}`, opts);
