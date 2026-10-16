@@ -29,6 +29,7 @@ only for a manifest with exactly that older key set. New manifests carry
 library imports; add and upgrade merge them into the app `package.json`
 without lowering a pin and refuse another major version before writing
 (`src/make-atomicaui.js`, `mergeDependencies`).
+Import discovery: `src/make-atomicaui.js:137`; regression: `tests/make-atomicaui.test.js:107`.
 
 An interrupted solo `add` or `upgrade` can resume with the exact `--file`,
 version and `--resume`. `VENDOR.json` is written last. The saved version's

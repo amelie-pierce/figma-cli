@@ -104,6 +104,28 @@ test('release dependencies come from the kit package.json entries the library im
   assert.throws(() => releaseDependencies(null, files), /Kit package.json is missing/);
 });
 
+test('dependency discovery ignores documentation and type-only imports while following executable module imports', () => {
+  const source = `
+    /** Example: import { Button } from '@example/documentation'; */
+    // export * from '@example/comment';
+    const example = "import x from '@example/string'";
+    const template = \`import x from '@example/template'\`;
+    import type { Shape } from '@example/types';
+    import { type Other } from '@example/inline-types';
+    export type { Shape } from '@example/export-types';
+    export { type Other } from '@example/inline-export-types';
+    import { type Options, Button } from '@base-ui/react/button';
+    export * from 'motion/react';
+    const clsx = require('clsx');
+    import equal = require('equal');
+    const lazy = () => import('lazy/subpath');
+    const element = <Button>import from documentation</Button>;
+  `;
+  const dependencies = { '@base-ui/react': '1.6.0', motion: '^12.0.0', clsx: '2.1.1', equal: '~1.0.0', lazy: '^2.0.0' };
+  assert.deepEqual(releaseDependencies(Buffer.from(JSON.stringify({ dependencies })), [['lib/example.tsx', Buffer.from(source)]]), dependencies);
+  assert.throws(() => releaseDependencies(Buffer.from('{}'), [['lib/broken.ts', Buffer.from('import {')]]), /Cannot inspect AtomicAUI imports in lib\/broken.ts/);
+});
+
 test('compact release serves only archive parts, manifest, sidecar and latest pointer', async () => {
   const { contents, release } = fixture('7.0.1');
   const paths = [...release.output.keys()].sort();
@@ -121,11 +143,12 @@ test('compact release serves only archive parts, manifest, sidecar and latest po
 test('large archive and source use configurable bounded base64 parts', async () => {
   const { source } = fixture();
   let seed = 0x7a00b00b;
-  const large = Buffer.alloc(700000);
-  for (let index = 0; index < large.length; index++) {
+  const random = Buffer.alloc(700000);
+  for (let index = 0; index < random.length; index++) {
     seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
-    large[index] = 33 + (seed >>> 0) % 90;
+    random[index] = 33 + (seed >>> 0) % 90;
   }
+  const large = Buffer.from(`export default ${JSON.stringify(random.toString())}\n`);
   source.set('src/large.ts', large);
   const vendor = Buffer.from(JSON.stringify({ schema: 1, name: 'atomic-aui', files: [...source].map(([path, bytes]) =>
     ({ path, bytes: bytes.length, sha256: hash(bytes) })) }));
@@ -546,7 +569,7 @@ test('interrupted solo add resumes after wiring or VENDOR.json was written, and 
 
 test('interrupted solo upgrade resumes from the saved version and refuses foreign pending app edits', async () => {
   const older = soloPayload('7.0.0', { 'src/index.ts': 'one\n', 'src/old.ts': 'old\n' });
-  const newer = soloPayload('7.0.1', { 'src/index.ts': 'two\n', 'src/new.ts': 'new\n' });
+  const newer = soloPayload('7.0.1', { 'src/index.ts': 'two\n', 'src/new.ts': 'export const value = 1\n' });
   const installed = soloMake(plainApp());
   await installSoloRelease(installed.client, older, { mode: 'add' });
   const savedFiles = new Map(installed.files);

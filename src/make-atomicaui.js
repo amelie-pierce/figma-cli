@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { builtinModules } from 'node:module';
+import { parse } from '@babel/parser';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, lstatSync, renameSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
@@ -22,7 +23,6 @@ const RELEASE_RANGE = /^[~^]?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Z
 const APP_RANGE = /^[~^]?v?(\d+)(?:\.(\d+|[x*]))?(?:\.(\d+|[x*]))?(?:-[0-9A-Za-z.-]+)?$/;
 const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
 const SOURCE_FILE = /\.[cm]?[jt]sx?$/;
-const IMPORT = /\b(?:import|export)\s+(type\s+)?(?:[\w$\s{},*]*?\sfrom\s*)?['"]([^'"\n]+)['"]|\bimport\s*\(\s*['"]([^'"\n]+)['"]\s*\)/g;
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = value => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
 function partLimit(bytes) {
@@ -134,6 +134,41 @@ function packageOf(specifier) {
   return name;
 }
 
+function runtimeImports(path, bytes) {
+  let ast;
+  try {
+    ast = parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes), {
+      sourceType: 'unambiguous', plugins: ['typescript', 'jsx'], createImportExpressions: true,
+    });
+  } catch (error) { throw new Error(`Cannot inspect AtomicAUI imports in ${path}: ${error.message}`); }
+  const imports = [];
+  const visit = node => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(visit); return; }
+    if (node.type === 'ImportDeclaration' && node.importKind !== 'type' &&
+        (!node.specifiers.length || node.specifiers.some(item => item.importKind !== 'type'))) {
+      imports.push(node.source.value);
+    } else if ((node.type === 'ExportNamedDeclaration' || node.type === 'ExportAllDeclaration') &&
+        node.source && node.exportKind !== 'type' &&
+        (!node.specifiers?.length || node.specifiers.some(item => item.exportKind !== 'type'))) {
+      imports.push(node.source.value);
+    } else if (node.type === 'ImportExpression' && node.source.type === 'StringLiteral') {
+      imports.push(node.source.value);
+    } else if (node.type === 'CallExpression' && node.callee.type === 'Identifier' && node.callee.name === 'require' &&
+        node.arguments.length === 1 && node.arguments[0].type === 'StringLiteral') {
+      imports.push(node.arguments[0].value);
+    } else if (node.type === 'TSImportEqualsDeclaration' && node.importKind !== 'type' &&
+        node.moduleReference.type === 'TSExternalModuleReference') {
+      imports.push(node.moduleReference.expression.value);
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (!['comments', 'leadingComments', 'trailingComments', 'innerComments', 'loc', 'tokens'].includes(key)) visit(value);
+    }
+  };
+  visit(ast.program);
+  return imports;
+}
+
 export function releaseDependencies(kitPackage, files) {
   if (!kitPackage) throw new Error('Kit package.json is missing.');
   const kit = parseJson(kitPackage, 'Kit package.json');
@@ -141,8 +176,8 @@ export function releaseDependencies(kitPackage, files) {
   const names = new Set();
   for (const [path, bytes] of files) {
     if (!SOURCE_FILE.test(path) || path.endsWith('.d.ts')) continue;
-    for (const match of new TextDecoder('utf-8', { fatal: true }).decode(bytes).matchAll(IMPORT)) {
-      const name = match[1] ? null : packageOf(match[2] ?? match[3]);
+    for (const specifier of runtimeImports(path, bytes)) {
+      const name = packageOf(specifier);
       if (name) names.add(name);
     }
   }
