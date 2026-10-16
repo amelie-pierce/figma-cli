@@ -1,0 +1,32 @@
+tests/make-atomicaui.test.js
+  s_822438c0fc5c8c::t_30fff125e5f125 146,406,410,433,441
+  s_822438c0fc5c8c::t_133f9476e4bfd2 8,159,172-173,393-394,791-797
+  s_822438c0fc5c8c::t_d802be7a71ca3d 798
+src/make-atomicaui.js
+  s_822438c0fc5c8c::t_102ec1cb8d8949 477
+  s_822438c0fc5c8c::t_3f3e9e140cb2ce 16,456-467,473
+tests/make-durable.test.js
+  s_822438c0fc5c8c::t_133f9476e4bfd2 416-418,421-425
+REFERENCE.md
+  s_822438c0fc5c8c::t_1118fb2f4d7a11 695-696
+src/make-client.js
+  s_822438c0fc5c8c::t_f97689eee63598 610-613
+src/commands/make-atomicaui.js
+  s_822438c0fc5c8c::t_3f3e9e140cb2ce 11,173-177,348-351,430,483
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e33e3f7f2a9e08e42b9c8a72500b252bc2bca704",
+  "prompts": {},
+  "sessions": {
+    "s_822438c0fc5c8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5e1d9d39-d92e-401c-8419-b70a6874a8d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
