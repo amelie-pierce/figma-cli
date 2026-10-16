@@ -637,6 +637,31 @@ describe('make deploy recovery', () => {
     assert.equal((await s.make.projectStatus()).workingTree, readReceipt(receiptPath).makeBefore.tree);
   });
 
+  it('does not count a path whose only apply write was uncertain and never landed as restored', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'v2\n', 'src/Board.tsx': 'board\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    const boardBefore = s.make.working.get('src/Board.tsx');
+    s.make.hooks.beforeWrite = path => {
+      if (path === 'src/Board.tsx') throw Object.assign(new Error('Make operation timed out.'), { backupPath: join(s.p.home, 'uncertain-board') });
+    };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => {
+      receiptPath = error.receiptPath;
+      return error.code === 'DEPLOY_WRITE_FAILED';
+    });
+    s.make.hooks.beforeWrite = null;
+    assert.ok(readReceipt(receiptPath).completedWrites.some(write => write.path === 'src/Board.tsx' && write.uncertain));
+    assert.deepEqual(s.make.working.get('src/Board.tsx'), boardBefore, 'the uncertain write never landed');
+    // A previous abort run left a non-empty list, so recovery runs.
+    const damaged = readReceipt(receiptPath);
+    damaged.restored = ['src/App.tsx'];
+    writeFileSync(receiptPath, JSON.stringify(damaged));
+    const aborted = await deployAbort(s.make, { receiptPath }, s.deps);
+    assert.equal(aborted.outcome, 'aborted');
+    assert.deepEqual(readReceipt(receiptPath).restored, ['src/App.tsx']);
+  });
+
   it('waits and rechecks the plan when Make changes pending files under an abort delete', async t => {
     const s = setup(t);
     landChange(s);
@@ -1035,7 +1060,7 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     assert.ok(!readReceipt(receiptPath).completedWrites.some(write => write.path === 'pnpm-lock.yaml'), 'main\'s lockfile is not backed up as the original');
     const status = await s.make.projectStatus();
     const message = new RegExp(`differs from saved tree ${readReceipt(receiptPath).makeBefore.tree} in pnpm-lock\\.yaml \\(working sha256 ${status.workingSha256.get('pnpm-lock.yaml')}, ` +
-      `saved blob ${status.makeFlat.get('pnpm-lock.yaml').blob}\\)\\. The receipt has no backup of it.*check make status\\. If the lockfile still differs, restore saved version .* from Make's version history; do not edit the lockfile by hand\\.`);
+      `saved blob ${status.makeFlat.get('pnpm-lock.yaml').blob}\\)\\. The receipt has no backup of it.*check make status\\. If the lockfile still differs, restore saved version .* from Make's version history; do not edit the lockfile by hand\\. Once the lockfile matches the saved version again, run --abort once more to close the receipt\\.`);
     for (let run = 1; run <= 2; run++) {
       await assert.rejects(deployAbort(s.make, { receiptPath }, s.deps), error => {
         assert.equal(error.code, 'DEPLOY_WRITE_FAILED');

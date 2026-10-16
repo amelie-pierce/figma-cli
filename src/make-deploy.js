@@ -853,7 +853,7 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
   // wrote and a previous abort already returned to their starting content.
   if (receipt.restored?.length) {
     for (const file of files) {
-      if (file.state === 'before' && receipt.completedWrites.some(write => write.path === file.path && !write.backupOnly)) {
+      if (file.state === 'before' && receipt.completedWrites.some(write => write.path === file.path && !write.backupOnly && !write.uncertain)) {
         restored.add(file.path);
       }
     }
@@ -912,7 +912,8 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
         `${named.join(', ')}. The receipt has no backup of it: Make had already changed it before the deploy started. ` +
         'Make manages this lockfile: it is hidden from the file tree and Make\'s install regenerates it from package.json. ' +
         `package.json is back at saved version ${short(receipt.makeBefore.versionGitSha)}, so let Make finish its install, then check make status. ` +
-        `If the lockfile still differs, restore saved version ${short(receipt.makeBefore.versionGitSha)} from Make's version history; do not edit the lockfile by hand.`);
+        `If the lockfile still differs, restore saved version ${short(receipt.makeBefore.versionGitSha)} from Make's version history; do not edit the lockfile by hand. ` +
+        'Once the lockfile matches the saved version again, run --abort once more to close the receipt.');
     }
     if (!todo.length || round >= ROUNDS) {
       const mismatch = status.workingTree !== receipt.makeBefore.tree
