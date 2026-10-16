@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRelease, DEFAULT_PART_BASE64_BYTES, downloadRelease, getBytes, installRelease, installedStatus, nextPatch,
   planBreakingFixes } from '../src/make-atomicaui.js';
-import { installSoloRelease, releaseAtomicaui, verifyAtomicauiRelease } from '../src/commands/make-atomicaui.js';
+import { installSoloRelease, prepareTeamBranch, releaseAtomicaui, verifyAtomicauiRelease } from '../src/commands/make-atomicaui.js';
+import { defaultRun, teamContext } from '../src/make-team.js';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function fixture(version = '7.0.0', layout = 'direct-and-archive') {
@@ -330,4 +331,82 @@ test('breaking notes require an exact app fix before the installation writes', a
   const fixes = await planBreakingFixes(manifest, async () => 'render(oldButton)');
   assert.equal(fixes.get('src/App.tsx').content, 'render(Button)');
   await assert.rejects(planBreakingFixes(manifest, async () => 'oldButton + oldButton'), /exactly one match/);
+});
+
+function teamClone(t, pulls = []) {
+  const root = mkdtempSync(join(tmpdir(), 'atomicaui-team-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, 'gitconfig'), '[user]\n\tname = Alice\n\temail = alice@example.invalid\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n');
+  const env = { GIT_CONFIG_GLOBAL: join(root, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
+  const previous = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  t.after(() => { for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
+  const git = (dir, ...args) => {
+    const result = defaultRun('git', args, { cwd: dir });
+    assert.equal(result.status, 0, `git ${args.join(' ')}: ${result.stderr}`);
+    return result.stdout.trim();
+  };
+  const origin = join(root, 'origin.git'), clone = join(root, 'clone');
+  git(root, 'init', '-q', '--bare', '-b', 'main', origin);
+  git(root, 'clone', '-q', origin, clone);
+  const put = files => { for (const [path, content] of Object.entries(files)) {
+    mkdirSync(join(clone, path, '..'), { recursive: true });
+    writeFileSync(join(clone, path), content);
+  } };
+  put({ '.figma-cli/project.json': JSON.stringify({ fileKey: 'K', repo: 'owner/proto', trunk: 'main' }), 'src/App.tsx': 'app\n',
+    'src/main.tsx': 'main\n', 'package.json': '{}\n' });
+  git(clone, 'add', '-A'); git(clone, 'commit', '-q', '-m', 'initial'); git(clone, 'push', '-q', 'origin', 'main');
+  const warnings = [];
+  const run = (command, args, options) => {
+    if (command === 'git') return defaultRun(command, args, options);
+    if (command === 'gh' && args[0] === 'api' && args[1] === 'user') return { status: 0, stdout: 'alice\n', stderr: '' };
+    if (command === 'gh' && args[0] === 'pr' && args[1] === 'list') return { status: 0, stdout: JSON.stringify(pulls), stderr: '' };
+    return { status: 1, stdout: '', stderr: `unexpected ${command} ${args.join(' ')}` };
+  };
+  const ctx = () => teamContext({ dir: clone, run, warn: message => warnings.push(message) });
+  const commitAs = (files, author = 'Alice <alice@example.invalid>') => {
+    put(files); git(clone, 'add', '-A'); git(clone, 'commit', '-q', '--author', author, '-m', 'work');
+  };
+  return { clone, git, put, ctx, commitAs, warnings };
+}
+const teamManifest = { version: '7.0.0', breakingChanges: [] };
+const BRANCH = 'alice/atomicaui-add-7-0-0';
+
+test('team add continues only its own unfinished branch, with unsaved vendor files', t => {
+  const team = teamClone(t);
+  assert.deepEqual(prepareTeamBranch(team.ctx(), { mode: 'add', manifest: teamManifest }), { branch: BRANCH, continued: false });
+  team.commitAs({ 'src/vendor/atomic-aui/VENDOR.json': '{}\n', 'src/main.tsx': 'wired\n' });
+  team.git(team.clone, 'switch', '-q', 'main');
+  assert.deepEqual(prepareTeamBranch(team.ctx(), { mode: 'add', manifest: teamManifest }), { branch: BRANCH, continued: true });
+  assert.equal(team.git(team.clone, 'branch', '--show-current'), BRANCH);
+  team.put({ 'src/vendor/atomic-aui/index.ts': 'partial\n' });
+  assert.equal(prepareTeamBranch(team.ctx(), { mode: 'add', manifest: teamManifest }).continued, true);
+  assert.deepEqual(team.warnings, ['Continuing your earlier AtomicAUI update.', 'Continuing your earlier AtomicAUI update.']);
+});
+
+test('team add refuses its branch once its pull request is merged or closed', t => {
+  for (const state of ['MERGED', 'CLOSED']) {
+    const team = teamClone(t, [{ url: 'https://github.com/owner/proto/pull/1', state, headRefName: BRANCH, isCrossRepository: false }]);
+    prepareTeamBranch(team.ctx(), { mode: 'add', manifest: teamManifest });
+    team.git(team.clone, 'switch', '-q', 'main');
+    assert.throws(() => prepareTeamBranch(team.ctx(), { mode: 'add', manifest: teamManifest }),
+      error => error.code === 'TEAM_BRANCH_EXISTS' && error.message.includes(state.toLowerCase()));
+    assert.equal(team.git(team.clone, 'branch', '--show-current'), 'main');
+  }
+});
+
+test('team add refuses to continue a branch with foreign saves, paths or unsaved files', t => {
+  const cases = [
+    team => team.commitAs({ 'src/vendor/atomic-aui/VENDOR.json': '{}\n' }, 'Bob <bob@example.invalid>'),
+    team => team.commitAs({ 'src/App.tsx': 'other task\n' }),
+    team => team.put({ 'src/App.tsx': 'unsaved\n' }),
+  ];
+  for (const change of cases) {
+    const team = teamClone(t);
+    prepareTeamBranch(team.ctx(), { mode: 'add', manifest: teamManifest });
+    change(team);
+    assert.throws(() => prepareTeamBranch(team.ctx(), { mode: 'add', manifest: teamManifest }),
+      error => ['TEAM_BRANCH_EXISTS', 'TEAM_UNSAVED'].includes(error.code) && /Nothing was changed/.test(error.message));
+    assert.deepEqual(team.warnings, []);
+  }
 });

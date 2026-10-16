@@ -696,9 +696,12 @@ independently reads the saved release path set and hashes without writing.
 `make atomicaui add [--version X.Y.Z]`, `upgrade [--to X.Y.Z]`, and `status`
 use the public site over credential-free HTTPS. Pass `--file KEY` for a solo
 Make file. In a team clone, run from its root or use `--dir CLONE`; add and
-upgrade refuse a dirty working tree, start their own fresh task branch from
-`main`, save, open a new pull request, and open the team review Lavish pages
-(change report and a built app preview). A solo install prints the change
+upgrade refuse a dirty working tree, start their own fresh task branch
+`<login>/atomicaui-<mode>-<version>` from `main`, save, open a new pull request, and open the team review Lavish pages
+(change report and a built app preview). A rerun after a failure continues
+only that same branch, and only when it has no merged or closed pull request,
+every save on it is yours, it touches only AtomicAUI, wiring, lockfile and
+breaking-fix paths, and any unsaved files are inside `src/vendor/atomic-aui/`. A solo install prints the change
 report and points to the Make preview after its durable save. The downloader
 rejects HTML fallbacks and redirects, verifies the manifest, every archive
 part, and every source file, then checks local vendor edits before installing.

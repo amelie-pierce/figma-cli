@@ -2,7 +2,8 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { MakeClient } from '../make-client.js';
 import { checkWriteMode } from '../make-project.js';
-import { teamContext, start, save, pr } from '../make-team.js';
+import { currentBranch, fail, fetchMain, listChanges, ORIGIN_TRUNK, pr, remoteBranchSha, requireNoOperation, revOf, save, start,
+  taskBranch, teamContext } from '../make-team.js';
 import { review } from '../make-team-review.js';
 import { listenNotice } from '../lavish-listen.js';
 import { digest, vendorManifest } from '../make-drift.js';
@@ -175,34 +176,88 @@ function installDependencies(ctx, root) {
   const installed = ctx.run(manager, args, { cwd: root });
   if (installed.status !== 0) throw new Error(`AtomicAUI dependency install failed: ${(installed.stderr || installed.stdout).trim().split('\n').pop()}`);
 }
+const OWN_FILES = new Set(['src/main.tsx', 'package.json', 'pnpm-lock.yaml', 'package-lock.json']);
+const insideVendor = path => path.startsWith(`${ATOMICAUI_ROOT}/`);
+function showAt(ctx, ref, path) {
+  const result = ctx.tryGit(['show', `${ref}:${path}`]);
+  return result.status === 0 ? result.stdout : null;
+}
+function vendorAt(ctx, ref) {
+  const text = showAt(ctx, ref, `${ATOMICAUI_ROOT}/VENDOR.json`);
+  if (text === null) return { installed: false, version: null, files: new Map() };
+  return { installed: true, version: JSON.parse(text).atomicauiRelease?.version || null,
+    files: vendorManifest(Buffer.from(text), ATOMICAUI_ROOT).files };
+}
+export function prepareTeamBranch(ctx, { mode, manifest }) {
+  const name = `atomicaui-${mode}-${manifest.version}`;
+  const branch = taskBranch(ctx.login(), name);
+  requireNoOperation(ctx);
+  fetchMain(ctx);
+  const local = revOf(ctx, `refs/heads/${branch}`);
+  const remote = remoteBranchSha(ctx, branch);
+  const current = currentBranch(ctx);
+  const dirty = listChanges(ctx).flatMap(change => [change.path, change.from].filter(Boolean));
+  if (!local && !remote) {
+    if (dirty.length) fail(`AtomicAUI ${mode} requires a clean working tree; save or discard your changes first. Nothing was changed.`, 'TEAM_UNSAVED');
+    return { branch: start(ctx, name).branch, continued: false };
+  }
+  const pulls = ctx.ghJson(['pr', 'list', '--repo', ctx.repo(), '--head', branch, '--state', 'all', '--json', 'url,state,headRefName,isCrossRepository',
+    '--limit', '20'], 'Looking up your pull request');
+  const finished = (Array.isArray(pulls) ? pulls : []).find(pull => pull.headRefName === branch && !pull.isCrossRepository && pull.state !== 'OPEN');
+  if (finished) {
+    fail(`${branch} already has a ${String(finished.state).toLowerCase()} pull request (${finished.url}), so this AtomicAUI ${mode} was not continued. ` +
+      'Nothing was changed.', 'TEAM_BRANCH_EXISTS');
+  }
+  if (dirty.length && (current !== branch || !dirty.every(insideVendor))) {
+    fail(`AtomicAUI ${mode} can continue only with unsaved changes inside ${ATOMICAUI_ROOT}/ on ${branch}; save or discard the others first. ` +
+      'Nothing was changed.', 'TEAM_UNSAVED');
+  }
+  if (remote) ctx.git(['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], `Getting ${branch} from GitHub`);
+  const email = ctx.tryGit(['config', 'user.email']).stdout.trim();
+  const fixPaths = new Set(manifest.breakingChanges.flatMap(item => item.fixes || []).map(fix => fix.path));
+  const own = path => insideVendor(path) || OWN_FILES.has(path) || fixPaths.has(path);
+  for (const ref of new Set([local, remote].filter(Boolean))) {
+    const authors = ctx.git(['log', '--format=%ae', `${ORIGIN_TRUNK}..${ref}`]).split('\n').filter(Boolean);
+    const paths = ctx.git(['-c', 'core.quotePath=false', 'diff', '--name-only', '--no-renames', `${ORIGIN_TRUNK}...${ref}`]).split('\n').filter(Boolean);
+    const foreign = [...new Set(authors.filter(author => author !== email))].map(author => `a save by ${author}`)
+      .concat(paths.filter(path => !own(path)));
+    if (foreign.length) {
+      fail(`${branch} has work this AtomicAUI ${mode} did not make (${foreign.join(', ')}), so it was not continued. Nothing was changed.`,
+        'TEAM_BRANCH_EXISTS');
+    }
+  }
+  if (current !== branch) {
+    ctx.git(local ? ['switch', '--quiet', branch] : ['switch', '--quiet', '-c', branch, `refs/remotes/origin/${branch}`], `Switching to ${branch}`);
+  }
+  ctx.warn('Continuing your earlier AtomicAUI update.');
+  return { branch, continued: true };
+}
 export async function installTeamRelease(directory, release, { mode } = {}) {
   const root = resolve(directory);
-  const ctx = teamContext({ dir: root });
+  const ctx = teamContext({ dir: root, warn: message => console.error(message) });
   ctx.repo(); // A GitHub origin is sufficient when a team marker has not been created yet.
   const vendorDir = join(root, ATOMICAUI_ROOT);
   const preflight = installedStatus(vendorDir);
   if (preflight.localEdits.length) throw new Error(`Local AtomicAUI edits refuse ${mode}: ${preflight.localEdits.join(', ')}`);
-  if (mode === 'add' && preflight.installed) throw new Error('AtomicAUI is already installed. Use upgrade.');
-  if (mode === 'upgrade' && !preflight.installed) throw new Error('AtomicAUI is not installed. Use add.');
-  if (!existsSync(join(root, 'src/main.tsx')) || !existsSync(join(root, 'package.json'))) {
+  fetchMain(ctx);
+  const before = vendorAt(ctx, ORIGIN_TRUNK);
+  if (mode === 'add' && before.installed) throw new Error('AtomicAUI is already installed. Use upgrade.');
+  if (mode === 'upgrade' && !before.installed) throw new Error('AtomicAUI is not installed. Use add.');
+  if (showAt(ctx, ORIGIN_TRUNK, 'src/main.tsx') === null || showAt(ctx, ORIGIN_TRUNK, 'package.json') === null) {
     throw new Error('AtomicAUI needs src/main.tsx and package.json for provider wiring.');
   }
-  if (ctx.git(['status', '--porcelain'])) throw new Error(`AtomicAUI ${mode} requires a clean working tree; save or discard your changes first.`);
-  const readSource = async path => existsSync(join(root, path)) ? readFileSync(join(root, path), 'utf8') : null;
-  await planBreakingFixes(release.manifest, readSource);
-  const started = start(ctx, `atomicaui-${mode}-${release.manifest.version}`);
-  const afterStart = installedStatus(vendorDir);
-  if (afterStart.localEdits.length || (mode === 'add' ? afterStart.installed : !afterStart.installed)) {
-    throw new Error('AtomicAUI project changed after starting the branch; install refused.');
-  }
-  const fixes = await planBreakingFixes(release.manifest, readSource);
-  const report = installRelease(root, release);
+  const fixes = await planBreakingFixes(release.manifest, async path => showAt(ctx, ORIGIN_TRUNK, path));
+  const started = prepareTeamBranch(ctx, { mode, manifest: release.manifest });
+  if (installedStatus(vendorDir).localEdits.length) throw new Error('AtomicAUI project changed after starting the branch; install refused.');
+  installRelease(root, release);
+  const report = changeReport(before, release);
   const wiring = providerChanges(fixes.get('src/main.tsx')?.content || readFileSync(join(root, 'src/main.tsx'), 'utf8'),
     fixes.get('package.json')?.content || readFileSync(join(root, 'package.json'), 'utf8'));
-  for (const [path, entry] of fixes) {
-    if (path !== 'src/main.tsx' && path !== 'package.json') writeFileSync(join(root, path), entry.content);
+  const changed = new Map([...fixes].filter(([path]) => path !== 'src/main.tsx' && path !== 'package.json')
+    .map(([path, entry]) => [path, entry.content]).concat([...wiring]));
+  for (const [path, content] of changed) {
+    if (!existsSync(join(root, path)) || readFileSync(join(root, path), 'utf8') !== content) writeFileSync(join(root, path), content);
   }
-  for (const [path, content] of wiring) if (readFileSync(join(root, path), 'utf8') !== content) writeFileSync(join(root, path), content);
   installDependencies(ctx, root);
   const saved = save(ctx, { message: `Update ${report.added.length + report.changed.length + report.removed.length} files under ${ATOMICAUI_ROOT}` });
   const pullRequest = pr(ctx, {
@@ -211,10 +266,10 @@ export async function installTeamRelease(directory, release, { mode } = {}) {
       '- src/main.tsx: 1 file', '- package.json: 1 file', '- pnpm-lock.yaml: 1 file', '- .gitignore: 1 file'].join('\n'),
   });
   const visual = review(ctx, pullRequest.url, { lavish: true, app: true });
-  return { mode: 'team', branch: started.branch, report, saved: saved.saved, pullRequest: pullRequest.url,
+  return { mode: 'team', branch: started.branch, continued: started.continued, report, saved: saved.saved, pullRequest: pullRequest.url,
     review: { dir: visual.dir, run: visual.run, ...(visual.lavish ? { lavish: visual.lavish } : {}) },
     ...(visual.listen ? { listen: visual.listen } : {}), ...(visual.warnings ? { warnings: visual.warnings } : {}),
-    summary: `${changeSummary(report)} Opened ${pullRequest.url} on ${started.branch}.` };
+    summary: `${started.continued ? 'Continuing your earlier AtomicAUI update. ' : ''}${changeSummary(report)} Opened ${pullRequest.url} on ${started.branch}.` };
 }
 
 export async function installSoloRelease(client, release, { mode, resume = false, file } = {}) {
