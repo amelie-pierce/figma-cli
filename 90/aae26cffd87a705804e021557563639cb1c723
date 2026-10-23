@@ -1,0 +1,29 @@
+_vaults/figma-cli/wiki/make/durable-vfs-api.md
+  s_df98c3af5b0397::t_2599e11f98dcfc 20
+  s_df98c3af5b0397::t_f1677b51150155 1-19,21-58
+_vaults/figma-cli/wiki/make/index.md
+  s_df98c3af5b0397::t_f1677b51150155 7
+tests/make-vfs-api.test.js
+  s_df98c3af5b0397::t_fdb77804188824 1-29,31-132
+  s_df98c3af5b0397::t_2de36ed86331ef 30
+src/make-durable.js
+  s_df98c3af5b0397::t_410809b1f7949a 60-74,76-77,80,86
+_vaults/figma-cli/wiki/make/persistence.md
+  s_df98c3af5b0397::t_f1677b51150155 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "90aae26cffd87a705804e021557563639cb1c723",
+  "prompts": {},
+  "sessions": {
+    "s_df98c3af5b0397": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a16b0b-9d74-7af3-a564-58403b2df532",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
