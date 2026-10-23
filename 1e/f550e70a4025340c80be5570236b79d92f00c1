@@ -1,0 +1,29 @@
+src/make-rpc.js
+  s_1961249444eeec::t_69f9e79feaaa63 5-6,10,38-41,78,82-83,85
+  s_1961249444eeec::t_1ebaff2d0e0b16 7-8,11-12
+_vaults/figma-cli/wiki/make/filesystem-bridge.md
+  s_1961249444eeec::t_a2385bc4de57da 30,33,36-38,40
+  s_1961249444eeec::t_b2f4927e515d99 34
+  s_1961249444eeec::t_8b6213a4d87e5a 7,32,39
+tests/make-rpc.test.js
+  s_1961249444eeec::t_5535f8cac07059 93-161
+tests/make-client.test.js
+  s_1961249444eeec::t_dc4b4340fd2698 52-59,100-104,673-685
+  s_1961249444eeec::t_1e420f4855d561 686-687
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1ef550e70a4025340c80be5570236b79d92f00c1",
+  "prompts": {},
+  "sessions": {
+    "s_1961249444eeec": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a16ae2-6685-7330-bcd4-e279d558b580",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
