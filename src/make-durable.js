@@ -57,20 +57,33 @@ export async function makeDurablePageAction(action) {
   if (vfsSet.size !== 1) throw new Error('Make client VFS is absent or ambiguous.');
   const vfs = [...vfsSet][0];
   const path = `/${action.path}`;
+  // Current Make exposes async fetchEntry; a cache-only lookup cannot prove
+  // absence. Keep the old lookup for clients that predate this API. Do not
+  // fall back after a fetch failure, which could hide an unreadable file.
+  const readContent = async () => {
+    let entry;
+    if (typeof vfs.fetchEntry === 'function') entry = await vfs.fetchEntry(path);
+    else if (typeof vfs.getFileEntryByPath === 'function') entry = await vfs.getFileEntryByPath(path);
+    else throw new Error('Make client VFS file lookup is unsupported.');
+    if (entry == null) return null;
+    // fetchEntry also returns directories. Neither those nor binary/unknown
+    // entries may be treated as absent or passed to a text write/delete guard.
+    const content = await entry.asyncContents;
+    if (typeof content !== 'string') throw new Error(`Make client VFS entry is not a text file: ${path}`);
+    return content;
+  };
   if (action.type === 'read') {
-    const entry = vfs.getFileEntryByPath(path);
-    return { exists: !!entry, content: entry ? await entry.asyncContents : null };
+    const content = await readContent();
+    return { exists: content !== null, content };
   }
   if (action.type === 'write') {
-    const entry = vfs.getFileEntryByPath(path);
-    const current = entry ? await entry.asyncContents : null;
+    const current = await readContent();
     if (current !== action.expectedContent) return { refused: 'Make client VFS content changed before write.' };
     await vfs.writeFile(path, action.content);
     return { accepted: true };
   }
   if (action.type === 'delete') {
-    const entry = vfs.getFileEntryByPath(path);
-    const current = entry ? await entry.asyncContents : null;
+    const current = await readContent();
     if (current !== action.expectedContent) return { refused: 'Make client VFS content changed before delete.' };
     await vfs.deleteFile(path);
     return { accepted: true };

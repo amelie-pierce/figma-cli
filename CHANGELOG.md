@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- `make mode team`, and the durable `make write`, `make delete` and `make deploy` paths, no longer fail with `TypeError: vfs.getFileEntryByPath is not a function` on current Make clients. The durable page action reads through Make's async `fetchEntry` (the old lookup only when it is absent), refuses directories and non-text entries instead of treating them as missing, and still rechecks the exact current bytes before every write or delete.
 - `make deploy` skips the repo-only project vault `_vaults/**`, as it skips `.npmrc` and `.figma/design-context/`, instead of refusing it with `DEPLOY_UNSUPPORTED_PATH` (Make cannot create a new top-level folder); `make status` leaves it out of its comparison too.
 - `make deploy`, `make deploy --abort`, `make write` and `make delete` no longer stop with "Make file tree changed before the requested action" when a new file creates folders or a delete empties them. The guarded tree check rereads once and accepts only the written file and its new ancestor folders, or the deleted file and ancestor folders left empty; any other tree change still refuses.
 - `team save` never changes vendored files: every file in a `VENDOR.json` folder or listed in one is put back byte for byte (mode included) after the project's `format` and `build` scripts, also when a script fails, and the result counts them (`vendoredKept`, `vendoredRestored`).

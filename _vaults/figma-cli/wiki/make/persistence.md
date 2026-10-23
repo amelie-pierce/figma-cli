@@ -10,6 +10,7 @@ Updated 2026-10-13: git-mode client-VFS writes and version creation are implemen
 Updated 2026-10-14: preview-only files (Markdown) and Make's unlisted root files; see the two sections below.
 Updated 2026-10-14: first version of a never-saved git-mode file (`--first-version`); see "First version" below.
 Updated 2026-10-16: durable read-back for unopened source files and deep tree paths.
+Updated 2026-10-24: current async client-VFS lookup and text-entry validation; see [durable-vfs-api.md](durable-vfs-api.md).
 
 ## Saving modes
 
