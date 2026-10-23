@@ -184,7 +184,8 @@ test('solo mode deletes only the marker, saves, verifies after reload, records a
   const before = status({ makeFlat: withMarker, markerBytes: marker });
   const after = status({ persistence: clean(next), makeFlat: base, makeTree: 'e'.repeat(40) });
   const { client, calls } = fakeClient({ statuses: [before, after], vfs: [marker, null] });
-  const result = await runModeChange(client, { action: 'solo', confirm: true }, { gh: gh(), home, warn: () => {} });
+  const result = await runModeChange(client, { action: 'solo', confirm: true }, { gh: gh(), home, warn: () => {},
+    now: () => new Date('2026-10-14T08:00:00.000Z') });
   assert.deepEqual(writes(calls).map(call => call.slice(0, 3)), [
     ['delete', PROJECT_MARKER, { expectedSha256: sha256(marker), firstVersion: false }],
     ['save', 'figma-cli: team mode off', [PROJECT_MARKER]],
@@ -206,7 +207,8 @@ test('solo mode deletes only the marker, saves, verifies after reload, records a
     error => error.code === 'MAKE_MODE_NOT_ADMIN');
   assert.deepEqual(writes(notAdmin.calls), []);
   const finish = fakeClient({ statuses: [removed(), after], vfs: [null] });
-  const finished = await runModeChange(finish.client, { action: 'solo', confirm: true }, { gh: gh(), home, warn: () => {} });
+  const finished = await runModeChange(finish.client, { action: 'solo', confirm: true }, { gh: gh(), home, warn: () => {},
+    now: () => new Date('2026-10-14T08:01:00.000Z') });
   assert.equal(finished.change, 'save-removal');
   assert.deepEqual(writes(finish.calls).map(([kind]) => kind), ['save', 'reload']);
   // Already solo: nothing to do.

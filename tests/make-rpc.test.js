@@ -90,6 +90,75 @@ const provision = (socket, workspaceId = 'provisioned-workspace', success = true
   socket.reply({ type: 'control/workspace_create_ack', success, data: { created: success } });
 };
 
+test('current Make workspace/ensure waits for its correlated successful ack, then serves reads', async () => {
+  const { Socket, capture } = provisioned();
+  const bridge = capture();
+  const socket = new Socket();
+  try {
+    socket.send(JSON.stringify({ type: 'workspace/ensure', requestId: 'ensure-1',
+      data: { namespace: 'foundry', workspaceId: 'current-workspace' } }));
+    assert.equal(bridge.status().pending, true);
+    assert.throws(() => bridge.request('fs/file/read', { path: 'code/src/App.tsx' }, 'read'), /unavailable/);
+    socket.reply({ type: 'workspace/ensure_ack', requestId: 'unrelated', success: true });
+    socket.reply({ type: 'control/workspace_create_ack', success: true });
+    assert.equal(bridge.status().captured, false);
+    // The current reply carries sandbox metadata, not workspaceId.
+    socket.reply({ type: 'workspace/ensure_ack', requestId: 'ensure-1', success: true,
+      data: { sandboxId: 'sandbox', created: false } });
+    assert.equal(bridge.status().captured, true);
+    assert.equal(bridge.workspaceId, 'current-workspace');
+    assert.equal(Socket.prototype.send.figmaCliCapture, undefined);
+    const pending = bridge.request('fs/file/read', { path: 'code/src/App.tsx', encoding: 'base64' }, 'read');
+    assert.equal(socket.sent.at(-1).data.workspaceId, 'current-workspace');
+    socket.reply({ type: 'fs/file/read', requestId: 'read', success: true,
+      data: { path: 'code/src/App.tsx', content: 'YQ==', encoding: 'base64' } });
+    assert.equal((await pending).data.content, 'YQ==');
+  } finally { bridge.dispose(); }
+});
+
+test('current workspace capture rejects untrusted endpoints and missing identifiers', () => {
+  const { Socket, capture } = provisioned();
+  const bridge = capture();
+  try {
+    for (const url of ['wss://elsewhere.example/api/agentcontrol/subscribe',
+      'ws://www.figma.com/api/agentcontrol/subscribe', 'wss://www.figma.com/api/livegraph/subscribe',
+      'wss://user:password@www.figma.com/api/agentcontrol/subscribe']) {
+      const socket = new Socket(); socket.url = url;
+      socket.send(JSON.stringify({ type: 'workspace/ensure', requestId: 'ensure', data: { workspaceId: 'w' } }));
+      socket.reply({ type: 'workspace/ensure_ack', requestId: 'ensure', success: true });
+      assert.equal(bridge.status().pending, false, url);
+      assert.equal(bridge.status().captured, false, url);
+    }
+    const socket = new Socket();
+    for (const message of [
+      { type: 'workspace/ensure', data: { workspaceId: 'w' } },
+      { type: 'workspace/ensure', requestId: '', data: { workspaceId: 'w' } },
+      { type: 'workspace/ensure', requestId: 'ensure', data: { workspaceId: '' } },
+    ]) socket.send(JSON.stringify(message));
+    assert.equal(bridge.status().pending, false);
+  } finally { bridge.dispose(); }
+});
+
+test('current workspace acknowledgements cannot accept failed, superseded or navigated captures', () => {
+  const { Socket, capture, location } = provisioned();
+  const bridge = capture();
+  const socket = new Socket();
+  const ensure = id => socket.send(JSON.stringify({ type: 'workspace/ensure', requestId: id,
+    data: { workspaceId: id } }));
+  const ack = (id, rest = {}) => socket.reply({ type: 'workspace/ensure_ack', requestId: id, success: true, ...rest });
+  try {
+    ensure('failed'); ack('failed', { success: false }); ack('failed');
+    assert.equal(bridge.status().captured, false);
+    ensure('error'); ack('error', { error: { code: 'unavailable' } });
+    assert.equal(bridge.status().captured, false);
+    ensure('old'); ensure('new'); ack('old');
+    assert.equal(bridge.status().captured, false);
+    location.href = 'https://www.figma.com/make/Other/File';
+    ack('new');
+    assert.equal(bridge.status().captured, false);
+  } finally { bridge.dispose(); }
+});
+
 test('captures the socket that Make provisions on its own host, independent of file reads', () => {
   const { Socket, capture } = provisioned();
   const bridge = capture();
