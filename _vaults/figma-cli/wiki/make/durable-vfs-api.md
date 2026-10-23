@@ -10,12 +10,12 @@ Updated 2026-10-24: the current client exposes `fetchEntry(path)` instead of
 `getFileEntryByPath(path)`. The durable page action awaits `fetchEntry` when
 available, falling back to the old lookup only when the new method is absent.
 Both receive an absolute project path. Lookup failures propagate; there is no
-cache-only or deprecated-method fallback (`src/make-durable.js:59`).
+cache-only or deprecated-method fallback (`src/make-durable.js:63`).
 
 `fetchEntry` can return a file, a directory, or null. Files retain the
 `asyncContents` getter. The adapter accepts only string content, preserving
 empty files and exact Unicode/newline bytes while rejecting directories and
-non-text entries. A nullish entry is absent (`src/make-durable.js:63`,
+non-text entries. A nullish entry is absent (`src/make-durable.js:68`,
 `tests/make-vfs-api.test.js:7`, `tests/make-vfs-api.test.js:43`,
 `tests/make-vfs-api.test.js:94`).
 
