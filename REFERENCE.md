@@ -883,9 +883,10 @@ Reading, replacement, creation, verification and removal use Make's observed
 filesystem protocol on its existing authenticated WebSocket. Before each
 operation starts focus emulation, the adapter arms a passive send hook. A
 background Make page closes that socket while hidden and reconnects it when
-focus emulation starts; the reconnect's `control/provision` message identifies
-the socket and its workspace, which is usable once Make's
-`control/workspace_create_ack` arrives. A Make request to read an uncached
+focus emulation starts; the reconnect's `workspace/ensure` message (legacy:
+`control/provision`) identifies the socket and its workspace, which is usable
+once Make's matching `workspace/ensure_ack` (legacy:
+`control/workspace_create_ack`) arrives. A Make request to read an uncached
 source file also identifies it. If the socket stayed open since it provisioned
 unobserved, the adapter closes it (never while Make is generating) so Make
 reconnects and provisions under the hook; when nothing is captured, the command
