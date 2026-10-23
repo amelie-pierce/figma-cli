@@ -4,6 +4,7 @@ description: Why editor-based Make commands refuse deep files, and how read/repl
 date: 2026-10-13
 ---
 
+Updated 2026-10-24: current Make reconnects identify the workspace through `workspace/ensure`; capture also supports the legacy provisioning handshake.
 Updated 2026-10-14: the project root `code` may be listed (only listed) for [status.md](status.md); Make never answers a listing of a missing folder.
 Updated 2026-10-13: the bridge reaches the session's sandbox working copy, while the new git-mode durable path uses Make's client VFS; see [persistence.md](persistence.md).
 
@@ -26,14 +27,17 @@ That socket is Make's `/api/agentcontrol/subscribe`, which drives a per-session 
 
 ### Capturing the socket
 
-The page code hooks `WebSocket.prototype.send` passively and records the first socket that identifies itself (`src/make-rpc.js:41`):
+The page code hooks `WebSocket.prototype.send` passively and records the first socket that identifies itself (`src/make-rpc.js:47`):
 
-- `control/provision` carrying `data.workspaceId`, on a `wss:` socket on the page's own host (`src/make-rpc.js:35`). Observed live: a background Make page closes `/api/agentcontrol/subscribe` while hidden, and when focus emulation starts it opens a new one and sends `control/provision` about 650 ms later. The CLI arms the hook before enabling focus emulation in every operation (`src/make-client.js:238`).
-- The provisioned socket is not usable until `control/workspace_create_ack` arrives on it: earlier `fs/` requests get an uncorrelated `error` frame ("control/workspace_create must be sent before fs/file/read") and never resolve, so the record stays pending until the ack (`src/make-rpc.js:75`). The bridge waits up to 8 s for a pending capture (`src/make-client.js:751`).
+- Current Make: `workspace/ensure` carrying a nonempty `data.workspaceId` and `requestId`, on the page's own host over `wss:` at `/api/agentcontrol/subscribe`. It stays pending until `workspace/ensure_ack` arrives on that socket with the matching request ID, `success: true`, and no error. A stale acknowledgement cannot activate a newer capture, and navigation prevents activation (`src/make-rpc.js:38`, `src/make-rpc.js:78`). The ack need not contain a workspace ID; the ID comes from Make's outbound request.
+- `control/provision` carrying `data.workspaceId`, on a `wss:` socket on the page's own host (`src/make-rpc.js:37`). Observed live: a background Make page closes `/api/agentcontrol/subscribe` while hidden, and when focus emulation starts it opens a new one and sends `control/provision` about 650 ms later. The CLI arms the hook before enabling focus emulation in every operation (`src/make-client.js:284`).
+- Legacy provisioning is not usable until `control/workspace_create_ack` arrives on that socket: earlier `fs/` requests get an uncorrelated `error` frame ("control/workspace_create must be sent before fs/file/read") and never resolve, so the record stays pending until the ack (`src/make-rpc.js:78`). The bridge waits up to 8 s for a pending capture (`src/make-client.js:1209`).
 - `fs/file/read` sent by Make itself for a source file. Make caches loaded files, so opening an already-opened file sends nothing; this is why the old capture, which only waited for such a read from the first eight files, failed after earlier editor reads.
-- A socket that provisioned while no hook was armed (for example by an earlier command or by a natural tab switch) stays open and sends only `ping`, which carries no workspace. Observed live on AtomicAUI-6.0, 2026-10-13: every capture failed until that socket closed. When nothing is captured, the bridge finds open same-host `/api/agentcontrol/subscribe` sockets with CDP `Runtime.queryObjects` and closes them, unless Make is generating; Make reconnects in about 0.4 s and provisions about 1 s later under the armed hook (`src/make-client.js:766`).
-- The capture is cached per page under `Symbol.for('figma-cli.make.filesystem.<fileKey>')` until its socket closes (`src/make-rpc.js:19`), so back-to-back commands reuse it.
-- When nothing identifies a socket, the command fails with code `MAKE_FILESYSTEM_UNAVAILABLE` and no write (`src/make-client.js:761`); `read` then falls back to the editor unless `--remote` is set (`src/make-client.js:416`).
+- A socket that provisioned while no hook was armed (for example by an earlier command or by a natural tab switch) stays open and sends only `ping`, which carries no workspace. Observed live on AtomicAUI-6.0, 2026-10-13: every capture failed until that socket closed. When nothing is captured, the bridge finds open same-host `/api/agentcontrol/subscribe` sockets with CDP `Runtime.queryObjects` and closes them, unless Make is generating; Make reconnects in about 0.4 s and provisions about 1 s later under the armed hook (`src/make-client.js:1226`, `src/make-client.js:1235`).
+- The capture is cached per page under `Symbol.for('figma-cli.make.filesystem.<fileKey>')` until its socket closes (`src/make-rpc.js:21`), so back-to-back commands reuse it.
+- When nothing identifies a socket, the command fails with code `MAKE_FILESYSTEM_UNAVAILABLE` and no write (`src/make-client.js:1229`); `read` then falls back to the editor unless `--remote` is set (`src/make-client.js:477`).
+
+Observed live on Lab Management Application with Desktop 126.9.11, 2026-10-24: the existing same-host agent socket idled with `ping`; one deliberate reconnect produced `workspace/ensure` → successful `workspace/ensure_ack` → `fswatch/watch`, without an outbound source-file read. The old capture ignored that handshake even though Make had provisioned its workspace. With the updated capture, read-only `make status` returned `ok: true`, version 1, 24 files, no pending paths and matching saved/working trees; a subsequent `read --remote` of `src/App.tsx` returned the empty starter through the filesystem bridge. No file write, mode change or deploy was performed. This is a protocol detection change, not evidence that a starter file must be edited or regenerated. Offline coverage models the handshake, delayed readiness, request correlation, unsafe endpoints, failed/stale acknowledgements, navigation, and cached-socket reuse (`tests/make-rpc.test.js:93`, `tests/make-client.test.js:673`).
 
 ### Replacement
 

@@ -2,12 +2,14 @@
 // workspace traffic. No cookies/tokens, private stores, guessed service URLs, or
 // new network connections. The temporary send hook is restored after capture.
 //
-// Two outbound messages identify the socket and its workspace: Make's
-// `control/provision`, sent when the page (re)connects its agent socket, for
-// example after focus emulation starts; and `fs/file/read` for a project source
+// Outbound messages identify the socket and its workspace: Make's
+// `workspace/ensure` (formerly `control/provision`), sent when the page
+// (re)connects its agent socket, for example after focus emulation starts;
+// and `fs/file/read` for a project source
 // file, sent when Make opens a file it has not cached. A provisioned socket is
-// usable only after Make's `control/workspace_create_ack` arrives on it: the
-// server refuses filesystem requests before that. A capture is cached per page
+// usable only after Make's matching `workspace/ensure_ack` (or the legacy
+// `control/workspace_create_ack`) arrives on it: the server refuses filesystem
+// requests before that. A capture is cached per page
 // until its socket closes, so later commands reuse it.
 export function captureMakeFileSocket(fileKey, capturePath, timeoutMs, captureMs = timeoutMs) {
   const matchesFile = () => {
@@ -33,6 +35,10 @@ export function captureMakeFileSocket(fileKey, capturePath, timeoutMs, captureMs
     const workspaceId = message?.data?.workspaceId;
     if (typeof workspaceId !== 'string' || !workspaceId) return false;
     if (message.type === 'control/provision') return sameHost(socket);
+    if (message.type === 'workspace/ensure') {
+      return sameHost(socket) && new URL(socket.url).pathname === '/api/agentcontrol/subscribe' &&
+        typeof message.requestId === 'string' && !!message.requestId;
+    }
     if (message.type !== 'fs/file/read' || typeof message.data.path !== 'string') return false;
     return capturePath ? message.data.path === `code/${capturePath}` : message.data.path.startsWith('code/');
   };
@@ -69,12 +75,14 @@ export function captureMakeFileSocket(fileKey, capturePath, timeoutMs, captureMs
             socket.addEventListener('close', () => { if (globalThis[cacheKey] === record) delete globalThis[cacheKey]; }, { once: true });
             if (record.ready) hook.restore();
             else {
+              const ensure = message.type === 'workspace/ensure';
               const acknowledged = event => {
                 try {
                   const reply = JSON.parse(event.data);
-                  if (reply.type !== 'control/workspace_create_ack') return;
+                  if (reply.type !== (ensure ? 'workspace/ensure_ack' : 'control/workspace_create_ack') ||
+                      (ensure && reply.requestId !== message.requestId)) return;
                   socket.removeEventListener('message', acknowledged);
-                  if (reply.success !== true || globalThis[cacheKey] !== record) return;
+                  if (reply.success !== true || reply.error || globalThis[cacheKey] !== record || !matchesFile()) return;
                   record.ready = true;
                   hook.restore();
                 } catch {}

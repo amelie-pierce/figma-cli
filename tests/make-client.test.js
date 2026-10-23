@@ -49,6 +49,14 @@ function fixture(options = {}) {
   function serve(socket, payload) {
     const message = JSON.parse(payload);
     state.frames.push(message);
+    if (message.type === 'workspace/ensure') {
+      setTimeout(() => {
+        socket.workspaceCreated = true;
+        deliver(socket, { type: 'workspace/ensure_ack', requestId: message.requestId, success: true,
+          data: { sandboxId: 'sandbox', created: false } });
+      }, state.workspaceDelay ?? 20);
+      return;
+    }
     if (message.type === 'control/workspace_create') {
       socket.workspaceCreated = true;
       return deliver(socket, { type: 'control/workspace_create_ack', success: true, data: { created: true } });
@@ -89,6 +97,11 @@ function fixture(options = {}) {
   // provisioning acknowledgement (about a second later, observed live).
   const provision = () => {
     const socket = new FakeSocket(state.provisionUrl);
+    if (state.currentWorkspaceProtocol) {
+      socket.send(JSON.stringify({ type: 'workspace/ensure', requestId: `ensure-${state.sockets.length}`,
+        data: { namespace: 'foundry', workspaceId: state.workspaceId } }));
+      return;
+    }
     socket.send(JSON.stringify({ type: 'control/provision', data: { namespace: 'namespace', workspaceId: state.workspaceId } }));
     setTimeout(() => socket.send(JSON.stringify({ type: 'control/workspace_create', data: { seeded: true } })), state.workspaceDelay ?? 20);
   };
@@ -655,6 +668,21 @@ test('an unidentified agent socket is left open while Make is generating', async
   const { client, state } = await setup(t, { provisionOnFocus: false, busy: true });
   await assert.rejects(client.read('src/App.tsx', { remote: true }), error => error.code === 'MAKE_FILESYSTEM_UNAVAILABLE');
   assert.equal(state.makeSocket.readyState, 1);
+});
+
+test('current Make reconnect attaches through workspace/ensure and reuses the acknowledged socket', async (t) => {
+  const { client, state } = await setup(t, {
+    currentWorkspaceProtocol: true, provisionOnFocus: false, workspaceDelay: 400, fetchOnSelect: false,
+  });
+  const read = await client.read('src/App.tsx', { remote: true });
+  assert.equal(read.source, 'filesystem');
+  assert.equal(read.content, state.content);
+  assert.equal(state.makeSocket.readyState, 3);
+  assert.equal(state.selected, false);
+  assert.equal((await client.read('src/App.tsx', { remote: true })).sha256, hash(state.content));
+  assert.equal(state.frames.filter(frame => frame.type === 'workspace/ensure').length, 1);
+  assert.equal(state.frames.some(frame => frame.type.startsWith('control/')), false);
+  assert.deepEqual(state.fsWrites, []);
 });
 
 test('a captured socket is reused by later operations until it closes', async (t) => {
