@@ -1,0 +1,22 @@
+_vaults/figma-cli/wiki/make/atomicaui-release.md
+  s_5ba1acac1b7162::t_5b2de85df2e5fd 15
+  s_5ba1acac1b7162::t_6fff41159ef82a 42-43,46-48
+CHANGELOG.md
+  s_5ba1acac1b7162::t_4b7d9a24b20db6 22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "12316e70464425166366db8b5737929b143e253d",
+  "prompts": {},
+  "sessions": {
+    "s_5ba1acac1b7162": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0f3311df-bd8a-4813-9796-ed658c03ab51",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
