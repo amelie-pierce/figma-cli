@@ -1,0 +1,21 @@
+CHANGELOG.md
+  s_6d851320a680a0::t_5c59bc4d9a2e25 7
+_vaults/figma-cli/wiki/make/durable-vfs-api.md
+  s_6d851320a680a0::t_babb512d9abb40 13,18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4447bb8c880b09583bd042fd7b5eea10e3cb73ff",
+  "prompts": {},
+  "sessions": {
+    "s_6d851320a680a0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1badfdba-69d2-4a13-8cf3-a8c1ef51cb18",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
