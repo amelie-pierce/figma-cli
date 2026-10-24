@@ -79,6 +79,8 @@ session state, never that the project was saved. Report results that way.
   none active, the CLI reuses the first one on that exact project page. When no Files
   tab exists, the CLI automatically opens one through Add workspace tab → Files.
   Missing, disabled, or ambiguous menu controls stop the operation with an error.
+  `make preview` needs exactly one Browser tab open; its title becomes the previewed
+  page's title, and the CLI never opens one for you.
   Do not patch/restart Desktop to fix a selector mismatch.
 - If discovery fails, run `connection` for a read-only diagnostic. Report the
   endpoint, port source, and underlying error. Port precedence is `--port`,

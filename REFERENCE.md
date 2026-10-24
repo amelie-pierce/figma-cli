@@ -62,6 +62,10 @@ file key is checked before each action, so tabs are never matched by title. Only
 if no Files tab exists does the CLI open one through
 **Add workspace tab → Files**, waiting for the menu and file tree to become ready.
 Unavailable, disabled, or ambiguous controls stop the operation without a source edit.
+`make preview` selects the open Browser tab, which Make retitles with the previewed
+page's title, so the CLI takes the one workspace tab that is not a Files tab. It
+refuses when there is no Browser tab or more than one, and never opens or closes a
+tab; open one Browser tab in Make first.
 `make ui --file KEY` reports bounded control metadata without selecting tabs or
 reading source/input values. Use it for an unsupported layout. The old error
 `Expected exactly one Make Code tab` may indicate an outdated CLI adapter, not a

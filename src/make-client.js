@@ -18,6 +18,9 @@ import { lfsMatcher, PROJECT_EXCLUDES, PROJECT_MARKER, treeOf, workingFlat } fro
 import { SandboxGit } from './sandbox-git.js';
 
 const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
+// Make serves the live session preview from *.makeproxy-<x>.figma.site and the
+// Browser tab's cached preview from <id>-figmacachedpreview.figma.site.
+const PREVIEW_HOST = /(\.makeproxy-[a-z]+|-figmacachedpreview)\.figma\.site$/;
 const treeHidden = path => path.split('/').some(part => part.startsWith('.')) || TREE_HIDDEN_ROOT_FILES.includes(path);
 
 // createVersion may have run: the caller must inspect, never retry the save.
@@ -413,15 +416,20 @@ export class MakeClient {
         const visit = node => { if (!node) return; frames.push(node.frame); node.childFrames?.forEach(visit); };
         visit(tree.frameTree);
         const previews = frames.filter(frame => {
-          try { const url = new URL(frame.url); return url.protocol === 'https:' && /\.makeproxy-[a-z]+\.figma\.site$/.test(url.hostname); }
+          try { const url = new URL(frame.url); return url.protocol === 'https:' && PREVIEW_HOST.test(url.hostname); }
           catch { return false; }
         });
         const contextId = previews.length === 1 ? contexts.get(previews[0].id) : undefined;
         if (!contextId) {
-          const urls = await this._evaluate(`([...document.querySelectorAll('iframe')].map(el=>el.src).filter(value => { try { return /\\.makeproxy-[a-z]+\\.figma\\.site$/.test(new URL(value).hostname); } catch { return false; } }))`, deadline);
+          const urls = await this._evaluate(`([...document.querySelectorAll('iframe')].map(el=>el.src).filter(value => { try { const url = new URL(value); return url.protocol === 'https:' && ${PREVIEW_HOST}.test(url.hostname); } catch { return false; } }))`, deadline);
           if (urls.length !== 1) throw new Error('Exact Make preview iframe is unavailable.');
           const targets = await this.transport.send('Target.getTargets');
-          const matching = targets.targetInfos.filter(target => target.type === 'iframe' && target.url === urls[0]);
+          // The cached preview strips its one-time token and routes inside the
+          // app, so match the per-preview origin rather than the src URL.
+          const origin = new URL(urls[0]).origin;
+          const matching = targets.targetInfos.filter(target => {
+            try { return target.type === 'iframe' && new URL(target.url).origin === origin; } catch { return false; }
+          });
           if (matching.length !== 1) throw new Error('Exact isolated Make preview target is unavailable.');
           attachedSession = (await this.transport.send('Target.attachToTarget', { targetId: matching[0].targetId, flatten: true })).sessionId;
         }

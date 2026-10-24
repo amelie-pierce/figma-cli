@@ -99,6 +99,9 @@ target(make.command('ui').description('Report bounded Make workspace control met
   .action(options => withClient(options, async client => report(await client.ui())));
 
 target(make.command('preview').description('Inspect the running Make preview through the desktop connection'))
+  .addHelpText('after', '\nSelects the open Browser workspace tab, the one workspace tab that is not a Files tab; Make' +
+    '\nretitles it with the previewed page title. It refuses when there is no Browser tab or more' +
+    '\nthan one, and never opens or closes tabs. The page is read inside its own preview frame.')
   .action(options => withClient(options, async client => report(await client.preview())));
 
 target(make.command('files').description('Expand and list the source-file tree of the open session\'s working copy'))

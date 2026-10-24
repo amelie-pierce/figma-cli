@@ -36,8 +36,10 @@ export function makeWorkspace(action) {
     return buttons[0];
   });
   if (action === 'ensure-preview') {
-    const browsers = [...navigation[0].querySelectorAll('button')].filter(button => visible(button) && !files.includes(button) && button.innerText?.trim() === 'Browser');
-    if (browsers.length !== 1) throw new Error('Make Browser workspace tab is unavailable or ambiguous.');
+    // Make retitles the Browser tab with the previewed page's <title>, as Files
+    // tabs take filenames, so it is the one workspace tab that is not a Files tab.
+    const browsers = [...navigation[0].querySelectorAll('button[data-workspace-tab="true"]')].filter(button => visible(button) && !files.includes(button));
+    if (browsers.length !== 1) throw new Error(`Make Browser workspace tab is ${browsers.length ? 'ambiguous' : 'unavailable'}: found ${browsers.length} workspace tabs that are not Files tabs. Open exactly one Browser tab in Make, then retry.`);
     browsers[0].click();
     return { root, mode: 'files-workspace', ready: false };
   }

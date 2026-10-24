@@ -2,6 +2,7 @@
 
 - [cdp-page-discovery.md](cdp-page-discovery.md): how a Make command finds exactly one project page over CDP, and why project identity is the file key, never the title.
 - [files-tab-resolution.md](files-tab-resolution.md): how source commands pick, reuse or open a Files workspace tab inside the project page.
+- [browser-tab-preview.md](browser-tab-preview.md): how `make preview` picks the retitled Browser workspace tab structurally and finds the cached or live preview frame by origin.
 - [filesystem-bridge.md](filesystem-bridge.md): why editor-based commands refuse deep files and Markdown, and how read/replace/import/verify/remove reach any file in the session's sandbox working copy through Make's own filesystem socket.
 - [persistence.md](persistence.md): mode-specific Make saving, session-only CLI writes, the `--session-only` gate, durable writes to preview-only Markdown, root files Make does not list as pending, and `--first-version` for a never-saved git-mode file.
 - [durable-vfs-api.md](durable-vfs-api.md): current async VFS lookup, text-entry guards, legacy compatibility, and read-only live proof of the API repair.
