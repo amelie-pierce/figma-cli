@@ -13,4 +13,4 @@
 - [team.md](team.md): `figma-cli team` verbs for designers; own-branch and push rules in code, save checks, conflict auto-resolution limits, and the current-head non-author approval for merge.
 - [review.md](review.md): cross-review verbs (`team reviews`, `review`, `comment`, `approve`, `request-changes`, `feedback`, `address`); no self-review, no push from the detached review copy, commit-pinned approvals, and how Lavish notes map to pull request comments.
 - [mode.md](mode.md): `make mode team|solo`, the only path that adds or removes the team marker; tree-checked save, gate exemption scope, reload verification and receipts.
-- [deploy.md](deploy.md): `make deploy`, a repo admin's deploy of GitHub `main` into a team-mode Make file; guards, content-compared plan, write order, receipt, tag and recovery stages, and the live proof.
+- [deploy.md](deploy.md): `make deploy`, a repo admin's deploy of GitHub `main` into a team-mode Make file; guards, the `.figma-cli/deploy-ignore` list, content-compared plan, write order, receipt, tag and recovery stages, why root creates are refused, and the live proofs.

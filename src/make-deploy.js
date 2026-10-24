@@ -7,7 +7,7 @@ import { isIgnored, parseIgnore } from './git-tree.js';
 import { requireGitMode, TREE_HIDDEN_ROOT_FILES } from './make-durable.js';
 import { install as installProject } from './make-local.js';
 import { readRepoAccess } from './make-mode.js';
-import { detectMode, ghRunner, isRepoOnly, lfsMatcher, parseMarker, PROJECT_EXCLUDES, PROJECT_MARKER, repoName } from './make-project.js';
+import { detectMode, ghRunner, isRepoOnly, lfsMatcher, MAKE_MANAGED, parseMarker, PROJECT_EXCLUDES, PROJECT_MARKER, repoName } from './make-project.js';
 import { currentBranch, defaultRun, fetchMain, projectScripts, requireNoOperation, revOf, teamContext, TRUNK } from './make-team.js';
 
 // `make deploy`: a repo admin deploys GitHub main, from a local clone, into
@@ -26,7 +26,7 @@ export const MAX_FILE_BYTES = 2 * 1024 * 1024;
 export const DEPLOY_CODES = Object.freeze(['DEPLOY_SOLO', 'DEPLOY_NOT_TEAM', 'DEPLOY_REPO_MISMATCH', 'DEPLOY_NOT_ADMIN', 'DEPLOY_GH_FAILED',
   'DEPLOY_NOT_MAIN', 'DEPLOY_DIRTY', 'DEPLOY_NOT_CURRENT', 'DEPLOY_UNREVIEWED', 'DEPLOY_INSTALL_FAILED', 'DEPLOY_BUILD_FAILED',
   'DEPLOY_MAKE_BUSY', 'DEPLOY_MAKE_STATE', 'DEPLOY_MAKE_AHEAD', 'DEPLOY_UNFINISHED', 'DEPLOY_BINARY', 'DEPLOY_LFS',
-  'DEPLOY_UNSUPPORTED_PATH', 'DEPLOY_MARKER', 'DEPLOY_NOTHING', 'DEPLOY_STALE_PLAN', 'DEPLOY_MAIN_MOVED', 'DEPLOY_TAG_CLASH',
+  'DEPLOY_UNSUPPORTED_PATH', 'DEPLOY_IGNORE', 'DEPLOY_MARKER', 'DEPLOY_NOTHING', 'DEPLOY_STALE_PLAN', 'DEPLOY_MAIN_MOVED', 'DEPLOY_TAG_CLASH',
   'DEPLOY_WRITE_FAILED', 'DEPLOY_SAVE_UNCERTAIN', 'DEPLOY_DRIFT', 'DEPLOY_TAG_FAILED', 'DEPLOY_RECEIPT', 'DEPLOY_VERIFY_FAILED']);
 
 // Receipt stages. A blocking stage must be finished (--verify, --resume or
@@ -62,8 +62,35 @@ const SETTLE = Object.freeze({ quietMs: 10000, pollMs: 1000, timeoutMs: 180000 }
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const short = sha => String(sha).slice(0, 7);
 const SHA = /^[a-f0-9]{40}$/;
-const hard = parseIgnore(PROJECT_EXCLUDES.join('\n'));
-const alwaysExcluded = path => isIgnored(hard, path, false) || isRepoOnly(path);
+const matchesOrUnder = rules => path =>
+  path.split('/').some((_, index, parts) => isIgnored(rules, parts.slice(0, index + 1).join('/'), index < parts.length - 1));
+const isHardExcluded = matchesOrUnder(parseIgnore(PROJECT_EXCLUDES.join('\n')));
+const isMakeManaged = matchesOrUnder(parseIgnore(MAKE_MANAGED.join('\n')));
+const alwaysExcluded = path => isHardExcluded(path) || isMakeManaged(path) || isRepoOnly(path);
+const excludedReason = path => isRepoOnly(path) ? 'never deployed: project vault notes stay in the repo'
+  : isMakeManaged(path) ? 'never deployed: Make manages its own config' : 'never deployed: Make manages it or it can hold secrets';
+
+// main may commit DEPLOY_IGNORE: gitignore-style patterns for paths deploy
+// never writes, creates or deletes on either side. Repo-only development files
+// (docs, scripts, tests) stay in GitHub; Make-only files (Make's own AGENTS.md)
+// stay in Make. A path is ignored when it or one of its folders matches. The
+// file itself is repo-only. Patterns only remove paths from the comparison:
+// every other path still meets every guard.
+export const DEPLOY_IGNORE = '.figma-cli/deploy-ignore';
+export function ignorePatterns(bytes) {
+  if (bytes == null) return [];
+  const text = decode(bytes)?.replace(/^\uFEFF/, '');
+  if (text == null) fail(`main's ${DEPLOY_IGNORE} is not UTF-8 text. Fix it through a pull request. Nothing was deployed.`, 'DEPLOY_IGNORE');
+  return text.split(/\r?\n/).map(line => line.replace(/(?<!\\)\s+$/, '')).filter(line => line && !line.startsWith('#'));
+}
+export function ignoreMatcher(patterns = []) {
+  const matches = matchesOrUnder(parseIgnore(patterns.join('\n')));
+  return path => path === DEPLOY_IGNORE || matches(path);
+}
+const ignoreOf = (flat, bytes) => {
+  const entry = flat.get(DEPLOY_IGNORE);
+  return entry ? ignorePatterns(bytes(entry.blob)) : [];
+};
 
 export function fail(message, code, extra = {}) {
   const error = new Error(message);
@@ -278,14 +305,22 @@ export function requireMakeReady(status, ui, mainFlat = new Map()) {
 
 // Make must hold exactly what the last deploy put there. The base is the
 // newest tag's mainTree; on the first deploy it is Make's saved tree itself.
-export function requireBase(status, base, { isLfs = () => false } = {}) {
-  const skip = path => alwaysExcluded(path) || isLfs(path) || (path === PROJECT_MARKER && !base.flat.has(PROJECT_MARKER));
+// ignored: paths main's or the base's DEPLOY_IGNORE kept out of deploys.
+export function requireBase(status, base, { isLfs = () => false, ignored = () => false } = {}) {
+  const skip = path => alwaysExcluded(path) || ignored(path) || isLfs(path) || (path === PROJECT_MARKER && !base.flat.has(PROJECT_MARKER));
   const ahead = contentDiff(status.makeFlat, base.flat, skip);
   if (ahead.length) {
     fail(`Make was edited outside deploys since ${base.tag}: ${ahead.length} path(s) differ from what was deployed ${JSON.stringify(ahead.slice(0, 20))}. ` +
       'Deploy refuses to overwrite them (make-ahead). Bring them into main first with the coming make rescue step, then deploy.', 'DEPLOY_MAKE_AHEAD', { paths: ahead });
   }
 }
+
+const ignoredReason = (path, m, k) => {
+  if (path === DEPLOY_IGNORE) return 'never deployed: the deploy ignore list stays in the repo';
+  if (!k) return `listed in ${DEPLOY_IGNORE}: stays in the repo, never created in Make`;
+  if (!m) return `listed in ${DEPLOY_IGNORE}: Make keeps its own, never deleted`;
+  return `listed in ${DEPLOY_IGNORE}: neither side is changed`;
+};
 
 const decode = bytes => {
   try {
@@ -297,6 +332,8 @@ const decode = bytes => {
 // Compare main with Make's saved tree and decide every path. Pure apart from
 // mainBytes(blob), which reads a blob from the clone.
 export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes }) {
+  const patterns = ignoreOf(main.flat, mainBytes);
+  const ignored = ignoreMatcher(patterns);
   const gitattributes = main.flat.get('.gitattributes');
   const mainLfs = lfsMatcher(gitattributes ? mainBytes(gitattributes.blob).toString('utf8') : null);
   const isLfs = path => mainLfs(path) || (status.isLfs ? status.isLfs(path) : false);
@@ -309,9 +346,10 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes }) {
     const m = main.flat.get(path);
     const k = status.makeFlat.get(path);
     if (alwaysExcluded(path)) {
-      excluded.push({ path, reason: isRepoOnly(path) ? 'never deployed: project vault notes stay in the repo' : 'never deployed: Make manages it or it can hold secrets' });
+      excluded.push({ path, reason: excludedReason(path) });
       continue;
     }
+    if (ignored(path)) { excluded.push({ path, reason: ignoredReason(path, m, k) }); continue; }
     if (path === PROJECT_MARKER && !m) { excluded.push({ path, reason: 'main has no team marker; Make keeps its own' }); continue; }
     if (m && (m.type !== 'blob' || !['100644', '100755'].includes(m.mode))) { refused.unsupported.push(`${path} (${m.type === 'commit' ? 'submodule' : 'symbolic link'})`); continue; }
     if (m?.blob === k?.blob) {
@@ -362,14 +400,17 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes }) {
     makeBefore: { versionGitSha: status.persistence.savedVersion, tree: status.makeTree },
     base: { source: base.source, ...(base.tag ? { tag: base.tag } : {}), ...(base.mainTree ? { mainTree: base.mainTree } : {}),
       ...(base.receipt ? { receipt: base.receipt } : {}) },
+    ...(main.flat.has(DEPLOY_IGNORE) ? { ignore: { path: DEPLOY_IGNORE, blob: main.flat.get(DEPLOY_IGNORE).blob, patterns } } : {}),
     files, excluded, modeOnly };
   return { ...plan, digest: planDigest(plan) };
 }
 
-// Paths outside the deploy comparison, as the plan recorded them.
+// Paths outside the deploy comparison, as the plan recorded them, and any
+// path main's DEPLOY_IGNORE patterns name (a Make-only file added later too).
 const skipOf = plan => {
   const excluded = new Set(plan.excluded.map(entry => entry.path));
-  return path => alwaysExcluded(path) || excluded.has(path);
+  const ignored = ignoreMatcher(plan.ignore?.patterns);
+  return path => alwaysExcluded(path) || excluded.has(path) || ignored(path);
 };
 
 // --- the shared guard run ----------------------------------------------------
@@ -439,7 +480,10 @@ async function prepare(client, { dir, reviewed }, deps) {
   if (own) base = { source: 'receipt', receipt: own.deployId, flat: status.makeFlat };
   else if (tags.length) {
     base = tagBase(ctx, tags[0]);
-    requireBase(status, base, { isLfs });
+    const blob = hash => readBlob(ctx.root, hash);
+    const now = ignoreMatcher(ignoreOf(mainFlat, blob));
+    const then = ignoreMatcher(ignoreOf(base.flat, blob));
+    requireBase(status, base, { isLfs, ignored: path => now(path) || then(path) });
   } else base = { source: 'first-deploy', flat: status.makeFlat };
   const plan = buildPlan({ fileKey: client.fileKey, repo, n, main: { ...main, flat: mainFlat }, status, base,
     mainBytes: blob => readBlob(ctx.root, blob) });
@@ -449,6 +493,7 @@ async function prepare(client, { dir, reviewed }, deps) {
 const counts = files => ({ add: files.filter(f => f.op === 'add').length, modify: files.filter(f => f.op === 'modify').length,
   delete: files.filter(f => f.op === 'delete').length });
 const countText = c => `${c.add} new, ${c.modify} changed and ${c.delete} deleted file(s)`;
+const excludedText = plan => (plan.excluded.length ? ` ${plan.excluded.length} excluded path(s) stay as they are on each side.` : '');
 
 // --- dry run -----------------------------------------------------------------
 
@@ -460,11 +505,12 @@ export async function deployPlan(client, { dir } = {}, deps = {}) {
   if (plan.files.length) writeJson(planPath, plan);
   return { dryRun: true, fileKey: plan.fileKey, repo: plan.repo, who: access.login, mainCommit: plan.mainCommit, pr, build: built,
     base: plan.base, tag: plan.tag, counts: c, files: plan.files.map(({ path, op }) => ({ path, op })),
-    excluded: plan.excluded, modeOnly: plan.modeOnly, digest: plan.digest,
+    excluded: plan.excluded, excludedCount: plan.excluded.length, ...(plan.ignore ? { ignore: plan.ignore } : {}),
+    modeOnly: plan.modeOnly, digest: plan.digest,
     ...(plan.files.length ? { planPath, next: `figma-cli make deploy --file ${plan.fileKey} --dir ${dir || '.'} --apply ${planPath}` } : {}),
     summary: plan.files.length
-      ? `Deploying main ${short(plan.mainCommit)} would write ${countText(c)} to Make and save it as one version "deploy ${short(plan.mainCommit)}", tagged ${plan.tag}. Nothing was changed yet.`
-      : `Make already matches main ${short(plan.mainCommit)}; there is nothing to deploy.` };
+      ? `Deploying main ${short(plan.mainCommit)} would write ${countText(c)} to Make and save it as one version "deploy ${short(plan.mainCommit)}", tagged ${plan.tag}.${excludedText(plan)} Nothing was changed yet.`
+      : `Make already matches main ${short(plan.mainCommit)}; there is nothing to deploy.${excludedText(plan)}` };
 }
 
 // --- apply, resume and the shared finish ------------------------------------
@@ -474,7 +520,7 @@ function newReceipt(plan, who, at, home) {
   return { schema: RECEIPT_SCHEMA, deployId, who, at, repo: plan.repo, mainCommit: plan.mainCommit, mainTree: plan.mainTree,
     fileKey: plan.fileKey, tag: { name: plan.tag, n: plan.n, pushed: false }, makeBefore: plan.makeBefore, makeAfter: null,
     planDigest: plan.digest, files: plan.files.map(({ path, op, beforeSha256, afterSha256 }) => ({ path, op, beforeSha256, afterSha256, backupPath: null })),
-    excluded: plan.excluded, base: plan.base, completedWrites: [], stage: 'writing', outcome: 'uncertain', verification: null, error: null,
+    excluded: plan.excluded, excludedCount: plan.excluded.length, base: plan.base, completedWrites: [], stage: 'writing', outcome: 'uncertain', verification: null, error: null,
     plan, receiptPath: join(deployDir(home), `${deployId}.json`) };
 }
 
@@ -635,7 +681,7 @@ const publicReceipt = receipt => ({ schema: receipt.schema, deployId: receipt.de
   repo: receipt.repo, mainCommit: receipt.mainCommit, mainTree: receipt.mainTree, fileKey: receipt.fileKey,
   makeBefore: receipt.makeBefore, makeAfter: receipt.makeAfter, planDigest: receipt.planDigest,
   files: receipt.files.map(({ path, op, beforeSha256, afterSha256 }) => ({ path, op, beforeSha256, afterSha256 })),
-  excluded: receipt.excluded });
+  excluded: receipt.excluded, excludedCount: receipt.excluded.length });
 
 // Who holds make-deploy/<n> on GitHub: null when nobody, 'ours' when it tags
 // this receipt's commit with this deployId, otherwise 'theirs'.
@@ -760,7 +806,7 @@ export async function deployApply(client, { dir, planPath } = {}, deps = {}) {
 
 const result = (receipt, summary) => ({ deployId: receipt.deployId, fileKey: receipt.fileKey, repo: receipt.repo, who: receipt.who,
   mainCommit: receipt.mainCommit, tag: receipt.tag, makeBefore: receipt.makeBefore, makeAfter: receipt.makeAfter,
-  counts: counts(receipt.files), outcome: receipt.outcome, stage: receipt.stage, verification: receipt.verification,
+  counts: counts(receipt.files), excludedCount: receipt.excluded.length, outcome: receipt.outcome, stage: receipt.stage, verification: receipt.verification,
   receiptPath: receipt.receiptPath, summary });
 
 // Each planned path in Make's working copy: still as before, already as
