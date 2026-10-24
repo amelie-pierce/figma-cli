@@ -527,13 +527,21 @@ export class MakeClient {
 
   // Absence is proven by listing an existing ancestor folder, never the project
   // root (only make status lists it). Refuse before changing anything when the
-  // nearest listable ancestor would be the root.
-  async _requireListableAncestor(path, deadline) {
+  // nearest listable ancestor would be the root. baseFolders names top-level
+  // folders the caller's saved base holds: one an earlier delete in the same
+  // operation emptied (Make then drops it from the tree) may be created again
+  // when nothing is rendered at that name and Make's fetchEntry finds no file.
+  async _requireListableAncestor(path, deadline, baseFolders = []) {
     const [top, ...rest] = path.split('/');
-    if (!rest.length || (!top.startsWith('.') && !(await this._sourceTree(deadline))
-      .some(entry => entry.kind === 'folder' && entry.path === top))) {
+    const refuse = () => {
       throw new Error(`Make cannot prove ${path} absent: only files below an existing top-level folder can be created or deleted.`);
-    }
+    };
+    if (!rest.length) refuse();
+    if (top.startsWith('.')) return;
+    const tree = await this._sourceTree(deadline);
+    if (tree.some(entry => entry.kind === 'folder' && entry.path === top)) return;
+    if (!baseFolders.includes(top) || tree.some(entry => entry.path === top) ||
+        (await this._durable({ type: 'read', path }, deadline)).exists) refuse();
   }
 
   // Returns which independent views agreed. On timeout, the error names the
@@ -633,8 +641,9 @@ export class MakeClient {
 
   // rewrite: write even when Make already holds this content, so Make's client
   // owns it (createVersion skips a lockfile only Make's install rewrote).
+  // baseFolders: see _requireListableAncestor.
   writeDurable(path, content, { expectedSha256, firstVersion = false, rewrite = false, releaseAsset = false, vendorTreeFallback = false,
-    backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
+    baseFolders = [], backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     sourcePath(path);
     if (releaseAsset && !path.startsWith('public/atomicaui/')) {
       throw new Error('Three-view release verification is limited to public/atomicaui/.');
@@ -652,7 +661,7 @@ export class MakeClient {
       if (existing.exists !== (expectedSha256 != null)) throw new Error('Expected SHA-256 is required for an existing file and forbidden for a new file.');
       const originalSha256 = existing.exists ? sha256(existing.content) : null;
       if (existing.exists && originalSha256 !== expectedSha256.toLowerCase()) throw new Error('Make source changed; SHA-256 does not match.');
-      if (!existing.exists) await this._requireListableAncestor(path, deadline);
+      if (!existing.exists) await this._requireListableAncestor(path, deadline, baseFolders);
       const treeState = {};
       await this._durableAgreement(path, existing.exists ? existing.content : null, deadline, { treeState, releaseAsset, vendorTreeFallback });
       if (existing.exists && existing.content === content && !rewrite) return { fileKey: this.fileKey, path, changed: false, sha256: originalSha256, verification: 'unchanged' };

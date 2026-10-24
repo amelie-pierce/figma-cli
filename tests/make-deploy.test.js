@@ -161,13 +161,23 @@ class FakeMake {
     writeFileSync(join(dir, 'metadata.json'), JSON.stringify({ fileKey: KEY, path, sha256: sha256(bytes) }));
     return join(dir, 'original.txt');
   }
-  async writeDurable(path, content, { expectedSha256, backupDir, rewrite = false } = {}) {
+  // figma-cli's own absence guard for a new file, over the working copy as
+  // Make renders it: a folder with no file left below it is gone.
+  async requireAncestor(path, baseFolders) {
+    const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
+    client._sourceTree = async () => [...this.working.keys()].flatMap(file => file.split('/').map((_, index, parts) =>
+      ({ kind: index === parts.length - 1 ? 'file' : 'folder', path: parts.slice(0, index + 1).join('/') })));
+    client._durable = async ({ path: target }) => ({ exists: this.working.has(target) });
+    await client._requireListableAncestor(path, Date.now() + 1000, baseFolders);
+  }
+  async writeDurable(path, content, { expectedSha256, backupDir, rewrite = false, baseFolders } = {}) {
     this.calls.push(['write', path]);
     this.hooks.beforeWrite?.(path);
     this.landUnder('write');
     const current = this.working.get(path);
     if ((current != null) !== (expectedSha256 != null)) throw new Error('Expected SHA-256 is required for an existing file and forbidden for a new file.');
     if (current && sha256(current) !== expectedSha256) throw new Error('Make source changed; SHA-256 does not match.');
+    if (!current) await this.requireAncestor(path, baseFolders);
     if (current && current.equals(Buffer.from(content)) && !rewrite) return { path, changed: false, backupPath: null };
     const backupPath = current ? this.backup(path, current, backupDir) : null;
     this.working.set(path, Buffer.from(content));
@@ -1436,5 +1446,93 @@ describe('make deploy ignore list', () => {
     assert.deepEqual(driftProblems(status, receipt, mainFlat), []);
     for (const flat of [status.makeFlat, status.workingFlat]) flat.set('src/extra.ts', { mode: '100644', blob: 'e'.repeat(40) });
     assert.match(driftProblems(status, receipt, mainFlat).join(), /src\/extra\.ts/);
+  });
+});
+
+// The LMA deploy (figma-cli 8c9f907): Make's only public/ file is deleted
+// while main adds files below public/. Run first, that delete dropped public/
+// from Make's tree and every later public/ create refused.
+describe('make deploy across a top-level folder it empties', () => {
+  const FONT = { 'public/fonts/OFL.txt': 'SIL Open Font License\n', 'public/fonts/inter.css': '@font-face { font-family: Inter; }\n' };
+  const CHANGE = { '.github/workflows/build.yml': 'on: push\n', 'src/App.tsx': 'export const App = () => "v2";\n', 'public/favicon.svg': null, ...FONT };
+  const start = t => {
+    const s = setup(t, { files: { ...BASE, 'public/favicon.svg': '<svg/>\n' } });
+    landChange(s, CHANGE);
+    return s;
+  };
+  // The receipt 8c9f907 left: its order ran the delete before the public/
+  // adds, and the first of those refused once public/ was gone.
+  const lmaReceipt = async t => {
+    const s = start(t);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.beforeWrite = () => { throw new Error('stopped before the old write order'); };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => { receiptPath = error.receiptPath; return true; });
+    s.make.hooks.beforeWrite = null;
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+    const backupDir = join(s.p.home, '.figma-cli', 'deploys', 'backups', receipt.deployId);
+    const done = [];
+    for (const path of ['.github/workflows/build.yml', 'src/App.tsx', 'public/favicon.svg']) {
+      const file = receipt.plan.files.find(item => item.path === path);
+      const result = file.op === 'delete'
+        ? await s.make.deleteDurable(path, { expectedSha256: file.beforeSha256, backupDir })
+        : await s.make.writeDurable(path, CHANGE[path], { expectedSha256: file.beforeSha256 ?? undefined, backupDir });
+      done.push({ path, op: file.op, backupPath: result.backupPath ?? null });
+    }
+    await assert.rejects(s.make.writeDurable('public/fonts/OFL.txt', FONT['public/fonts/OFL.txt'], { backupDir }),
+      /cannot prove public\/fonts\/OFL\.txt absent: only files below an existing top-level folder/);
+    receipt.completedWrites = done;
+    receipt.error = 'Make cannot prove public/fonts/OFL.txt absent: only files below an existing top-level folder can be created or deleted.';
+    writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+    assert.ok(![...s.make.working.keys()].some(path => path.startsWith('public/')));
+    return { s, receiptPath };
+  };
+
+  it('applies the adds below the folder before deleting its only file, and keeps dependency files last', async t => {
+    const s = start(t);
+    const pkg = `${JSON.stringify({ ...PKG, version: '2.0.0' }, null, 2)}\n`;
+    s.p.land({ 'package.json': pkg });
+    s.p.pull();
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    assert.deepEqual(plan.counts, { add: 3, modify: 2, delete: 1 });
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.stage, 'deployed');
+    assert.deepEqual(s.make.writes.filter(([kind]) => kind !== 'save').map(([kind, path]) => `${kind} ${path}`), [
+      'write .github/workflows/build.yml', 'write public/fonts/OFL.txt', 'write public/fonts/inter.css', 'write src/App.tsx',
+      'delete public/favicon.svg', 'write package.json']);
+    assert.deepEqual([...s.make.saved.keys()].filter(path => path.startsWith('public/')).sort(), Object.keys(FONT).sort());
+  });
+
+  it('resumes the receipt whose delete emptied the folder and creates every file below it', async t => {
+    const { s, receiptPath } = await lmaReceipt(t);
+    const before = s.make.writes.length;
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath }, s.deps);
+    assert.equal(resumed.outcome, 'ok');
+    assert.deepEqual(s.make.writes.slice(before).filter(([kind]) => kind !== 'save').map(([kind, path]) => `${kind} ${path}`),
+      ['write public/fonts/OFL.txt', 'write public/fonts/inter.css']);
+    for (const [path, content] of Object.entries(FONT)) assert.equal(s.make.saved.get(path).toString(), content);
+    assert.equal(s.make.saved.has('public/favicon.svg'), false);
+    assert.deepEqual(s.p.tags(), ['make-deploy/0']);
+    assert.equal((await deployVerify(s.make, { ...s.opts, receiptPath }, s.deps)).outcome, 'ok');
+  });
+
+  it('aborts the receipt, restoring the deleted file into the emptied folder before the adds go', async t => {
+    const { s, receiptPath } = await lmaReceipt(t);
+    const before = s.make.writes.length;
+    const aborted = await deployAbort(s.make, { receiptPath }, s.deps);
+    assert.equal(aborted.outcome, 'aborted');
+    assert.deepEqual(s.make.writes.slice(before).map(([kind, path]) => `${kind} ${path}`),
+      ['write public/favicon.svg', 'write src/App.tsx', 'delete .github/workflows/build.yml']);
+    assert.deepEqual(s.make.changed(), []);
+    assert.equal(s.make.calls.filter(([kind]) => kind === 'save').length, 0);
+  });
+
+  it('still refuses a new top-level folder and a new root file the saved base does not hold', async t => {
+    const s = start(t);
+    await assert.rejects(s.make.writeDurable('docs/probe.md', 'x\n', { baseFolders: ['public', 'src'] }), /cannot prove docs\/probe\.md absent/);
+    await assert.rejects(s.make.writeDurable('NOTES.md', 'x\n', { baseFolders: ['NOTES.md'] }), /cannot prove NOTES\.md absent/);
+    s.p.land({ 'docs/guide.md': 'guide\n' });
+    s.p.pull();
+    await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_UNSUPPORTED_PATH', /docs\/guide\.md/);
   });
 });

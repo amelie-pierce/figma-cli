@@ -50,8 +50,18 @@ const isLockfile = path => TREE_HIDDEN_ROOT_FILES.includes(path);
 // A lockfile Make's install already rewrote to main's content before the
 // deploy started: no original to back up or restore.
 const noOriginal = file => isLockfile(file.path) && file.beforeSha256 === file.afterSha256;
-const writeRank = path => (isLockfile(path) ? 2 : path === 'package.json' ? 1 : 0);
-const byWriteOrder = (a, b) => writeRank(a.path) - writeRank(b.path) || (a.path < b.path ? -1 : 1);
+// Deletes follow the other writes: deleting a top-level folder's only file
+// drops the folder from Make's tree, and creates under it would then refuse
+// (LMA: public/favicon.svg ran before the public/fonts adds).
+const writeRank = (path, removes) => (isLockfile(path) ? 3 : path === 'package.json' ? 2 : removes ? 1 : 0);
+const writeOrder = removes => (a, b) => writeRank(a.path, removes(a)) - writeRank(b.path, removes(b)) || (a.path < b.path ? -1 : 1);
+const byWriteOrder = writeOrder(file => file.op === 'delete');
+// Abort undoes an add with a delete and a delete with a create.
+const byRestoreOrder = writeOrder(file => file.op === 'add');
+// Top-level folders of planned paths. Each held Make files when the plan was
+// built (a new top-level folder is refused), so it is in the saved base even
+// when an earlier delete of this deploy emptied it.
+const baseFolders = plan => [...new Set(plan.files.filter(file => file.path.includes('/')).map(file => file.path.split('/')[0]))];
 // How many times one path is tried, and how many settle-and-check rounds run.
 const ROUNDS = 3;
 // Idle means: no busy editor, no loading state, and the persistence state and
@@ -610,7 +620,7 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
         if (file.op === 'delete') result = await client.deleteDurable(file.path, { expectedSha256: expected, backupDir: backupDir(receipt, home) });
         else {
           result = await client.writeDurable(file.path, content, { expectedSha256: expected ?? undefined, backupDir: backupDir(receipt, home),
-            rewrite: isLockfile(file.path) });
+            rewrite: isLockfile(file.path), baseFolders: baseFolders(receipt.plan) });
         }
       } catch (error) {
         if (error.backupPath) recordWrite(receipt, file, error.backupPath, { uncertain: true });
@@ -928,13 +938,16 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
   // Restore dependency files last. Their writes can start Make's install;
   // settle and check the entire plan before the next write or retry.
   for (let round = 1; ; round++) {
-    for (const file of [...todo].sort(byWriteOrder)) {
+    for (const file of [...todo].sort(byRestoreOrder)) {
       for (let attempt = 1; ; attempt++) {
         const current = status.workingSha256.get(file.path) ?? null;
         try {
           const content = contents.has(file.path) ? contents.get(file.path) : restoreOf(file);
           if (file.op === 'add') await client.deleteDurable(file.path, { expectedSha256: current, backupDir: backupDir(receipt, deps.home) });
-          else await client.writeDurable(file.path, content, { expectedSha256: current ?? undefined, backupDir: backupDir(receipt, deps.home) });
+          else {
+            await client.writeDurable(file.path, content, { expectedSha256: current ?? undefined, backupDir: backupDir(receipt, deps.home),
+              baseFolders: baseFolders(receipt.plan) });
+          }
         } catch (error) {
           if (attempt >= ROUNDS || (error.code !== 'MAKE_PENDING_CHANGED' && !isDependency(file.path))) {
             stopAbort(error, `Abort stopped while restoring: ${error.message} Run --abort again.`);

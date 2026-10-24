@@ -417,6 +417,24 @@ describe('Make durable writes and deletes across a guarded tree refresh', () => 
     assert.equal(result.verification, 'tree-vfs-sandbox-delete-matched');
   });
 
+  it('recreates a base top-level folder an earlier delete emptied, and refuses without it in the base', async () => {
+    const make = () => fakeMake(tree(), { 'src/lib/old.ts': 'old' },
+      ({ nodes }) => nodes.push(folder('public', [folder('fonts', [file('OFL.txt')])])));
+    await assert.rejects(make().writeDurable('public/fonts/OFL.txt', 'license'), /cannot prove public\/fonts\/OFL\.txt absent/);
+    await assert.rejects(make().writeDurable('public/fonts/OFL.txt', 'license', { baseFolders: ['src'] }), /cannot prove/);
+    const result = await make().writeDurable('public/fonts/OFL.txt', 'license', { baseFolders: ['public'] });
+    assert.equal(result.verification, 'tree-vfs-sandbox-matched');
+    // A rendered file at the folder's name, or a VFS file at the path, still refuses.
+    const shadowed = fakeMake([...tree(), file('public')], { 'src/lib/old.ts': 'old' }, () => {});
+    await assert.rejects(shadowed.writeDurable('public/fonts/OFL.txt', 'license', { baseFolders: ['public'] }), /cannot prove/);
+    const present = fakeMake(tree(), { 'src/lib/old.ts': 'old' }, () => {});
+    const read = present._durable;
+    present._durable = async action => (action.type === 'read' && action.path === 'public/fonts/OFL.txt' && present.raced
+      ? { exists: true, content: 'raced' } : read(action));
+    present._sourceTree = async () => { present.raced = true; return [{ kind: 'folder', path: 'src' }]; };
+    await assert.rejects(present.writeDurable('public/fonts/OFL.txt', 'license', { baseFolders: ['public'] }), /cannot prove/);
+  });
+
   it('refuses a delete when an unrelated file disappears with the emptied folder', async () => {
     const client = fakeMake(tree(folder('field', [file('Input.tsx')])), { 'src/lib/old.ts': 'old', 'src/field/Input.tsx': 'input' },
       ({ nodes }) => { nodes[0].children.splice(1, 1); nodes[0].children[0].children.splice(0, 1); });
