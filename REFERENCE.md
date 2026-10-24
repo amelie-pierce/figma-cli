@@ -414,8 +414,8 @@ Guards, each refusing with nothing written:
 
 The plan compares `main`'s tree with Make's saved tree by content (Make commits
 files it writes as `100644`, so mode-only differences are listed, not written).
-`.npmrc`, `.figma/design-context/` and the repo-only project vault `_vaults/`
-are never deployed (`make status` leaves `_vaults/` out of its comparison too); `.figma-cli/project.json`
+`.npmrc`, `.figma/design-context/`, Make's own config `.figma/make/` and the
+repo-only project vault `_vaults/` are never deployed (`make status` leaves `_vaults/` out of its comparison too); `.figma-cli/project.json`
 is kept in Make when `main` has none, and refused when `main`'s names another file
 or repo (`DEPLOY_MARKER`). Binary files and files over 2 MiB (`DEPLOY_BINARY`),
 LFS paths that differ (`DEPLOY_LFS`), and new or deleted files directly in the
@@ -432,7 +432,8 @@ patterns (comments with `#`, `!` negation, a trailing `/` for a folder, a leadin
 depth). A path is ignored when it or one of its folders matches. Ignored paths
 are never written, created or deleted on either side: a repo-only file stays in
 GitHub and is never created in Make, a Make-only file stays in Make and is never
-deleted. The list itself is repo-only, and `_vaults/` stays excluded without it.
+deleted. The list itself is repo-only, and `_vaults/` and `.figma/make/` stay
+excluded without it. A leading UTF-8 byte order mark is ignored.
 The patterns are read from `main`'s committed tree, recorded in the plan as
 `ignore{path,blob,patterns}` (so the digest covers them) and every ignored path
 is listed under `excluded` with its reason, with `excludedCount` in the dry run,

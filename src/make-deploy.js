@@ -7,7 +7,7 @@ import { isIgnored, parseIgnore } from './git-tree.js';
 import { requireGitMode, TREE_HIDDEN_ROOT_FILES } from './make-durable.js';
 import { install as installProject } from './make-local.js';
 import { readRepoAccess } from './make-mode.js';
-import { detectMode, ghRunner, isRepoOnly, lfsMatcher, parseMarker, PROJECT_EXCLUDES, PROJECT_MARKER, repoName } from './make-project.js';
+import { detectMode, ghRunner, isRepoOnly, lfsMatcher, MAKE_MANAGED, parseMarker, PROJECT_EXCLUDES, PROJECT_MARKER, repoName } from './make-project.js';
 import { currentBranch, defaultRun, fetchMain, projectScripts, requireNoOperation, revOf, teamContext, TRUNK } from './make-team.js';
 
 // `make deploy`: a repo admin deploys GitHub main, from a local clone, into
@@ -62,8 +62,13 @@ const SETTLE = Object.freeze({ quietMs: 10000, pollMs: 1000, timeoutMs: 180000 }
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const short = sha => String(sha).slice(0, 7);
 const SHA = /^[a-f0-9]{40}$/;
-const hard = parseIgnore(PROJECT_EXCLUDES.join('\n'));
-const alwaysExcluded = path => isIgnored(hard, path, false) || isRepoOnly(path);
+const matchesOrUnder = rules => path =>
+  path.split('/').some((_, index, parts) => isIgnored(rules, parts.slice(0, index + 1).join('/'), index < parts.length - 1));
+const isHardExcluded = matchesOrUnder(parseIgnore(PROJECT_EXCLUDES.join('\n')));
+const isMakeManaged = matchesOrUnder(parseIgnore(MAKE_MANAGED.join('\n')));
+const alwaysExcluded = path => isHardExcluded(path) || isMakeManaged(path) || isRepoOnly(path);
+const excludedReason = path => isRepoOnly(path) ? 'never deployed: project vault notes stay in the repo'
+  : isMakeManaged(path) ? 'never deployed: Make manages its own config' : 'never deployed: Make manages it or it can hold secrets';
 
 // main may commit DEPLOY_IGNORE: gitignore-style patterns for paths deploy
 // never writes, creates or deletes on either side. Repo-only development files
@@ -74,14 +79,13 @@ const alwaysExcluded = path => isIgnored(hard, path, false) || isRepoOnly(path);
 export const DEPLOY_IGNORE = '.figma-cli/deploy-ignore';
 export function ignorePatterns(bytes) {
   if (bytes == null) return [];
-  const text = decode(bytes);
+  const text = decode(bytes)?.replace(/^\uFEFF/, '');
   if (text == null) fail(`main's ${DEPLOY_IGNORE} is not UTF-8 text. Fix it through a pull request. Nothing was deployed.`, 'DEPLOY_IGNORE');
   return text.split(/\r?\n/).map(line => line.replace(/(?<!\\)\s+$/, '')).filter(line => line && !line.startsWith('#'));
 }
 export function ignoreMatcher(patterns = []) {
-  const rules = parseIgnore(patterns.join('\n'));
-  return path => path === DEPLOY_IGNORE ||
-    path.split('/').some((_, index, parts) => isIgnored(rules, parts.slice(0, index + 1).join('/'), index < parts.length - 1));
+  const matches = matchesOrUnder(parseIgnore(patterns.join('\n')));
+  return path => path === DEPLOY_IGNORE || matches(path);
 }
 const ignoreOf = (flat, bytes) => {
   const entry = flat.get(DEPLOY_IGNORE);
@@ -342,7 +346,7 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes }) {
     const m = main.flat.get(path);
     const k = status.makeFlat.get(path);
     if (alwaysExcluded(path)) {
-      excluded.push({ path, reason: isRepoOnly(path) ? 'never deployed: project vault notes stay in the repo' : 'never deployed: Make manages it or it can hold secrets' });
+      excluded.push({ path, reason: excludedReason(path) });
       continue;
     }
     if (ignored(path)) { excluded.push({ path, reason: ignoredReason(path, m, k) }); continue; }

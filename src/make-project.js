@@ -12,6 +12,10 @@ export const PROJECT_MARKER = '.figma-cli/project.json';
 // sandbox's .git/info/exclude: Make's registry config (secret-bearing, never
 // read) and Figma's design context. Tracked paths never override these.
 export const PROJECT_EXCLUDES = Object.freeze(['/.npmrc', '/.figma/design-context/']);
+// Make's own config (dev and site settings). Make's saved tree tracks it, so it
+// stays in the inventory and the tree hashes; make deploy never writes or
+// deletes it.
+export const MAKE_MANAGED = Object.freeze(['/.figma/make/']);
 // Repo-only paths: project vault notes live in the GitHub repo and never in
 // Make (which cannot create a new top-level folder anyway). make deploy and
 // make status leave them out of the comparison, like PROJECT_EXCLUDES.

@@ -1313,6 +1313,31 @@ describe('make deploy ignore list', () => {
     assert.throws(() => ignorePatterns(Buffer.from([0xff, 0xfe, 0x00])), error => error.code === 'DEPLOY_IGNORE');
   });
 
+  it('reads a list saved with a UTF-8 byte order mark', () => {
+    const patterns = ignorePatterns(Buffer.from(`\uFEFF/docs/\n/AGENTS.md\n`));
+    assert.deepEqual(patterns, ['/docs/', '/AGENTS.md']);
+    assert.equal(ignoreMatcher(patterns)('docs/guide.md'), true);
+    assert.deepEqual(ignorePatterns(Buffer.from(`\uFEFF# comment\n/docs/\n`)), ['/docs/']);
+  });
+
+  it('never writes or deletes Make\'s own .figma/make config or files under .figma/design-context', async t => {
+    const MAKE_CONFIG = { '.figma/make/dev.json': '{"dev":1}\n', '.figma/make/site.json': '{"site":1}\n' };
+    const s = setup(t, { makeFiles: { ...BASE, ...MAKE_CONFIG } });
+    landChange(s, { '.figma/design-context/x.json': '{"x":1}\n', 'src/App.tsx': 'v2\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    assert.deepEqual(plan.files, [{ path: 'src/App.tsx', op: 'modify' }]);
+    const reason = path => plan.excluded.find(entry => entry.path === path)?.reason;
+    for (const path of Object.keys(MAKE_CONFIG)) assert.match(reason(path), /Make manages its own config/, path);
+    assert.match(reason('.figma/design-context/x.json'), /never deployed/);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.outcome, 'ok');
+    assert.ok(!s.make.writes.some(([, path]) => String(path).startsWith('.figma/')), 'nothing under .figma is written or deleted');
+    for (const [path, content] of Object.entries(MAKE_CONFIG)) assert.equal(s.make.saved.get(path).toString(), content, `Make keeps ${path}`);
+    assert.equal(s.make.saved.has('.figma/design-context/x.json'), false);
+    const verified = await deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps);
+    assert.equal(verified.verification, 'saved-clean-tree-matched, fresh-sandbox-verified');
+  });
+
   it('refuses the LMA shape without a list, exactly as before', async t => {
     const s = ignoredSetup(t);
     landChange(s, { ...REPO_DEV, 'src/App.tsx': 'v2\n' });

@@ -368,7 +368,7 @@ new or deleted files at the project root or in a new top-level folder through
 figma-cli, so `main` may commit `.figma-cli/deploy-ignore` (gitignore syntax)
 naming paths the deploy leaves alone on both sides: repo-only files such as
 `/docs/`, `/tests/` or `/README.md` stay in GitHub, and Make-only files such as
-`/AGENTS.md` stay in Make. See
+`/AGENTS.md` stay in Make. Make's own `.figma/make/` config is never deployed. See
 [deploying main to Make](REFERENCE.md#deploying-main-to-make-make-deploy).
 
 `make export-delta` writes an explicit saved-version Make delta for workspace
