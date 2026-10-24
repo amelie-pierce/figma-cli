@@ -421,8 +421,8 @@ or repo (`DEPLOY_MARKER`). Binary files and files over 2 MiB (`DEPLOY_BINARY`),
 LFS paths that differ (`DEPLOY_LFS`), and new or deleted files directly in the
 project root or in a new top-level folder, submodules and symbolic links
 (`DEPLOY_UNSUPPORTED_PATH`) are refused, unless the deploy ignore list names them
-(below). Lockfiles are written first and the root
-`package.json` last, because Make reinstalls when `package.json` changes. The
+(below). The plan lists paths in write order: new and changed files, then
+deletes, then the root `package.json`, then the root lockfiles. The
 plan records each path's operation and before/after SHA-256 and git blob, the
 next tag number and a digest; it is written to `~/.figma-cli/deploys/plans/`.
 
@@ -460,7 +460,13 @@ meets every guard; a list that is not UTF-8 refuses with `DEPLOY_IGNORE`.
 plan, `origin/main` must still be the planned commit (`DEPLOY_MAIN_MOVED`) and
 the tag number must be free (`DEPLOY_TAG_CLASH`). It then writes each path with
 the durable client-VFS write (backups under `~/.figma-cli/deploys/backups/`).
-The root dependency files go last (`package.json`, then the lockfiles), because
+Deletes run after the new and changed files: deleting a top-level folder's only
+file drops the folder from Make's file tree, and a create below it would then
+refuse. A create below a top-level folder that a planned path names (each held
+Make files when the plan was built) may still go ahead when that folder has
+left the tree and Make's client VFS finds no file at the path, so `--resume`
+and `--abort` can create files there again; new top-level folders and root
+files are refused as before. The root dependency files go last (`package.json`, then the lockfiles), because
 Make runs its own install when they change, and that install rewrites the
 lockfile while the deploy writes. A version keeps a lockfile only when Make's
 client wrote it, so each lockfile is written through the client even when
