@@ -391,7 +391,9 @@ target(make.command('deploy').description('Deploy GitHub main from a local clone
   .addHelpText('after', '\nGuards: team-mode Make file; your gh login is an admin of its repo; the clone is on main, clean and equal' +
     '\nto GitHub\'s main, which arrived through a merged pull request; pnpm install --frozen-lockfile and the build pass; Make' +
     '\nis in git mode with a saved version, nothing pending, idle, and equal to the last make-deploy/<n> tag\'s main tree.' +
-    '\nBinary, large and LFS files are refused. Receipts are private, under ~/.figma-cli/deploys/.')
+    '\nBinary, large and LFS files are refused. Receipts are private, under ~/.figma-cli/deploys/.' +
+    '\nmain may commit .figma-cli/deploy-ignore (gitignore syntax; /docs/, /README.md, /AGENTS.md): listed paths are never' +
+    '\nwritten, created or deleted on either side, so repo-only files stay in GitHub and Make-only files stay in Make.')
   .action(options => withClient(options, async client => {
     const chosen = ['apply', 'verify', 'resume', 'abort'].filter(name => options[name]);
     if (chosen.length > 1) throw new Error(`Choose one of --apply, --verify, --resume or --abort, not ${chosen.map(name => `--${name}`).join(' and ')}.`);

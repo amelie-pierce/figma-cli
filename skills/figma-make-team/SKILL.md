@@ -105,7 +105,11 @@ someone edited Make directly; nothing was overwritten, and a developer must brin
 those edits into `main` first. `DEPLOY_NOT_CURRENT`/`DEPLOY_NOT_MAIN`/`DEPLOY_DIRTY`:
 run `figma-cli make pull` on a clean `main`. `DEPLOY_UNREVIEWED`: `main` must come
 from a merged pull request. `DEPLOY_STALE_PLAN`/`DEPLOY_MAIN_MOVED`/`DEPLOY_TAG_CLASH`:
-run a new dry run. `DEPLOY_SOLO`: the file has no repo, so there is nothing to deploy.
+run a new dry run. `DEPLOY_SOLO`: the file has no repo, so there is nothing to deploy. `DEPLOY_UNSUPPORTED_PATH`:
+Make cannot take new or deleted root files or new top-level folders; a developer
+lists repo-only paths (docs, tests) and Make-only ones (Make's `AGENTS.md`) in
+`.figma-cli/deploy-ignore` through a pull request. `DEPLOY_IGNORE`: that list is
+not text; fix it the same way.
 
 Write a short, specific commit message from what you changed for them when you
 know it (`-m "Tighten card padding"`); otherwise let `save` generate one.

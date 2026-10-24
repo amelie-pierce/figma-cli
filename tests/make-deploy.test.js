@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gitBlobSha, gitTreeSha } from '../src/git-tree.js';
 import { MakeClient } from '../src/make-client.js';
-import { deployAbort, deployApply, deployPlan, deployResume, deployVerify, readReceipt } from '../src/make-deploy.js';
+import { DEPLOY_IGNORE, deployAbort, deployApply, deployPlan, deployResume, deployVerify, driftProblems, ignoreMatcher, ignorePatterns, readReceipt } from '../src/make-deploy.js';
 import { markerContent } from '../src/make-mode.js';
 import { PROJECT_MARKER } from '../src/make-project.js';
 import { defaultRun } from '../src/make-team.js';
@@ -1286,5 +1286,130 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     };
     await refuses(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), 'DEPLOY_MAKE_AHEAD', /outside the deploy \["src\/main\.tsx"\]/);
     assert.equal(s.make.calls.filter(([kind]) => kind === 'save').length, 0);
+  });
+});
+
+// The LMA shape: main carries repo-only development files, Make carries
+// Make-only template files at the root, and main's deploy ignore list names both.
+const MAKE_ONLY = { 'AGENTS.md': '# Make agent notes\n', 'CLAUDE.md': '# Make claude notes\n', '.gitattributes': '* text=auto\n', '.mise.toml': '[tools]\n' };
+const REPO_DEV = { 'README.md': '# proto\n', 'playwright.config.ts': 'export default {};\n', 'playwright.pages.config.ts': 'export default {};\n',
+  'docs/guide.md': '# guide\n', 'docs/deep/notes.md': '# notes\n', 'scripts/check.sh': 'echo ok\n', 'tests/app.spec.ts': 'test();\n' };
+const IGNORE = '# Repo-only development files\n/docs/\n/scripts/\n/tests/\n/README.md\n/playwright*.config.ts\n\n' +
+  '# Make-only template files\n/.gitattributes\n/.mise.toml\n/AGENTS.md\n/CLAUDE.md\n';
+const ignoredSetup = t => setup(t, { makeFiles: { ...BASE, ...MAKE_ONLY } });
+
+describe('make deploy ignore list', () => {
+  it('matches gitignore-style patterns on a path or any of its folders, and always the list itself', () => {
+    const ignored = ignoreMatcher(ignorePatterns(Buffer.from(IGNORE)));
+    for (const path of ['docs/guide.md', 'docs/deep/notes.md', 'tests/app.spec.ts', 'README.md', 'playwright.config.ts', 'playwright.shell.config.ts',
+      'AGENTS.md', '.mise.toml', DEPLOY_IGNORE]) assert.equal(ignored(path), true, path);
+    for (const path of ['src/docs/x.md', 'src/README.md', 'src/AGENTS.md', 'docsite/a.md', 'package.json', 'src/App.tsx', PROJECT_MARKER]) {
+      assert.equal(ignored(path), false, path);
+    }
+    const unanchored = ignoreMatcher(['docs/', '*.md', '!keep.md']);
+    assert.equal(unanchored('src/docs/a.ts'), true);
+    assert.equal(unanchored('src/keep.md'), false);
+    assert.equal(ignoreMatcher([])('docs/a.md'), false);
+    assert.throws(() => ignorePatterns(Buffer.from([0xff, 0xfe, 0x00])), error => error.code === 'DEPLOY_IGNORE');
+  });
+
+  it('refuses the LMA shape without a list, exactly as before', async t => {
+    const s = ignoredSetup(t);
+    landChange(s, { ...REPO_DEV, 'src/App.tsx': 'v2\n' });
+    await assert.rejects(deployPlan(s.make, s.opts, s.deps), error => {
+      assert.equal(error.code, 'DEPLOY_UNSUPPORTED_PATH');
+      assert.deepEqual(error.paths, [...Object.keys(MAKE_ONLY), ...Object.keys(REPO_DEV)].sort());
+      return true;
+    });
+    assert.deepEqual(s.make.writes, []);
+  });
+
+  it('plans, applies, verifies and redeploys with excluded paths left as they are on each side', async t => {
+    const s = ignoredSetup(t);
+    const sha = landChange(s, { ...REPO_DEV, [DEPLOY_IGNORE]: IGNORE, 'src/App.tsx': 'v2\n', 'src/old.ts': null });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    assert.deepEqual(plan.files, [{ path: 'src/App.tsx', op: 'modify' }, { path: 'src/old.ts', op: 'delete' }]);
+    assert.equal(plan.excludedCount, 12);
+    assert.deepEqual(plan.excluded.map(entry => entry.path), [DEPLOY_IGNORE, ...Object.keys(MAKE_ONLY), ...Object.keys(REPO_DEV)].sort());
+    const reason = path => plan.excluded.find(entry => entry.path === path).reason;
+    assert.match(reason('docs/guide.md'), /stays in the repo, never created in Make/);
+    assert.match(reason('AGENTS.md'), /Make keeps its own, never deleted/);
+    assert.match(reason(DEPLOY_IGNORE), /ignore list stays in the repo/);
+    assert.equal(plan.ignore.path, DEPLOY_IGNORE);
+    assert.ok(plan.ignore.patterns.includes('/docs/') && !plan.ignore.patterns.some(line => line.startsWith('#')));
+    assert.match(plan.summary, /12 excluded path\(s\) stay as they are on each side/);
+
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.outcome, 'ok');
+    assert.equal(applied.excludedCount, 12);
+    assert.deepEqual(s.make.writes.map(([kind, path]) => [kind, path]), [['write', 'src/App.tsx'], ['delete', 'src/old.ts'], ['save', `deploy ${sha.slice(0, 7)}`]]);
+    for (const [path, content] of Object.entries(MAKE_ONLY)) assert.equal(s.make.saved.get(path).toString(), content, `Make keeps ${path}`);
+    assert.ok(![...s.make.saved.keys()].some(path => path in REPO_DEV || path === DEPLOY_IGNORE), 'Make never gets repo-only files');
+    const receipt = readReceipt(applied.receiptPath);
+    assert.equal(receipt.excludedCount, 12);
+    assert.equal(receipt.excluded.length, 12);
+    const message = sh(s.p.origin, 'cat-file', 'tag', 'make-deploy/0');
+    assert.equal(JSON.parse(message.slice(message.indexOf('{'))).excludedCount, 12);
+
+    const verified = await deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps);
+    assert.equal(verified.verification, 'saved-clean-tree-matched, fresh-sandbox-verified');
+
+    // The tag's tree holds docs/ and no AGENTS.md: still not make-ahead.
+    const again = await deployPlan(s.make, s.opts, s.deps);
+    assert.equal(again.base.tag, 'make-deploy/0');
+    assert.equal(again.counts.add + again.counts.modify + again.counts.delete, 0);
+    assert.match(again.summary, /nothing to deploy\. 12 excluded/);
+    landChange(s, { 'src/App.tsx': 'v3\n', 'docs/guide.md': '# guide v2\n', 'tests/more.spec.ts': 'more();\n' });
+    const second = await deployPlan(s.make, s.opts, s.deps);
+    assert.deepEqual(second.files, [{ path: 'src/App.tsx', op: 'modify' }]);
+    const done = await deployApply(s.make, { ...s.opts, planPath: second.planPath }, s.deps);
+    assert.equal(done.tag.name, 'make-deploy/1');
+  });
+
+  it('still refuses every unsupported path the list does not name', async t => {
+    const s = ignoredSetup(t);
+    landChange(s, { ...REPO_DEV, [DEPLOY_IGNORE]: '/docs/\n/AGENTS.md\n', 'NOTES.md': '# root\n', 'tools/run.ts': 'x\n' });
+    await assert.rejects(deployPlan(s.make, s.opts, s.deps), error => {
+      assert.equal(error.code, 'DEPLOY_UNSUPPORTED_PATH');
+      assert.deepEqual(error.paths, ['.gitattributes', '.mise.toml', 'CLAUDE.md', 'NOTES.md', 'README.md', 'playwright.config.ts',
+        'playwright.pages.config.ts', 'scripts/check.sh', 'tests/app.spec.ts', 'tools/run.ts']);
+      return true;
+    });
+    const bad = ignoredSetup(t);
+    landChange(bad, { [DEPLOY_IGNORE]: Buffer.from([0xff, 0xfe, 0x00]) });
+    await refuses(deployPlan(bad.make, bad.opts, bad.deps), 'DEPLOY_IGNORE', /not UTF-8/);
+    assert.deepEqual([...s.make.writes, ...bad.make.writes], []);
+  });
+
+  it('meets the guards again when main drops a pattern after a deploy', async t => {
+    const s = ignoredSetup(t);
+    landChange(s, { ...REPO_DEV, [DEPLOY_IGNORE]: IGNORE, 'src/App.tsx': 'v2\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    landChange(s, { [DEPLOY_IGNORE]: IGNORE.replace('/AGENTS.md\n', '') });
+    // AGENTS.md was outside the last deploy, so it is not make-ahead; deleting it is a root delete.
+    await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_UNSUPPORTED_PATH', /\["AGENTS\.md"\]/);
+  });
+
+  it('resumes an interrupted deploy and checks drift without the excluded paths', async t => {
+    const s = ignoredSetup(t);
+    landChange(s, { ...REPO_DEV, [DEPLOY_IGNORE]: IGNORE, 'src/App.tsx': 'v2\n', 'src/Card.tsx': 'card\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.beforeWrite = path => { if (path === 'src/Card.tsx') throw new Error('Make operation timed out.'); };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => { receiptPath = error.receiptPath; return error.code === 'DEPLOY_WRITE_FAILED'; });
+    s.make.hooks.beforeWrite = null;
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath }, s.deps);
+    assert.equal(resumed.stage, 'deployed');
+    const receipt = readReceipt(receiptPath);
+    const status = await s.make.projectStatus();
+    const mainFlat = new Map([...status.makeFlat, ...Object.keys(REPO_DEV).map(path => [path, { mode: '100644', blob: 'f'.repeat(40) }])]);
+    for (const path of Object.keys(MAKE_ONLY)) mainFlat.delete(path);
+    assert.deepEqual(driftProblems(status, receipt, mainFlat), []);
+    // A Make-only file the list names, added later, is outside the check too; any other path is not.
+    for (const flat of [status.makeFlat, status.workingFlat]) flat.set('scripts/later.sh', { mode: '100644', blob: 'e'.repeat(40) });
+    assert.deepEqual(driftProblems(status, receipt, mainFlat), []);
+    for (const flat of [status.makeFlat, status.workingFlat]) flat.set('src/extra.ts', { mode: '100644', blob: 'e'.repeat(40) });
+    assert.match(driftProblems(status, receipt, mainFlat).join(), /src\/extra\.ts/);
   });
 });

@@ -420,10 +420,40 @@ is kept in Make when `main` has none, and refused when `main`'s names another fi
 or repo (`DEPLOY_MARKER`). Binary files and files over 2 MiB (`DEPLOY_BINARY`),
 LFS paths that differ (`DEPLOY_LFS`), and new or deleted files directly in the
 project root or in a new top-level folder, submodules and symbolic links
-(`DEPLOY_UNSUPPORTED_PATH`) are refused. Lockfiles are written first and the root
+(`DEPLOY_UNSUPPORTED_PATH`) are refused, unless the deploy ignore list names them
+(below). Lockfiles are written first and the root
 `package.json` last, because Make reinstalls when `package.json` changes. The
 plan records each path's operation and before/after SHA-256 and git blob, the
 next tag number and a digest; it is written to `~/.figma-cli/deploys/plans/`.
+
+**Deploy ignore list.** `main` may commit `.figma-cli/deploy-ignore`: gitignore
+patterns (comments with `#`, `!` negation, a trailing `/` for a folder, a leading
+`/` to anchor at the project root; an unanchored `AGENTS.md` matches at any
+depth). A path is ignored when it or one of its folders matches. Ignored paths
+are never written, created or deleted on either side: a repo-only file stays in
+GitHub and is never created in Make, a Make-only file stays in Make and is never
+deleted. The list itself is repo-only, and `_vaults/` stays excluded without it.
+The patterns are read from `main`'s committed tree, recorded in the plan as
+`ignore{path,blob,patterns}` (so the digest covers them) and every ignored path
+is listed under `excluded` with its reason, with `excludedCount` in the dry run,
+the receipt, its tag JSON and every result. The make-ahead check skips paths
+that `main`'s or the base tag's list names, and the post-save and `--verify`
+drift checks compare only paths the plan does not exclude. Any other path still
+meets every guard; a list that is not UTF-8 refuses with `DEPLOY_IGNORE`.
+
+```gitignore
+# Repo-only development files: they stay in GitHub, never created in Make.
+/docs/
+/scripts/
+/tests/
+/README.md
+/playwright*.config.ts
+# Make-only template files: Make keeps its own, never deleted.
+/.gitattributes
+/.mise.toml
+/AGENTS.md
+/CLAUDE.md
+```
 
 `--apply` runs every guard again and re-plans: the digest must match the reviewed
 plan, `origin/main` must still be the planned commit (`DEPLOY_MAIN_MOVED`) and
@@ -453,7 +483,7 @@ The receipt, `figma-cli/make-deploy-receipt@1` in `~/.figma-cli/deploys/`
 (mode 0600), holds `deployId`, `who`, `at`, `repo`, `mainCommit`, `mainTree`,
 `fileKey`, `makeBefore{versionGitSha,tree}`,
 `makeAfter{versionId,versionNumber,versionGitSha,tree}`, `planDigest`,
-`files[{path,op,beforeSha256,afterSha256,backupPath}]`, `excluded`, the `tag`,
+`files[{path,op,beforeSha256,afterSha256,backupPath}]`, `excluded`, `excludedCount`, the `tag`,
 the `stage`, `outcome` (`ok`, `uncertain` or `aborted`) and `verification`
 (`saved-clean-tree-matched`, then `fresh-sandbox-verified`).
 
