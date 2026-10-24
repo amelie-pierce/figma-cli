@@ -182,14 +182,23 @@ function fixture(options = {}) {
   })();
   const [filesTab, closeTab] = filesTabPair(0);
   const closeTabs = () => Array.from({ length: state.filesTabs }, (_, index) => filesTabPair(index)[1]);
-  const browserTab = { ...box, innerText: 'Browser', click() { state.previewClicks = (state.previewClicks || 0) + 1; state.code = false; } };
+  // Make retitles the Browser tab with the previewed page's <title>; only its
+  // data-workspace-tab attribute and the lack of a Files close control identify it.
+  const browserTabs = Array.from({ length: state.browserTabs ?? 1 }, () => ({ ...box,
+    get innerText() { return state.browserTitle ?? 'Browser'; },
+    click() { state.previewClicks = (state.previewClicks || 0) + 1; state.code = false; } }));
   const addTab = { ...box, getAttribute: () => String(!!state.menuOpen),
     click() { state.addClicks = (state.addClicks || 0) + 1; state.menuOpen = true; } };
   const filesOption = { ...box, innerText: 'Files', getAttribute: () => state.menuDisabled ? 'true' : null,
     click() { state.filesTabs++; state.code = true; state.menuOpen = false; state.filesClicks = (state.filesClicks || 0) + 1; } };
   const menu = { ...box, querySelectorAll: () => Array(state.menuOptions ?? 1).fill(filesOption) };
-  const navigation = { ...box, querySelectorAll: selector => selector === 'button[aria-label="Close Files tab"]'
-    ? closeTabs() : [browserTab, filesTab, closeTab] };
+  const navigation = { ...box, querySelectorAll(selector) {
+    if (selector === 'button[aria-label="Close Files tab"]') return closeTabs();
+    if (selector === 'button[data-workspace-tab="true"]') {
+      return [...browserTabs, ...Array.from({ length: state.filesTabs }, (_, index) => filesTabPair(index)[0])];
+    }
+    throw new Error(`Unhandled test navigation selector ${selector}`);
+  } };
   const showFiles = { ...box, click() { state.treeVisible = true; } };
   const filesHeader = { ...box, querySelectorAll: () => state.treeVisible ? [] : [showFiles] };
   const leaf = { ...box, get textContent() { return state.breadcrumbLeaf; } };
@@ -215,6 +224,7 @@ function fixture(options = {}) {
       if (selector === 'h2 input[data-testid="code-file-name-input"]') return [heading];
       if (selector === '[data-testid="virtualized-file-tree-container"][role="tree"]') return state.code && state.treeVisible ? [tree] : [];
       if (selector === 'button[aria-label="Stop"], [data-testid="code-chat-send-button"]') return state.busy ? [stop] : [];
+      if (selector === 'iframe') return (state.iframes || []).map(src => ({ src }));
       throw new Error(`Unhandled test selector ${selector}`);
     },
   };
@@ -258,6 +268,10 @@ function fixture(options = {}) {
         if (params.enabled && state.provisionOnFocus) provision();
         if (params.enabled && state.focusEnableError) throw new Error('focus enable reply lost');
       }
+      if (method === 'Target.getTargets') return { targetInfos: state.targetInfos || [] };
+      if (method === 'Target.attachToTarget') { state.attachedTarget = params.targetId; return { sessionId: 'preview-session' }; }
+      // The preview read runs inside the attached preview target.
+      if (method === 'Runtime.evaluate' && params.returnByValue && state.previewPage) return { result: { value: state.previewPage } };
       if (method === 'Runtime.evaluate') {
         try {
           const objectId = `object-${objects.size + 1}-${Math.random()}`;
@@ -453,6 +467,58 @@ test('preview selection supports Browser workspace and legacy radio without clos
     assert.equal(state.code, false);
     assert.equal(state.closeClicks, 0);
     assert.equal(state.dispatches.length, 0);
+  }
+});
+
+test('preview selects a Browser tab retitled with the page title, never Files or Add workspace tab', async t => {
+  const { transport, state } = await setup(t, { workspace: true, code: true, browserTitle: 'LMA · Local Prototype' });
+  const result = await transport.evaluate(`(() => (${makeWorkspace.toString()})('ensure-preview').mode)()`);
+  assert.equal(result, 'files-workspace');
+  assert.equal(state.previewClicks, 1);
+  assert.equal(state.code, false);
+  assert.equal(state.tabClicks, 0);
+  assert.equal(state.closeClicks, 0);
+  assert.equal(state.addClicks, undefined);
+});
+
+test('preview refuses when no Browser tab or more than one candidate tab exists, opening or closing nothing', async t => {
+  for (const [browserTabs, pattern] of [[0, /unavailable: found 0 workspace tabs that are not Files tabs/],
+    [2, /ambiguous: found 2 workspace tabs that are not Files tabs/]]) {
+    const { transport, state } = await setup(t, { workspace: true, code: true, browserTabs, filesTabs: 2 });
+    await assert.rejects(transport.evaluate(`(() => (${makeWorkspace.toString()})('ensure-preview'))()`), pattern);
+    assert.equal(state.previewClicks, undefined);
+    assert.equal(state.tabClicks, 0);
+    assert.equal(state.closeClicks, 0);
+    assert.equal(state.addClicks, undefined);
+    assert.equal(state.filesTabs, 2);
+  }
+});
+
+test('preview reads the cached Browser preview whose app routed away from its tokenized src', async t => {
+  const origin = 'https://0e5c1b7a-1111-4222-8333-944455556666-figmacachedpreview.figma.site';
+  const page = { url: `${origin}/app/pages/projects`, title: 'Projects', readyState: 'complete', errorOverlay: [] };
+  const { client, state } = await setup(t, { workspace: true, code: true, browserTitle: 'Projects',
+    iframes: [`${origin}/?__figma_cached_preview_token=secret`, 'https://www.figma.com/plugin'],
+    targetInfos: [
+      { targetId: 'other', type: 'iframe', url: 'https://other-figmacachedpreview.figma.site/app' },
+      { targetId: 'preview', type: 'iframe', url: `${origin}/app/pages/projects` },
+    ],
+    previewPage: page });
+  assert.deepEqual(await client.preview(), { fileKey: 'ExactKey', ...page });
+  assert.equal(state.attachedTarget, 'preview');
+  assert.equal(state.previewClicks, 1);
+});
+
+test('preview refuses preview iframes on unknown hosts or with two matching targets', async t => {
+  const origin = 'https://0e5c1b7a-1111-4222-8333-944455556666-figmacachedpreview.figma.site';
+  for (const [options, pattern] of [
+    [{ iframes: ['https://preview.example.com/'] }, /Exact Make preview iframe is unavailable/],
+    [{ iframes: [`${origin}/`], targetInfos: [{ targetId: 'a', type: 'iframe', url: `${origin}/a` },
+      { targetId: 'b', type: 'iframe', url: `${origin}/b` }] }, /Exact isolated Make preview target is unavailable/],
+  ]) {
+    const { client, state } = await setup(t, { workspace: true, code: true, previewPage: { title: 'x' }, ...options });
+    await assert.rejects(client.preview(), pattern);
+    assert.equal(state.attachedTarget, undefined);
   }
 });
 
