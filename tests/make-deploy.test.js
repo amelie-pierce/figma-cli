@@ -622,6 +622,23 @@ describe('guarded Make override (fake Make and local git only)', () => {
     assert.deepEqual(s.make.writes, []);
   });
 
+  it('refuses saved-only changes to protected Make paths', async t => {
+    const configPath = '.figma/make/config.json';
+    const s = setup(t, { makeFiles: { ...BASE, [configPath]: '{"version":1}\n', [DEPLOY_IGNORE]: '/src/private.ts\n' } });
+    target(s);
+    const clean = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.ok(clean.planPath);
+    s.make.saved.set(configPath, Buffer.from('{"version":2}\n'));
+    s.make.saved.set(DEPLOY_IGNORE, Buffer.from('/src/private-v2.ts\n'));
+    assert.deepEqual(s.make.pending(), []);
+    const refused = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.deepEqual(refused.refused.pendingExcluded, [configPath, DEPLOY_IGNORE].sort());
+    assert.equal(refused.planPath, undefined);
+    await refuses(deployApply(s.make, { ...s.opts, planPath: clean.planPath,
+      confirmOverride: clean.digest.slice(0, 12) }, s.deps), 'DEPLOY_STALE_PLAN');
+    assert.deepEqual(s.make.writes, []);
+  });
+
   it('allows one reload-and-resume after save refusal, then stops', async t => {
     const s = setup(t);
     target(s);

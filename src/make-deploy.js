@@ -358,7 +358,12 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes, ove
   if (overrideMake) {
     const pending = new Set([...(status.persistence.pendingPaths || []),
       ...contentDiff(status.headFlat || status.makeFlat, status.workingFlat)]);
-    refused.pendingExcluded = [...pending].filter(path => alwaysExcluded(path) || ignored(path)).sort();
+    const protectedPath = path => alwaysExcluded(path) || ignored(path) || (path === PROJECT_MARKER && !main.flat.has(path));
+    const savedAndServed = new Set([...status.savedSha256.keys(), ...status.workingSha256.keys()]);
+    for (const path of savedAndServed) {
+      if (protectedPath(path) && (status.savedSha256.get(path) ?? null) !== (status.workingSha256.get(path) ?? null)) pending.add(path);
+    }
+    refused.pendingExcluded = [...pending].filter(protectedPath).sort();
   }
   for (const path of [...new Set([...main.flat.keys(), ...makeFlat.keys()])].sort()) {
     const m = main.flat.get(path);
