@@ -148,17 +148,19 @@ class FakeMake {
   async projectStatus({ classifyText = false, savedInventory = false, savedProtected = () => false } = {}) {
     this.calls.push(['status']);
     const pendingPaths = this.pending();
+    const missing = this.savedCommitMissing === true;
+    const base = this.hasBaseline && !missing ? this.saved : this.sandbox;
     return {
       persistence: { mode: 'git', hasBaseline: this.hasBaseline, savedVersion: this.hasBaseline || this.trackerError ? this.savedVersion : null,
         pendingCount: pendingPaths.length, pendingPaths, isLoading: false, error: this.trackerError },
       history: { generationInProgress: this.generating, latest: { versionNumber: this.version, gitSha: this.savedVersion } },
-      head: this.head, treeSource: this.hasBaseline ? 'saved-version' : 'sandbox-head',
-      makeFlat: this.flat(this.hasBaseline ? this.saved : this.sandbox), headFlat: this.flat(this.sandbox), workingFlat: this.flat(this.working),
-      makeTree: this.tree(this.hasBaseline ? this.saved : this.sandbox), workingTree: this.tree(this.working),
+      head: this.head, treeSource: this.hasBaseline && !missing ? 'saved-version' : 'sandbox-head', savedMissing: missing,
+      makeFlat: this.flat(base), headFlat: this.flat(this.sandbox), workingFlat: this.flat(this.working),
+      makeTree: this.tree(base), workingTree: this.tree(this.working),
       workingSha256: new Map([...this.working].map(([path, bytes]) => [path, sha256(bytes)])),
       ...(savedInventory ? {
-        savedSha256: new Map([...this.saved].filter(([path]) => !savedProtected(path)).map(([path, bytes]) => [path, sha256(bytes)])),
-        savedBlobs: new Map([...this.saved].filter(([path]) => savedProtected(path)).map(([path, bytes]) => [path, gitBlobSha(bytes)])),
+        savedSha256: new Map(missing ? [] : [...this.saved].filter(([path]) => !savedProtected(path)).map(([path, bytes]) => [path, sha256(bytes)])),
+        savedBlobs: new Map(missing ? [] : [...this.saved].filter(([path]) => savedProtected(path)).map(([path, bytes]) => [path, gitBlobSha(bytes)])),
       } : {}),
       ...(classifyText ? { workingText: new Map([...this.working].map(([path, bytes]) => {
         let text = true;
@@ -226,6 +228,7 @@ class FakeMake {
     this.sandbox = new Map(this.saved);
     this.hasBaseline = true;
     this.trackerError = false;
+    this.savedCommitMissing = false;
     return { versionId: `id-${this.version}`, versionNumber: this.version, gitSha: this.savedVersion, tree: this.tree(this.saved) };
   }
   async saveCheckedVersion(title, expectedPaths, { listed, overrideMake } = {}) {
@@ -271,6 +274,13 @@ class FakeMake {
     this.calls.push(['reload']);
     this.working = new Map(this.saved);
     return { reloaded: true };
+  }
+  async probeFilesystemReady() {
+    this.calls.push(['probe-filesystem']);
+    if (this.hooks.probeAlwaysFails || this.hooks.probeFailures > 0) {
+      if (this.hooks.probeFailures > 0) this.hooks.probeFailures--;
+      throw new Error('Make filesystem request timed out');
+    }
   }
   get writes() { return this.calls.filter(([kind]) => ['write', 'delete', 'save'].includes(kind)); }
 }
@@ -523,6 +533,65 @@ describe('guarded Make override (fake Make and local git only)', () => {
     record.mainTree = 'f'.repeat(40);
     sh(s.p.origin, 'tag', '-f', '-a', '-m', JSON.stringify(record), 'make-deploy/0', record.mainCommit);
     await refuses(deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps), 'DEPLOY_MAKE_STATE', /tagged commit's tree/i);
+  });
+
+  it('plans and applies with a baseline flag when the saved commit is absent', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'export const App = 2;\n' });
+    const first = await deployPlan(s.make, s.opts, s.deps);
+    const deployed = await deployApply(s.make, { ...s.opts, planPath: first.planPath }, s.deps);
+    rmSync(deployed.receiptPath);
+
+    landChange(s, { 'src/App.tsx': 'export const App = 3;\n' });
+    s.make.head = 'b'.repeat(40);
+    s.make.sandbox = new Map(s.make.working);
+    s.make.savedCommitMissing = true;
+    assert.equal(s.make.hasBaseline, true);
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.match(plan.summary, /using deploy tag record/);
+    assert.deepEqual(plan.files, [{ path: 'src/App.tsx', op: 'modify' }]);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
+      confirmOverride: plan.digest.slice(0, 12) }, s.deps);
+    assert.equal(applied.stage, 'saved-unverified');
+    assert.deepEqual(s.p.tags(), ['make-deploy/0']);
+    s.make.savedCommitMissing = true;
+    s.make.head = 'c'.repeat(40);
+    await refuses(deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps),
+      'DEPLOY_MAKE_STATE', /deploy record.*saved pointer/i);
+    assert.equal(readReceipt(applied.receiptPath).stage, 'saved-unverified');
+    s.make.savedCommitMissing = false;
+    s.make.head = s.make.savedVersion;
+    const verified = await deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps);
+    assert.equal(verified.stage, 'deployed');
+    assert.deepEqual(s.p.tags(), ['make-deploy/0', 'make-deploy/1']);
+  });
+
+  it('waits for the reloaded Make filesystem before verifying', async t => {
+    const s = setup(t);
+    target(s);
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
+      confirmOverride: plan.digest.slice(0, 12) }, s.deps);
+    s.make.hooks.probeFailures = 2;
+    const verified = await deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps);
+    assert.equal(verified.stage, 'deployed');
+    const afterReload = s.make.calls.slice(s.make.calls.findIndex(([kind]) => kind === 'reload') + 1);
+    assert.deepEqual(afterReload.slice(0, 4).map(([kind]) => kind), ['probe-filesystem', 'probe-filesystem', 'probe-filesystem', 'status']);
+  });
+
+  it('keeps the receipt unverified when the reloaded filesystem never becomes ready', async t => {
+    const s = setup(t);
+    target(s);
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
+      confirmOverride: plan.digest.slice(0, 12) }, s.deps);
+    s.make.hooks.probeAlwaysFails = true;
+    s.deps.reloadReady = { timeoutMs: 30, initialMs: 10, maxMs: 10 };
+    await refuses(deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps),
+      'DEPLOY_VERIFY_FAILED', /filesystem and code panel were not ready after reload/);
+    assert.equal(readReceipt(applied.receiptPath).stage, 'saved-unverified');
+    assert.deepEqual(s.p.tags(), []);
+    assert.ok(s.make.calls.filter(([kind]) => kind === 'probe-filesystem').length >= 2);
   });
 
   it('binds confirmation and Make-only policy to the reviewed digest; tags only after reload', async t => {

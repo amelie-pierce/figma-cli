@@ -942,6 +942,17 @@ export class MakeClient {
     });
   }
 
+  // A fresh document can report persistence before its code panel and agent
+  // filesystem socket are usable. Probe one tiny sandbox file before verify.
+  probeFilesystemReady() {
+    return this._operation(async deadline => {
+      await this._ensureCode(deadline);
+      const bridge = await this._fileBridge(deadline);
+      try { await this._bridgeReadBytes(bridge, '.git/HEAD'); }
+      finally { await bridge.dispose(); }
+    });
+  }
+
   // Bound each renderer/socket batch independently. Large kits can take more
   // than one command timeout in total, but no Runtime.callFunctionOn owns the
   // whole tree. Version/pending state is checked at every batch boundary.
@@ -1159,14 +1170,25 @@ export class MakeClient {
       try {
         const reader = this._sandboxGit(bridge);
         const head = await reader.head();
-        const saved = state?.hasBaseline && /^[a-f0-9]{40}$/.test(state.savedVersion || '') ? state.savedVersion : null;
-        const tree = await reader.commitTree(saved || head);
+        const savedPointer = /^[a-f0-9]{40}$/.test(state?.savedVersion || '') ? state.savedVersion : null;
+        const saved = state?.hasBaseline ? savedPointer : null;
+        let savedPointerTree = null;
+        let savedMissing = false;
+        if (savedPointer && (saved || savedInventory)) {
+          try { savedPointerTree = await reader.commitTree(savedPointer); }
+          catch (error) {
+            if (error.message !== `Make sandbox git object ${savedPointer} is missing.`) throw error;
+            savedMissing = true;
+          }
+        }
+        const savedTree = saved ? savedPointerTree : null;
+        const tree = savedTree || await reader.commitTree(head);
         const flat = await reader.flatten(tree);
         const exclude = await reader.readFile('info/exclude');
         const savedSha256 = savedInventory ? new Map() : null;
         const savedBlobs = savedInventory ? new Map() : null;
-        if (savedSha256) {
-          const savedFlat = saved === state.savedVersion ? flat : await reader.flatten(await reader.commitTree(state.savedVersion));
+        if (savedSha256 && !savedMissing && savedPointerTree) {
+          const savedFlat = saved ? flat : await reader.flatten(savedPointerTree);
           for (const [path, entry] of savedFlat) {
             if (savedProtected(path)) {
               savedBlobs.set(path, entry.blob);
@@ -1179,8 +1201,9 @@ export class MakeClient {
         }
         const after = (await this._driftState(deadline)).state;
         if (JSON.stringify(after) !== JSON.stringify(state)) throw new Error('Make state changed while reading its git objects.');
-        const headFlat = saved && saved !== head ? await reader.flatten(await reader.commitTree(head)) : flat;
-        return { state, history, head, tree, flat, headFlat, treeSource: saved ? 'saved-version' : 'sandbox-head', exclude, savedSha256, savedBlobs };
+        const headFlat = savedTree && saved !== head ? await reader.flatten(await reader.commitTree(head)) : flat;
+        return { state, history, head, tree, flat, headFlat, treeSource: savedTree ? 'saved-version' : 'sandbox-head',
+          savedMissing, exclude, savedSha256, savedBlobs };
       } finally { await bridge.dispose(); }
     });
     const scan = await this.inventoryProject({ includeBytes: path => path === PROJECT_MARKER || path === '.gitattributes', classifyText,
@@ -1190,6 +1213,7 @@ export class MakeClient {
     const working = workingFlat(scan.inventory, git.flat);
     const lfsPaths = [...new Set([...scan.inventory.keys(), ...git.flat.keys()])].filter(isLfs).sort();
     return { persistence: scan.state, history: git.history, head: git.head, makeTree: git.tree, treeSource: git.treeSource,
+      savedMissing: git.savedMissing,
       makeFlat: git.flat, headFlat: git.headFlat, workingFlat: working, workingTree: treeOf(working), fileCount: scan.inventory.size,
       workingSha256: new Map([...scan.inventory].map(([path, file]) => [path, file.sha256])),
       ...(savedInventory ? { savedSha256: git.savedSha256, savedBlobs: git.savedBlobs } : {}),

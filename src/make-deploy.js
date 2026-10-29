@@ -245,6 +245,13 @@ function savedInventoryFromRecord({ fileKey, repo, savedVersion, home, tags, ctx
   return savedInventoryFromTag({ fileKey, repo, savedVersion, tags, ctx, readBlob, savedProtected });
 }
 
+function recoverMissingSaved(status, { fileKey, repo, home, tags, ctx, readBlob, savedProtected }) {
+  if (!status.savedMissing) return;
+  const savedVersion = status.persistence?.savedVersion;
+  if (!SHA.test(savedVersion || '')) fail('Make saved pointer is unavailable. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
+  Object.assign(status, savedInventoryFromRecord({ fileKey, repo, savedVersion, home, tags, ctx, readBlob, savedProtected }));
+}
+
 const recovery = receipt => {
   const where = `--file ${receipt.fileKey} --dir <clone>`;
   if (BEFORE_SAVE.includes(receipt.stage)) return `figma-cli make deploy ${where} --resume ${receipt.receiptPath} (or --abort to restore Make)`;
@@ -545,7 +552,29 @@ function defaults(deps = {}) {
     readBlob: deps.readBlob || defaultReadBlob,
     install: deps.install || (ctx => installProject(ctx.root, { run, warn: deps.warn || (() => {}) })),
     build: deps.build || defaultBuild, settle: { ...SETTLE, ...deps.settle },
+    reloadReady: { timeoutMs: 120000, initialMs: 500, maxMs: 5000, ...deps.reloadReady },
     sleep: deps.sleep || (ms => new Promise(done => setTimeout(done, ms))) };
+}
+
+async function waitForReloadFilesystem(client, receipt, deps) {
+  const { timeoutMs, initialMs, maxMs } = deps.reloadReady;
+  const started = Date.now();
+  let waited = 0;
+  let delay = initialMs;
+  let last;
+  for (;;) {
+    try { await client.probeFilesystemReady(); return; }
+    catch (error) { last = error; }
+    const remaining = timeoutMs - Math.max(Date.now() - started, waited);
+    if (remaining <= 0) {
+      fail(`Make filesystem and code panel were not ready after reload within ${Math.ceil(timeoutMs / 1000)} second(s): ${last.message}. ` +
+        `Verification did not run; retry --verify ${receipt.receiptPath}.`, 'DEPLOY_VERIFY_FAILED', { receiptPath: receipt.receiptPath });
+    }
+    const pause = Math.min(delay, remaining);
+    await deps.sleep(pause);
+    waited += pause;
+    delay = Math.min(maxMs, delay * 2);
+  }
 }
 
 // The team mode the Make file is in. Solo has nothing to deploy from.
@@ -603,9 +632,9 @@ async function prepare(client, { dir, reviewed, overrideMake = false, deleteMake
     if (!overrideMake || !SHA.test(savedVersion || '') || error.message !== `Make sandbox git object ${savedVersion} is missing.`) throw error;
     status = await client.projectStatus({ classifyText: true });
     if (status.persistence?.savedVersion !== savedVersion) fail('Make saved pointer changed while reading its served copy. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
-    Object.assign(status, savedInventoryFromRecord({ fileKey: client.fileKey, repo, savedVersion,
-      home, tags, ctx, readBlob, savedProtected }));
+    status.savedMissing = true;
   }
+  if (overrideMake) recoverMissingSaved(status, { fileKey: client.fileKey, repo, home, tags, ctx, readBlob, savedProtected });
   await requireTeamMode(client, status);
   let state;
   if (overrideMake) {
@@ -1241,7 +1270,13 @@ export async function deployVerify(client, { dir, receiptPath } = {}, deps = {})
   if (!revOf(ctx, receipt.mainCommit)) fail(`The clone does not have main ${short(receipt.mainCommit)}.`, 'DEPLOY_RECEIPT');
   const mainFlat = lsTree(ctx, receipt.mainCommit);
   await client.reloadPage({ allowError: receipt.mode === 'override-make' });
+  await waitForReloadFilesystem(client, receipt, deps);
   const status = await client.projectStatus();
+  if (receipt.mode === 'override-make' && status.savedMissing) {
+    const ignored = ignoreMatcher(ignoreOf(mainFlat, blob => deps.readBlob(ctx.root, blob)));
+    recoverMissingSaved(status, { fileKey: client.fileKey, repo: receipt.repo, home: deps.home, tags: remoteTags(ctx), ctx,
+      readBlob: deps.readBlob, savedProtected: path => protectedPath(path, ignored, mainFlat) });
+  }
   const state = status.persistence;
   if (!receipt.makeAfter) {
     if (state?.savedVersion === receipt.makeBefore.versionGitSha) {
