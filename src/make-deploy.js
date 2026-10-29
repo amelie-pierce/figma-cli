@@ -13,9 +13,10 @@ import { currentBranch, defaultRun, fetchMain, projectScripts, requireNoOperatio
 // `make deploy`: a repo admin deploys GitHub main, from a local clone, into
 // the team-mode Make file. Dry run (the default) writes a reviewed plan;
 // --apply re-plans, writes the planned paths through the durable client VFS,
-// saves one version `deploy <sha7>`, checks the whole project root against
-// main, writes a private receipt and pushes the annotated tag
-// make-deploy/<n> on the deployed commit. --verify, --resume and --abort
+// saves one version `deploy <sha7>` and writes a private receipt. A normal
+// deploy checks the project root and pushes the annotated make-deploy/<n>
+// tag then; an override requires a fresh-reload --verify before tagging.
+// --verify, --resume and --abort
 // finish or undo an interrupted deploy from its receipt. The tag's receipt is
 // the shared base `make status` and the next deploy compare against.
 
@@ -930,7 +931,8 @@ async function tagAndFinish(ctx, receipt, home) {
   }
 }
 
-// After the writes: one version, the full-root drift check, then the tag.
+// After the writes: save one version. Normal deploys then check drift and tag;
+// overrides defer both until a fresh-reload verification.
 async function finish(client, ctx, receipt, mainFlat, home) {
   const plan = receipt.plan;
   receipt.stage = 'saving';

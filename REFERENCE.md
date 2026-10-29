@@ -528,9 +528,10 @@ for overwritten Make-ahead paths.
 It does not print file contents. `--delete-make-only` opts into deleting Make-only
 files eligible for deploy; the default keeps them. Both choices are part of the
 plan digest. `.figma/make/`, `node_modules/`, `.npmrc`, `.git` internals and
-deploy-ignore paths remain untouched. Planning refuses if the saved and served
-inventories differ on a protected path. Existing admin, team, main, build, busy,
-marker, binary, LFS, unsupported-path, unfinished-receipt, stale-plan and tag
+deploy-ignore paths remain untouched. Planning refuses protected paths reported
+pending or whose saved-tree and sandbox-head Git blob IDs differ. Existing admin,
+team, main, build, busy, marker, binary, LFS, unsupported-path,
+unfinished-receipt, stale-plan and tag
 guards remain in force.
 
 Apply requires the first 12 characters of that plan's digest in
