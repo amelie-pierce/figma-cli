@@ -353,8 +353,13 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes, ove
   const excluded = [];
   const keepMakeOnly = [];
   const modeOnly = [];
-  const refused = { binary: [], lfs: [], unsupported: [], marker: [] };
+  const refused = { binary: [], lfs: [], unsupported: [], marker: [], pendingExcluded: [] };
   const makeFlat = overrideMake ? status.workingFlat : status.makeFlat;
+  if (overrideMake) {
+    const pending = new Set([...(status.persistence.pendingPaths || []),
+      ...contentDiff(status.headFlat || status.makeFlat, status.workingFlat)]);
+    refused.pendingExcluded = [...pending].filter(path => alwaysExcluded(path) || ignored(path)).sort();
+  }
   for (const path of [...new Set([...main.flat.keys(), ...makeFlat.keys()])].sort()) {
     const m = main.flat.get(path);
     const k = makeFlat.get(path);
@@ -371,6 +376,7 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes, ove
       continue;
     }
     if (isLfs(path)) { refused.lfs.push(path); continue; }
+    if (overrideMake && k && status.workingText?.get(path) === false) { refused.binary.push(path); continue; }
     const op = !k ? 'add' : !m ? 'delete' : 'modify';
     const top = path.split('/')[0];
     if ((op !== 'modify' && !path.includes('/')) || (op === 'add' && !top.startsWith('.') && !makeFolders.has(top))) {
@@ -385,7 +391,7 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes, ove
       if (path === PROJECT_MARKER) {
         const marker = parseMarker(content, fileKey);
         if (marker.state !== 'valid' || marker.repo.toLowerCase() !== repo.toLowerCase() || marker.trunk !== TRUNK) {
-          refused.marker.push(marker.reason || `names ${marker.repo} (${marker.trunk})`);
+          refused.marker.push(`${path} (${marker.reason || `names ${marker.repo} (${marker.trunk})`})`);
           continue;
         }
       }
@@ -397,15 +403,15 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes, ove
     files.push({ path, op, beforeBlob: k?.blob ?? null, afterBlob: m?.blob ?? null, beforeSha256, afterSha256, bytes });
   }
   files.sort(byWriteOrder);
-  if (refused.marker.length) fail(`main's ${PROJECT_MARKER} would change this file's team mode (${refused.marker[0]}). Fix it in main through a pull request.`, 'DEPLOY_MARKER');
-  if (refused.binary.length) {
+  if (!overrideMake && refused.marker.length) fail(`main's ${PROJECT_MARKER} would change this file's team mode (${refused.marker[0]}). Fix it in main through a pull request.`, 'DEPLOY_MARKER');
+  if (!overrideMake && refused.binary.length) {
     fail(`Deploy writes UTF-8 text only (at most 2 MiB a file); main has binary or large files that differ from Make: ${JSON.stringify(refused.binary)}. ` +
       'Add those in Make by hand, or keep them out of main. Nothing was deployed.', 'DEPLOY_BINARY', { paths: refused.binary });
   }
-  if (refused.lfs.length) {
+  if (!overrideMake && refused.lfs.length) {
     fail(`Git LFS files differ between main and Make: ${JSON.stringify(refused.lfs)}. Make stores LFS pointers, so deploy refuses them. Nothing was deployed.`, 'DEPLOY_LFS', { paths: refused.lfs });
   }
-  if (refused.unsupported.length) {
+  if (!overrideMake && refused.unsupported.length) {
     fail(`Make cannot take these changes through figma-cli: ${JSON.stringify(refused.unsupported)}. Files directly in the project root or in a new ` +
       'top-level folder cannot be created or deleted, and submodules and symbolic links are unsupported. Nothing was deployed.', 'DEPLOY_UNSUPPORTED_PATH', { paths: refused.unsupported });
   }
@@ -430,8 +436,8 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes, ove
       ...(base.receipt ? { receipt: base.receipt } : {}) },
     ...(main.flat.has(DEPLOY_IGNORE) ? { ignore: { path: DEPLOY_IGNORE, blob: main.flat.get(DEPLOY_IGNORE).blob, patterns } } : {}),
     files, excluded, modeOnly,
-    ...(overrideMake ? { mode: 'override-make', deleteMakeOnly, keepMakeOnly, expectedDiff,
-      makeAhead: files.filter(file => file.beforeBlob)
+    ...(overrideMake ? { mode: 'override-make', deleteMakeOnly, keepMakeOnly, expectedDiff, refused,
+      makeAhead: files.filter(file => file.op === 'modify' && base.flat.get(file.path)?.blob !== status.workingFlat.get(file.path)?.blob)
         .map(file => ({ path: file.path, makeSha256: file.beforeSha256, mainSha256: file.afterSha256 })) } : {}) };
   return { ...plan, digest: planDigest(plan) };
 }
@@ -499,7 +505,7 @@ async function prepare(client, { dir, reviewed, overrideMake = false, deleteMake
       { receiptPath: blocking.receiptPath });
   }
   const ui = await client.inspect();
-  const status = await client.projectStatus();
+  const status = await client.projectStatus({ classifyText: overrideMake });
   await requireTeamMode(client, status);
   const mainFlat = lsTree(ctx, main.commit);
   let state;
@@ -534,6 +540,7 @@ async function prepare(client, { dir, reviewed, overrideMake = false, deleteMake
 
 const counts = files => ({ add: files.filter(f => f.op === 'add').length, modify: files.filter(f => f.op === 'modify').length,
   delete: files.filter(f => f.op === 'delete').length });
+const hasRefusals = plan => Object.values(plan.refused || {}).some(paths => paths.length);
 const countText = c => `${c.add} new, ${c.modify} changed and ${c.delete} deleted file(s)`;
 const excludedText = plan => (plan.excluded.length ? ` ${plan.excluded.length} excluded path(s) stay as they are on each side.` : '');
 
@@ -545,17 +552,18 @@ export async function deployPlan(client, { dir, overrideMake = false, deleteMake
   const { plan, access, pr, built } = await prepare(client, { dir, overrideMake, deleteMakeOnly }, deps);
   const c = counts(plan.files);
   const planPath = join(deployDir(deps.home), 'plans', `${plan.fileKey}-${short(plan.mainCommit)}-${plan.digest.slice(0, 12)}.json`);
-  if (plan.files.length) writeJson(planPath, plan);
+  if (plan.files.length && !hasRefusals(plan)) writeJson(planPath, plan);
   return { dryRun: true, fileKey: plan.fileKey, repo: plan.repo, who: access.login, mainCommit: plan.mainCommit, pr, build: built,
     base: plan.base, tag: plan.tag, counts: c, files: plan.files.map(({ path, op }) => ({ path, op })),
     excluded: plan.excluded, excludedCount: plan.excluded.length, ...(plan.ignore ? { ignore: plan.ignore } : {}),
     modeOnly: plan.modeOnly, digest: plan.digest,
     ...(overrideMake ? { mode: plan.mode, tracker: plan.makeBefore.tracker, keepMakeOnly: plan.keepMakeOnly,
-      makeAhead: plan.makeAhead, deleteMakeOnly, counts: { ...c, keepMakeOnly: plan.keepMakeOnly.length,
-        unsupported: 0, ignored: plan.excluded.length } } : {}),
-    ...(plan.files.length ? { planPath, next: `figma-cli make deploy --file ${plan.fileKey} --dir ${dir || '.'} --apply ${planPath}` +
+      makeAhead: plan.makeAhead, deleteMakeOnly, refused: plan.refused,
+      counts: { ...c, keepMakeOnly: plan.keepMakeOnly.length,
+        unsupported: Object.values(plan.refused).reduce((total, paths) => total + paths.length, 0), ignored: plan.excluded.length } } : {}),
+    ...(plan.files.length && !hasRefusals(plan) ? { planPath, next: `figma-cli make deploy --file ${plan.fileKey} --dir ${dir || '.'} --apply ${planPath}` +
       (overrideMake ? ` --confirm-override ${plan.digest.slice(0, 12)}` : '') } : {}),
-    summary: overrideMake ? `Override would write ${countText(c)}, keep ${plan.keepMakeOnly.length} Make-only path(s) and ignore ${plan.excluded.length} path(s). Confirm with digest ${plan.digest.slice(0, 12)}. Nothing was changed yet.` : plan.files.length
+    summary: overrideMake ? `Override would write ${countText(c)}, keep ${plan.keepMakeOnly.length} Make-only path(s) and ignore ${plan.excluded.length} path(s). ${hasRefusals(plan) ? 'Refused paths must be resolved before applying.' : `Confirm with digest ${plan.digest.slice(0, 12)}.`} Nothing was changed yet.` : plan.files.length
       ? `Deploying main ${short(plan.mainCommit)} would write ${countText(c)} to Make and save it as one version "deploy ${short(plan.mainCommit)}", tagged ${plan.tag}.${excludedText(plan)} Nothing was changed yet.`
       : `Make already matches main ${short(plan.mainCommit)}; there is nothing to deploy.${excludedText(plan)}` };
 }
@@ -771,7 +779,6 @@ const publicReceipt = receipt => ({ schema: receipt.schema, deployId: receipt.de
   repo: receipt.repo, mainCommit: receipt.mainCommit, mainTree: receipt.mainTree, fileKey: receipt.fileKey,
   makeBefore: receipt.mode === 'override-make'
     ? { versionGitSha: receipt.makeBefore.versionGitSha, tree: receipt.makeBefore.tree } : receipt.makeBefore,
-  ...(receipt.mode === 'override-make' ? { mode: receipt.mode, keptMakeOnly: receipt.plan.keepMakeOnly.length } : {}),
   makeAfter: receipt.makeAfter, planDigest: receipt.planDigest,
   files: receipt.files.map(({ path, op, beforeSha256, afterSha256 }) => ({ path, op, beforeSha256, afterSha256 })),
   excluded: receipt.excluded, excludedCount: receipt.excluded.length });
@@ -886,6 +893,7 @@ export function driftProblems(status, receipt, mainFlat) {
 export async function deployApply(client, { dir, planPath, confirmOverride, overrideMake = false, deleteMakeOnly = false } = {}, deps = {}) {
   deps = defaults(deps);
   const reviewed = readPlan(planPath);
+  if (hasRefusals(reviewed)) fail('The reviewed plan has refused paths; resolve them and run a new dry run. Nothing was deployed.', 'DEPLOY_UNSUPPORTED_PATH');
   if (reviewed.mode === 'override-make') {
     if (confirmOverride !== reviewed.digest.slice(0, 12)) {
       fail(`Override requires --confirm-override ${reviewed.digest.slice(0, 12)} for this reviewed plan. Nothing was deployed.`, 'DEPLOY_STALE_PLAN');

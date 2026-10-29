@@ -1015,7 +1015,7 @@ export class MakeClient {
   // kept even when an ignore rule matches it; the baseline always wins. An
   // untracked node_modules folder is skipped. Excluded files are never read.
   // Version/pending state is bracketed per batch, as for inventoryVendor.
-  async inventoryProject({ includeBytes = false, batchSize = 24, tracked = [], exclude = null } = {}) {
+  async inventoryProject({ includeBytes = false, classifyText = false, batchSize = 24, tracked = [], exclude = null } = {}) {
     const keep = typeof includeBytes === 'function' ? includeBytes : () => includeBytes === true;
     if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 64) throw new Error('Inventory batch size must be 1–64.');
     const list = async (bridge, directory) => {
@@ -1088,7 +1088,12 @@ export class MakeClient {
               if (inventory.has(path)) throw new Error(`Duplicate Make file: ${path}`);
               const bytes = await this._bridgeReadBytes(bridge, path);
               if (Number.isSafeInteger(size) && bytes.length !== size) throw new Error(`Make file changed during inventory: ${path}`);
-              inventory.set(path, { path, bytes: bytes.length, sha256: digest(bytes), blob: gitBlobSha(bytes) });
+              let text = true;
+              if (classifyText) {
+                try { text = bytes.length <= 2 * 1024 * 1024 && !new TextDecoder('utf-8', { fatal: true }).decode(bytes).includes('\0'); }
+                catch { text = false; }
+              }
+              inventory.set(path, { path, bytes: bytes.length, sha256: digest(bytes), blob: gitBlobSha(bytes), ...(classifyText ? { text } : {}) });
               if (keep(path)) contents.set(path, bytes);
             }
             if (seenDirectories.size + inventory.size + directories.length + files.length > this.maxEntries) {
@@ -1145,7 +1150,7 @@ export class MakeClient {
   // sandbox git objects (exact file modes), the project inventory with that
   // tree's paths kept as tracked, the working-copy tree, the marker and the
   // AI-turn version history.
-  async projectStatus() {
+  async projectStatus({ classifyText = false } = {}) {
     const git = await this._operation(async deadline => {
       const state = (await this._driftState(deadline)).state;
       const history = await this._evaluate(`(${makeVersionHistory.toString()})()`, deadline);
@@ -1163,7 +1168,7 @@ export class MakeClient {
         return { state, history, head, tree, flat, headFlat, treeSource: saved ? 'saved-version' : 'sandbox-head', exclude };
       } finally { await bridge.dispose(); }
     });
-    const scan = await this.inventoryProject({ includeBytes: path => path === PROJECT_MARKER || path === '.gitattributes',
+    const scan = await this.inventoryProject({ includeBytes: path => path === PROJECT_MARKER || path === '.gitattributes', classifyText,
       tracked: [...new Set([...git.flat.keys(), ...git.headFlat.keys()])], exclude: git.exclude });
     if (JSON.stringify(scan.state) !== JSON.stringify(git.state)) throw new Error('Make state changed during inventory.');
     const isLfs = lfsMatcher(scan.contents.get('.gitattributes')?.toString('utf8'));
@@ -1172,6 +1177,7 @@ export class MakeClient {
     return { persistence: scan.state, history: git.history, head: git.head, makeTree: git.tree, treeSource: git.treeSource,
       makeFlat: git.flat, headFlat: git.headFlat, workingFlat: working, workingTree: treeOf(working), fileCount: scan.inventory.size,
       workingSha256: new Map([...scan.inventory].map(([path, file]) => [path, file.sha256])),
+      ...(classifyText ? { workingText: new Map([...scan.inventory].map(([path, file]) => [path, file.text])) } : {}),
       excluded: scan.excluded, excludeSource: scan.excludeSource, lfsPaths, isLfs,
       markerBytes: scan.contents.get(PROJECT_MARKER) ?? null, batches: scan.batches };
   }

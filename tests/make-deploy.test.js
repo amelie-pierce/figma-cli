@@ -92,7 +92,7 @@ const lockFor = pkg => `lockfileVersion: 9.0\n# resolved for ${sha256(Buffer.isB
 class FakeMake {
   constructor(files, { marker = true } = {}) {
     this.fileKey = KEY;
-    this.saved = new Map(Object.entries({ ...files, ...(marker ? { [PROJECT_MARKER]: MARKER } : {}) }).map(([p, c]) => [p, Buffer.from(text(c))]));
+    this.saved = new Map(Object.entries({ ...files, ...(marker ? { [PROJECT_MARKER]: MARKER } : {}) }).map(([p, c]) => [p, Buffer.isBuffer(c) ? c : Buffer.from(text(c))]));
     this.working = new Map(this.saved);
     this.version = 3;
     this.savedVersion = 'a'.repeat(40);
@@ -145,7 +145,7 @@ class FakeMake {
   pending() { return this.changed().filter(path => !path.split('/').some(part => part.startsWith('.')) && !['pnpm-lock.yaml', 'package-lock.json'].includes(path)); }
   async inspect() { return { fileKey: KEY, ...this.ui }; }
   async projectMarker() { return this.working.get(PROJECT_MARKER) ?? null; }
-  async projectStatus() {
+  async projectStatus({ classifyText = false } = {}) {
     this.calls.push(['status']);
     const pendingPaths = this.pending();
     return {
@@ -156,6 +156,12 @@ class FakeMake {
       makeFlat: this.flat(this.hasBaseline ? this.saved : this.sandbox), headFlat: this.flat(this.sandbox), workingFlat: this.flat(this.working),
       makeTree: this.tree(this.hasBaseline ? this.saved : this.sandbox), workingTree: this.tree(this.working),
       workingSha256: new Map([...this.working].map(([path, bytes]) => [path, sha256(bytes)])),
+      ...(classifyText ? { workingText: new Map([...this.working].map(([path, bytes]) => {
+        let text = true;
+        try { text = bytes.length <= 2 * 1024 * 1024 && !new TextDecoder('utf-8', { fatal: true }).decode(bytes).includes('\0'); }
+        catch { text = false; }
+        return [path, text];
+      })) } : {}),
       markerBytes: this.working.get(PROJECT_MARKER) ?? null, isLfs: () => false,
     };
   }
@@ -451,7 +457,8 @@ describe('guarded Make override (fake Make and local git only)', () => {
     assert.deepEqual(s.p.tags(), ['make-deploy/0']);
     const tagMessage = sh(s.p.origin, 'cat-file', 'tag', 'make-deploy/0');
     const shared = JSON.parse(tagMessage.slice(tagMessage.indexOf('{')));
-    assert.equal(shared.mode, 'override-make');
+    assert.equal(shared.mode, undefined);
+    assert.equal(shared.keptMakeOnly, undefined);
     assert.equal(shared.makeBefore.inventory, undefined, 'private full inventory is not published in the tag');
     assert.equal(s.make.saved.has('src/old.ts'), false);
   });
@@ -533,6 +540,46 @@ describe('guarded Make override (fake Make and local git only)', () => {
     const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
     assert.deepEqual(plan.makeAhead, [{ path: 'src/App.tsx', makeSha256: sha256(makeEdit),
       mainSha256: sha256('export const App = 4;\n') }]);
+  });
+
+  it('does not report main-only changes or Make-only deletions as Make-ahead', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'export const App = 2;\n' });
+    const first = await deployPlan(s.make, s.opts, s.deps);
+    await deployApply(s.make, { ...s.opts, planPath: first.planPath }, s.deps);
+    landChange(s, { 'src/App.tsx': 'export const App = 3;\n' });
+    s.make.saved.set('src/make-only.ts', Buffer.from('Make only\n'));
+    s.make.working.set('src/make-only.ts', Buffer.from('Make only\n'));
+    s.make.sandbox.set('src/make-only.ts', Buffer.from('Make only\n'));
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true, deleteMakeOnly: true }, s.deps);
+    assert.deepEqual(plan.makeAhead, []);
+    assert.ok(plan.files.some(file => file.path === 'src/make-only.ts' && file.op === 'delete'));
+  });
+
+  it('shows all override refusals and withholds apply for unsupported paths', async t => {
+    const s = setup(t, { makeFiles: { ...BASE, 'src/raw.bin': Buffer.from([0, 255]) } });
+    target(s);
+    landChange(s, { 'README.md': 'new root file\n', 'src/logo.png': Buffer.from([0, 255]) });
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true, deleteMakeOnly: true }, s.deps);
+    assert.ok(plan.counts.modify > 0);
+    assert.ok(plan.refused.unsupported.includes('README.md'));
+    assert.ok(plan.refused.binary.includes('src/logo.png'));
+    assert.ok(plan.refused.binary.includes('src/raw.bin'));
+    assert.equal(plan.counts.unsupported, 3);
+    assert.equal(plan.planPath, undefined);
+    assert.deepEqual(s.make.writes, []);
+  });
+
+  it('refuses pending Make config and deploy-ignore edits', async t => {
+    const s = setup(t);
+    target(s);
+    landChange(s, { [DEPLOY_IGNORE]: '/src/old.ts\n' });
+    s.make.working.set('.figma/make/config.json', Buffer.from('{"dev":true}\n'));
+    s.make.working.set('src/old.ts', Buffer.from('pending edit\n'));
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.deepEqual(plan.refused.pendingExcluded, ['.figma/make/config.json', 'src/old.ts']);
+    assert.equal(plan.planPath, undefined);
+    assert.deepEqual(s.make.writes, []);
   });
 
   it('allows one reload-and-resume after save refusal, then stops', async t => {
