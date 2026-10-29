@@ -396,7 +396,7 @@ figma-cli make deploy --file KEY --override-make [--delete-make-only] # reviewed
 figma-cli make deploy --file KEY --apply PLAN --confirm-override DIGEST12
 ```
 
-Guards, each refusing with nothing written:
+Normal deploy guards, each refusing with nothing written:
 - the Make file is in team mode (`DEPLOY_SOLO`: a solo file has nothing to deploy
   from; `DEPLOY_NOT_TEAM`: ambiguous or invalid marker) and the clone's origin is
   the marker's repo (`DEPLOY_REPO_MISMATCH`);
@@ -418,7 +418,7 @@ Guards, each refusing with nothing written:
   Make's saved tree. No earlier deploy of the file may be unfinished
   (`DEPLOY_UNFINISHED` names the recovery command).
 
-The plan compares `main`'s tree with Make's saved tree by content (Make commits
+The normal plan compares `main`'s tree with Make's saved tree by content (Make commits
 files it writes as `100644`, so mode-only differences are listed, not written).
 `.npmrc`, `.figma/design-context/`, Make's own config `.figma/make/` and the
 repo-only project vault `_vaults/` are never deployed (`make status` leaves `_vaults/` out of its comparison too); `.figma-cli/project.json`
@@ -518,14 +518,16 @@ right after the save is not proof that the version persists.
 
 **Guarded current-main override.** `--override-make` plans against Make's served
 working tree, even if its saved-version tracker is in error or Make contains
-edits ahead of the last deploy. The dry run records the saved pointer, sandbox
-head and tree, tracker flags, main commit and tree, a SHA-256 inventory of every
-working path, counts and paths for creates, modifications, deletions, kept
-Make-only paths and ignored paths, and hashes for overwritten Make-ahead paths.
+edits ahead of the last deploy. The dry run records the saved pointer and tree,
+sandbox head, served working tree, tracker flags, main commit and tree, SHA-256
+inventories of saved and served paths, counts and paths for creates,
+modifications, deletions, kept Make-only paths and ignored paths, and hashes
+for overwritten Make-ahead paths.
 It does not print file contents. `--delete-make-only` opts into deleting Make-only
-files for a strict mirror; the default keeps them. Both choices are part of the
+files eligible for deploy; the default keeps them. Both choices are part of the
 plan digest. `.figma/make/`, `node_modules/`, `.npmrc`, `.git` internals and
-deploy-ignore paths remain untouched. Existing admin, team, main, build, busy,
+deploy-ignore paths remain untouched. Planning refuses if the saved and served
+inventories differ on a protected path. Existing admin, team, main, build, busy,
 marker, binary, LFS, unsupported-path, unfinished-receipt, stale-plan and tag
 guards remain in force.
 

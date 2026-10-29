@@ -340,7 +340,7 @@ const decode = bytes => {
   } catch { return null; }
 };
 
-// Compare main with Make's saved tree and decide every path. Pure apart from
+// Compare main with the selected Make tree and decide every path. Pure apart from
 // mainBytes(blob), which reads a blob from the clone.
 export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes, overrideMake = false, deleteMakeOnly = false }) {
   const patterns = ignoreOf(main.flat, mainBytes);

@@ -1,6 +1,6 @@
 ---
 name: figma-make-team
-description: Plain-language git for designers working on a team-mode Figma Make project's local clone. Maps phrases like "start a task", "save my progress", "get the latest", "fix the conflict", "I'm ready for review", "merge it", "what's going on?", "merge it anyway", the cross-review phrases "what needs my review", "review Bob's change", "approve it", "ask for changes", "show my review feedback" and "address the comments", and the admin deploy phrases "deploy", "what would deploy change" and "is the deploy done" to figma-cli team verbs and make deploy, and explains the result without git jargon. Use whenever a designer asks to branch, save, sync, review, merge, deploy or check the state of a prototype repo; never run raw git for them.
+description: Plain-language git for designers working on a team-mode Figma Make project's local clone. Maps phrases like "start a task", "save my progress", "get the latest", "fix the conflict", "I'm ready for review", "merge it", "what's going on?", "merge it anyway", the cross-review phrases "what needs my review", "review Bob's change", "approve it", "ask for changes", "show my review feedback" and "address the comments", and the admin deploy phrases "deploy", "use current main to override Make", "what would deploy change" and "is the deploy done" to figma-cli team verbs and make deploy, and explains the result without git jargon. Use whenever a designer asks to branch, save, sync, review, merge, deploy or check the state of a prototype repo; never run raw git for them.
 ---
 
 # Figma Make team workflow
@@ -102,8 +102,9 @@ on an up-to-date `main` (`figma-cli make pull` first). `KEY` is the Make file ke
 | … the save outcome is unknown (`DEPLOY_SAVE_UNCERTAIN`) | `--verify <receiptPath>` only | Never save or deploy again before verify answers |
 
 `DEPLOY_NOT_ADMIN`: only repo admins deploy; name who to ask. `DEPLOY_MAKE_AHEAD`:
-someone edited Make directly; nothing was overwritten, and a developer must bring
-those edits into `main` first. `DEPLOY_NOT_CURRENT`/`DEPLOY_NOT_MAIN`/`DEPLOY_DIRTY`:
+someone edited Make directly; a normal deploy overwrites nothing. Bring those
+edits into `main`, or use the reviewed override when the admin explicitly requests it.
+`DEPLOY_NOT_CURRENT`/`DEPLOY_NOT_MAIN`/`DEPLOY_DIRTY`:
 run `figma-cli make pull` on a clean `main`. `DEPLOY_UNREVIEWED`: `main` must come
 from a merged pull request. `DEPLOY_STALE_PLAN`/`DEPLOY_MAIN_MOVED`/`DEPLOY_TAG_CLASH`:
 run a new dry run. `DEPLOY_SOLO`: the file has no repo, so there is nothing to deploy. `DEPLOY_UNSUPPORTED_PATH`:

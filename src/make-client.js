@@ -819,11 +819,11 @@ export class MakeClient {
   // pending list. Make lists no pending files before its first version, and it
   // never lists paths under a dot folder such as .figma-cli/ (scratch probe,
   // 2026-10-14). The expected set must equal the working copy's difference
-  // from the base: the saved version's tree, or with firstVersion the `since`
-  // sandbox commit. Make must list nothing pending, and the saved tree must
-  // equal the working tree this check read. With `listed` (deploy), Make may
-  // list pending paths, but only expected ones; createVersion is then given
-  // exactly the set Make lists, and the tree check still covers every path.
+  // from the base: the saved version's tree, the first-version `since` commit,
+  // or the pinned sandbox head for an override. The saved tree must equal the
+  // working tree this check read. Normal saves require no pending paths; with
+  // `listed` (deploy), createVersion receives Make's listed paths. An override
+  // additionally checks the full working-copy diff against its reviewed plan.
   async saveCheckedVersion(title, expectedPaths, { firstVersion = false, since, listed = false, overrideMake } = {}) {
     saveRequest(title, expectedPaths);
     if (firstVersion && !/^[a-f0-9]{40}$/.test(since || '')) {
