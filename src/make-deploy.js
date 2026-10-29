@@ -78,6 +78,8 @@ const isHardExcluded = matchesOrUnder(parseIgnore(PROJECT_EXCLUDES.join('\n')));
 const isMakeManaged = matchesOrUnder(parseIgnore(MAKE_MANAGED.join('\n')));
 const alwaysExcluded = path => isHardExcluded(path) || isMakeManaged(path) || isRepoOnly(path) ||
   path === '.git' || path.startsWith('.git/') || path === 'node_modules' || path.startsWith('node_modules/');
+const protectedPath = (path, ignored, mainFlat) => alwaysExcluded(path) || ignored(path) ||
+  (path === PROJECT_MARKER && !mainFlat.has(path));
 const excludedReason = path => isRepoOnly(path) ? 'never deployed: project vault notes stay in the repo'
   : isMakeManaged(path) ? 'never deployed: Make manages its own config' : 'never deployed: Make manages it or it can hold secrets';
 
@@ -168,7 +170,7 @@ export function openReceipts(fileKey, { home } = {}) {
 
 // A missing saved commit may be reconstructed only from the newest completed
 // deploy record for this file, after checking its saved tree against Git.
-function savedInventoryFromRecord({ fileKey, repo, savedVersion, home, ctx, readBlob }) {
+function savedInventoryFromRecord({ fileKey, repo, savedVersion, home, ctx, readBlob, savedProtected }) {
   const dir = deployDir(home);
   const newest = existsSync(dir) ? readdirSync(dir).filter(name => name.endsWith('.json')).map(name => {
     try {
@@ -190,15 +192,17 @@ function savedInventoryFromRecord({ fileKey, repo, savedVersion, home, ctx, read
     fail('Make saved copy is unreadable and the deploy record tree does not match its GitHub main commit. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
   }
   const savedSha256 = new Map();
+  const savedBlobs = new Map();
   try {
     for (const [path, entry] of lsTree(ctx, receipt.mainCommit)) {
       if (entry.type !== 'blob') throw new Error('non-file path');
-      savedSha256.set(path, sha256(readBlob(ctx.root, entry.blob)));
+      if (savedProtected(path)) savedBlobs.set(path, entry.blob);
+      else savedSha256.set(path, sha256(readBlob(ctx.root, entry.blob)));
     }
   } catch {
     fail('Make saved copy is unreadable and the deploy record files cannot be verified against GitHub main. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
   }
-  return savedSha256;
+  return { savedSha256, savedBlobs };
 }
 
 const recovery = receipt => {
@@ -393,12 +397,12 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes, ove
   if (overrideMake) {
     const pending = new Set([...(status.persistence.pendingPaths || []),
       ...contentDiff(status.headFlat || status.makeFlat, status.workingFlat)]);
-    const protectedPath = path => alwaysExcluded(path) || ignored(path) || (path === PROJECT_MARKER && !main.flat.has(path));
-    const savedAndServed = new Set([...status.savedSha256.keys(), ...status.workingSha256.keys()]);
+    const isProtected = path => protectedPath(path, ignored, main.flat);
+    const savedAndServed = new Set([...status.savedBlobs.keys(), ...status.headFlat.keys()]);
     for (const path of savedAndServed) {
-      if (protectedPath(path) && (status.savedSha256.get(path) ?? null) !== (status.workingSha256.get(path) ?? null)) pending.add(path);
+      if (isProtected(path) && (status.savedBlobs.get(path) ?? null) !== (status.headFlat.get(path)?.blob ?? null)) pending.add(path);
     }
-    refused.pendingExcluded = [...pending].filter(protectedPath).sort();
+    refused.pendingExcluded = [...pending].filter(isProtected).sort();
   }
   for (const path of [...new Set([...main.flat.keys(), ...makeFlat.keys()])].sort()) {
     const m = main.flat.get(path);
@@ -471,7 +475,8 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes, ove
           const sha = status.workingSha256.get(path);
           if (!/^[a-f0-9]{64}$/.test(sha || '')) fail(`Make's content hash for ${path} is unavailable.`, 'DEPLOY_MAKE_STATE');
           return { path, sha256: sha };
-        }), savedInventory: [...status.savedSha256].sort(([a], [b]) => a.localeCompare(b)).map(([path, sha256]) => ({ path, sha256 })),
+        }), savedInventory: [...status.savedSha256].map(([path, sha256]) => ({ path, sha256 }))
+          .concat([...status.savedBlobs].map(([path, blob]) => ({ path, blob }))).sort((a, b) => a.path.localeCompare(b.path)),
         ...(status.savedInventorySource ? { savedInventorySource: status.savedInventorySource } : {}) } : {}) },
     base: { source: base.source, ...(base.tag ? { tag: base.tag } : {}), ...(base.mainTree ? { mainTree: base.mainTree } : {}),
       ...(base.receipt ? { receipt: base.receipt } : {}) },
@@ -536,6 +541,10 @@ async function prepare(client, { dir, reviewed, overrideMake = false, deleteMake
   requireClean(ctx, true);
   const tags = remoteTags(ctx);
   const n = tags.length ? tags[0].n + 1 : 0;
+  const mainFlat = lsTree(ctx, main.commit);
+  const mainBytes = blob => readBlob(ctx.root, blob);
+  const ignored = ignoreMatcher(ignoreOf(mainFlat, mainBytes));
+  const savedProtected = path => protectedPath(path, ignored, mainFlat);
   if (reviewed && tags.some(tag => tag.name === reviewed.tag)) {
     fail(`${reviewed.tag} was taken by another deploy since the dry run. Run a new dry run. Nothing was deployed.`, 'DEPLOY_TAG_CLASH');
   }
@@ -548,18 +557,17 @@ async function prepare(client, { dir, reviewed, overrideMake = false, deleteMake
   }
   const ui = await client.inspect();
   let status;
-  try { status = await client.projectStatus({ classifyText: overrideMake, savedInventory: overrideMake }); }
+  try { status = await client.projectStatus({ classifyText: overrideMake, savedInventory: overrideMake, savedProtected }); }
   catch (error) {
     const savedVersion = firstStatus.persistence?.savedVersion;
     if (!overrideMake || !SHA.test(savedVersion || '') || error.message !== `Make sandbox git object ${savedVersion} is missing.`) throw error;
     status = await client.projectStatus({ classifyText: true });
     if (status.persistence?.savedVersion !== savedVersion) fail('Make saved pointer changed while reading its served copy. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
-    status.savedSha256 = savedInventoryFromRecord({ fileKey: client.fileKey, repo, savedVersion,
-      home, ctx, readBlob });
+    Object.assign(status, savedInventoryFromRecord({ fileKey: client.fileKey, repo, savedVersion,
+      home, ctx, readBlob, savedProtected }));
     status.savedInventorySource = 'deploy-record';
   }
   await requireTeamMode(client, status);
-  const mainFlat = lsTree(ctx, main.commit);
   let state;
   if (overrideMake) {
     if (ui?.busy || ui?.offline || ui?.readOnly === true || status.history?.generationInProgress) {
@@ -586,7 +594,7 @@ async function prepare(client, { dir, reviewed, overrideMake = false, deleteMake
     if (!overrideMake) requireBase(status, base, { isLfs, ignored: path => now(path) || then(path) });
   } else base = { source: 'first-deploy', flat: status.makeFlat };
   const plan = buildPlan({ fileKey: client.fileKey, repo, n, main: { ...main, flat: mainFlat }, status, base,
-    mainBytes: blob => readBlob(ctx.root, blob), overrideMake, deleteMakeOnly });
+    mainBytes, overrideMake, deleteMakeOnly });
   return { ctx, repo, access, pr, built, main: { ...main, flat: mainFlat }, status, plan };
 }
 

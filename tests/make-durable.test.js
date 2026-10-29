@@ -812,6 +812,33 @@ test('project status exposes the sandbox head inventory when it differs from the
   assert.equal(status.workingFlat.has('src/new.ts'), true);
 });
 
+test('saved inventory keeps protected blob IDs without reading their contents', async () => {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 5000 });
+  client.fileKey = 'ScratchKey';
+  client._operation = fn => fn(Date.now() + 5000);
+  client._driftState = async () => ({ state: state() });
+  client._evaluate = async () => ({ generationInProgress: false });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  const npmrcBlob = '3'.repeat(40);
+  const appBlob = '4'.repeat(40);
+  const saved = flat({ '.npmrc': npmrcBlob, 'src/App.tsx': appBlob });
+  const read = [];
+  client._sandboxGit = () => ({ head: async () => head, commitTree: async () => 'saved',
+    flatten: async () => saved, readFile: async () => null,
+    object: async blob => {
+      read.push(blob);
+      if (blob === npmrcBlob) throw new Error('Protected .npmrc blob was read');
+      return { type: 'blob', content: Buffer.from('app') };
+    } });
+  client.inventoryProject = async () => ({ state: state(), inventory: new Map([
+    ['src/App.tsx', { blob: appBlob, sha256: hash('app') }]]), contents: new Map(), excluded: ['.npmrc'], batches: 1 });
+  const status = await client.projectStatus({ savedInventory: true, savedProtected: path => path === '.npmrc' });
+  assert.deepEqual(read, [appBlob]);
+  assert.equal(status.savedBlobs.get('.npmrc'), npmrcBlob);
+  assert.equal(status.savedSha256.get('src/App.tsx'), hash('app'));
+  assert.equal(status.savedSha256.has('.npmrc'), false);
+});
+
 test('reload waits for a new document and its Make state', async () => {
   const sent = [];
   const client = new MakeClient({ transport: { close() {}, send: async method => { sent.push(method); return {}; } }, timeoutMs: 5000 });

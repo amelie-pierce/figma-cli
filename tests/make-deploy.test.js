@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gitBlobSha, gitTreeSha } from '../src/git-tree.js';
 import { MakeClient } from '../src/make-client.js';
-import { DEPLOY_IGNORE, deployAbort, deployApply, deployPlan, deployResume, deployVerify, driftProblems, ignoreMatcher, ignorePatterns, readReceipt } from '../src/make-deploy.js';
+import { DEPLOY_IGNORE, defaultReadBlob, deployAbort, deployApply, deployPlan, deployResume, deployVerify, driftProblems, ignoreMatcher, ignorePatterns, readReceipt } from '../src/make-deploy.js';
 import { markerContent } from '../src/make-mode.js';
 import { PROJECT_MARKER } from '../src/make-project.js';
 import { defaultRun } from '../src/make-team.js';
@@ -145,7 +145,7 @@ class FakeMake {
   pending() { return this.changed().filter(path => !path.split('/').some(part => part.startsWith('.')) && !['pnpm-lock.yaml', 'package-lock.json'].includes(path)); }
   async inspect() { return { fileKey: KEY, ...this.ui }; }
   async projectMarker() { return this.working.get(PROJECT_MARKER) ?? null; }
-  async projectStatus({ classifyText = false, savedInventory = false } = {}) {
+  async projectStatus({ classifyText = false, savedInventory = false, savedProtected = () => false } = {}) {
     this.calls.push(['status']);
     const pendingPaths = this.pending();
     return {
@@ -156,7 +156,10 @@ class FakeMake {
       makeFlat: this.flat(this.hasBaseline ? this.saved : this.sandbox), headFlat: this.flat(this.sandbox), workingFlat: this.flat(this.working),
       makeTree: this.tree(this.hasBaseline ? this.saved : this.sandbox), workingTree: this.tree(this.working),
       workingSha256: new Map([...this.working].map(([path, bytes]) => [path, sha256(bytes)])),
-      ...(savedInventory ? { savedSha256: new Map([...this.saved].map(([path, bytes]) => [path, sha256(bytes)])) } : {}),
+      ...(savedInventory ? {
+        savedSha256: new Map([...this.saved].filter(([path]) => !savedProtected(path)).map(([path, bytes]) => [path, sha256(bytes)])),
+        savedBlobs: new Map([...this.saved].filter(([path]) => savedProtected(path)).map(([path, bytes]) => [path, gitBlobSha(bytes)])),
+      } : {}),
       ...(classifyText ? { workingText: new Map([...this.working].map(([path, bytes]) => {
         let text = true;
         try { text = bytes.length <= 2 * 1024 * 1024 && !new TextDecoder('utf-8', { fatal: true }).decode(bytes).includes('\0'); }
@@ -433,7 +436,7 @@ describe('guarded Make override (fake Make and local git only)', () => {
   };
 
   it('plans from a verified deploy record when the saved sandbox commit is missing', async t => {
-    const s = setup(t);
+    const s = setup(t, { files: { ...BASE, '.npmrc': 'secret=do-not-read\n' } });
     const served = new Map(s.make.working);
     landChange(s, { 'src/App.tsx': 'export const App = 2;\n' });
     const first = await deployPlan(s.make, s.opts, s.deps);
@@ -449,12 +452,21 @@ describe('guarded Make override (fake Make and local git only)', () => {
       if (options?.savedInventory) throw new Error(`Make sandbox git object ${s.make.savedVersion} is missing.`);
       return projectStatus(options);
     };
+    const npmrcBlob = sh(s.p.clone, 'rev-parse', 'HEAD:.npmrc');
+    const readBlobs = [];
+    s.deps.readBlob = (root, blob) => {
+      readBlobs.push(blob);
+      if (blob === npmrcBlob) throw new Error('Protected .npmrc blob was read');
+      return defaultReadBlob(root, blob);
+    };
 
     const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.equal(readBlobs.includes(npmrcBlob), false);
     assert.match(plan.summary, /saved copy unreadable, using deploy record/);
     assert.deepEqual(plan.files, [{ path: 'src/App.tsx', op: 'modify' }]);
     const savedInventory = JSON.parse(readFileSync(plan.planPath, 'utf8')).makeBefore.savedInventory;
     assert.equal(savedInventory.find(item => item.path === 'src/App.tsx').sha256, sha256('export const App = 2;\n'));
+    assert.deepEqual(savedInventory.find(item => item.path === '.npmrc'), { path: '.npmrc', blob: npmrcBlob });
 
     prior.makeAfter.tree = 'f'.repeat(40);
     writeFileSync(deployed.receiptPath, JSON.stringify(prior));
