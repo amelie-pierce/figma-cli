@@ -1,0 +1,33 @@
+src/make-client.js
+  s_2bf41aeb7a4110::t_7a25c77fef0f69 822-826
+skills/figma-make-team/SKILL.md
+  s_2bf41aeb7a4110::t_208f2ed68f5553 3,105-107
+REFERENCE.md
+  s_2bf41aeb7a4110::t_86e1ec5fa62137 421
+  s_2bf41aeb7a4110::t_7a25c77fef0f69 523-525
+  s_2bf41aeb7a4110::t_208f2ed68f5553 399,521-522,527,529-530
+src/make-deploy.js
+  s_2bf41aeb7a4110::t_208f2ed68f5553 343
+_vaults/figma-cli/wiki/make/deploy.md
+  s_2bf41aeb7a4110::t_86e1ec5fa62137 32-33,38
+  s_2bf41aeb7a4110::t_94d663b04f5fab 14,20-23
+README.md
+  s_2bf41aeb7a4110::t_86e1ec5fa62137 362
+  s_2bf41aeb7a4110::t_208f2ed68f5553 374-378
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8508bae3bd621d933ea0f05ad41283f3781399e8",
+  "prompts": {},
+  "sessions": {
+    "s_2bf41aeb7a4110": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a186fb-6444-7ce3-8ad9-b0abcb14b1b1",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
