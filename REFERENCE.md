@@ -504,7 +504,7 @@ Recovery:
 
 | Stopped at | `stage` | Run |
 |---|---|---|
-| A write, before any save (`DEPLOY_WRITE_FAILED`) | `writing` / `written` | `--resume` writes the remaining paths and saves; each planned path must hold its before or after content and nothing else may be unsaved; a planned dependency file Make's install regenerated, and a lockfile already holding main's content, is written again through the client. `--abort` restores the written paths from backups, with dependency files last. It waits for Make's install after each dependency change, rechecks planned paths, and keeps the restored list across retries. It finishes only when the working tree equals the original saved tree; when only a lockfile without an original backup still differs, it names that path with its hashes and stops: the receipt has no backup of it, so let Make finish its install from the restored `package.json`, check `make status`, and if the lockfile still differs restore the saved version from Make's version history (never hand-edit the lockfile), then run `--abort` once more to close the receipt. |
+| A write, before any save (`DEPLOY_WRITE_FAILED`) | `writing` / `written` | `--resume` writes the remaining paths and saves; each planned path must hold its before or after content and nothing else may be unsaved; a planned dependency file Make's install regenerated, and a lockfile already holding main's content, is written again through the client. `--abort` restores the written paths from backups, with dependency files last. It waits for Make's install after each dependency change, rechecks planned paths, and keeps the restored list across retries. For a normal deploy, it finishes only when the working tree equals the original saved tree; when only a lockfile without an original backup still differs, it names that path with its hashes and stops: the receipt has no backup of it, so let Make finish its install from the restored `package.json`, check `make status`, and if the lockfile still differs restore the saved version from Make's version history (never hand-edit the lockfile), then run `--abort` once more to close the receipt. |
 | createVersion ran but was not confirmed (`DEPLOY_SAVE_UNCERTAIN`) | `save-uncertain` / `saved-unverified` | `--verify` only; the save is never retried |
 | Saved, but the drift check could not read Make (`DEPLOY_DRIFT`) | `saved` | `--verify`; if Make has moved past the saved version, it records `saved-drift` |
 | Saved, but Make does not equal `main` (`DEPLOY_DRIFT`) | `saved-drift` | Look at the listed paths; the next dry run plans from this version, or refuses as make-ahead when Make has moved past it |
@@ -525,6 +525,10 @@ uses SHA-256 for deployable files and Git blob IDs for protected or excluded
 paths, without reading their contents. It lists counts and paths for creates,
 modifications, deletions, kept Make-only paths and ignored paths, and hashes
 for overwritten Make-ahead paths.
+If the saved commit is missing from Make's sandbox, planning checks the saved
+pointer against the newest local deploy receipt when it is complete and
+matching, or otherwise the newest validated annotated deploy tag. It refuses
+when neither record can establish the saved inventory.
 It does not print file contents. `--delete-make-only` opts into deleting Make-only
 files eligible for deploy; the default keeps them. Both choices are part of the
 plan digest. `.figma/make/`, `node_modules/`, `.npmrc`, `.git` internals and
