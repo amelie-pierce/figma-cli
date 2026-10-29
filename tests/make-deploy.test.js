@@ -145,7 +145,7 @@ class FakeMake {
   pending() { return this.changed().filter(path => !path.split('/').some(part => part.startsWith('.')) && !['pnpm-lock.yaml', 'package-lock.json'].includes(path)); }
   async inspect() { return { fileKey: KEY, ...this.ui }; }
   async projectMarker() { return this.working.get(PROJECT_MARKER) ?? null; }
-  async projectStatus({ classifyText = false } = {}) {
+  async projectStatus({ classifyText = false, savedInventory = false } = {}) {
     this.calls.push(['status']);
     const pendingPaths = this.pending();
     return {
@@ -156,6 +156,7 @@ class FakeMake {
       makeFlat: this.flat(this.hasBaseline ? this.saved : this.sandbox), headFlat: this.flat(this.sandbox), workingFlat: this.flat(this.working),
       makeTree: this.tree(this.hasBaseline ? this.saved : this.sandbox), workingTree: this.tree(this.working),
       workingSha256: new Map([...this.working].map(([path, bytes]) => [path, sha256(bytes)])),
+      ...(savedInventory ? { savedSha256: new Map([...this.saved].map(([path, bytes]) => [path, sha256(bytes)])) } : {}),
       ...(classifyText ? { workingText: new Map([...this.working].map(([path, bytes]) => {
         let text = true;
         try { text = bytes.length <= 2 * 1024 * 1024 && !new TextDecoder('utf-8', { fatal: true }).decode(bytes).includes('\0'); }
@@ -493,6 +494,45 @@ describe('guarded Make override (fake Make and local git only)', () => {
     assert.deepEqual([...s.make.working].map(([path, bytes]) => [path, bytes.toString()]).sort(),
       [...original].map(([path, bytes]) => [path, bytes.toString()]).sort());
     assert.deepEqual(s.p.tags(), []);
+  });
+
+  it('recovers after a refused save reloads saved v2 over sandbox v1', async t => {
+    const prepareAhead = s => {
+      landChange(s, { 'src/App.tsx': 'export const App = 3;\n' });
+      s.make.saved.set('src/App.tsx', Buffer.from('export const App = 2;\n'));
+      s.make.savedVersion = sha256('saved v2').slice(0, 40);
+      s.make.hasBaseline = false;
+      s.make.trackerError = true;
+      s.make.head = 'b'.repeat(40);
+      s.make.sandbox = new Map(s.make.working);
+      s.make.hooks.save = 'refused';
+    };
+    const abortCase = setup(t);
+    prepareAhead(abortCase);
+    const abortPlan = await deployPlan(abortCase.make, { ...abortCase.opts, overrideMake: true }, abortCase.deps);
+    const abortError = await deployApply(abortCase.make, { ...abortCase.opts, planPath: abortPlan.planPath,
+      confirmOverride: abortPlan.digest.slice(0, 12) }, abortCase.deps).catch(cause => cause);
+    assert.equal(abortError.code, 'DEPLOY_WRITE_FAILED');
+    const receipt = readReceipt(abortError.receiptPath);
+    assert.equal(receipt.makeBefore.savedInventory.find(file => file.path === 'src/App.tsx').sha256,
+      sha256('export const App = 2;\n'));
+    await abortCase.make.reloadPage();
+    const aborted = await deployAbort(abortCase.make, { receiptPath: abortError.receiptPath }, abortCase.deps);
+    assert.equal(aborted.outcome, 'aborted');
+    assert.equal(abortCase.make.working.get('src/App.tsx').toString(), BASE['src/App.tsx']);
+    assert.deepEqual(abortCase.p.tags(), []);
+
+    const resumeCase = setup(t);
+    prepareAhead(resumeCase);
+    const resumePlan = await deployPlan(resumeCase.make, { ...resumeCase.opts, overrideMake: true }, resumeCase.deps);
+    const resumeError = await deployApply(resumeCase.make, { ...resumeCase.opts, planPath: resumePlan.planPath,
+      confirmOverride: resumePlan.digest.slice(0, 12) }, resumeCase.deps).catch(cause => cause);
+    assert.equal(resumeError.code, 'DEPLOY_WRITE_FAILED');
+    delete resumeCase.make.hooks.save;
+    const resumed = await deployResume(resumeCase.make, { ...resumeCase.opts, receiptPath: resumeError.receiptPath }, resumeCase.deps);
+    assert.equal(resumed.stage, 'saved-unverified');
+    assert.equal(resumeCase.make.saved.get('src/App.tsx').toString(), 'export const App = 3;\n');
+    assert.deepEqual(resumeCase.p.tags(), []);
   });
 
   it('does not tag when a created version leaves the tracker broken', async t => {

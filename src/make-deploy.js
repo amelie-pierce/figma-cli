@@ -431,7 +431,7 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes, ove
           const sha = status.workingSha256.get(path);
           if (!/^[a-f0-9]{64}$/.test(sha || '')) fail(`Make's content hash for ${path} is unavailable.`, 'DEPLOY_MAKE_STATE');
           return { path, sha256: sha };
-        }) } : {}) },
+        }), savedInventory: [...status.savedSha256].sort(([a], [b]) => a.localeCompare(b)).map(([path, sha256]) => ({ path, sha256 })) } : {}) },
     base: { source: base.source, ...(base.tag ? { tag: base.tag } : {}), ...(base.mainTree ? { mainTree: base.mainTree } : {}),
       ...(base.receipt ? { receipt: base.receipt } : {}) },
     ...(main.flat.has(DEPLOY_IGNORE) ? { ignore: { path: DEPLOY_IGNORE, blob: main.flat.get(DEPLOY_IGNORE).blob, patterns } } : {}),
@@ -505,7 +505,7 @@ async function prepare(client, { dir, reviewed, overrideMake = false, deleteMake
       { receiptPath: blocking.receiptPath });
   }
   const ui = await client.inspect();
-  const status = await client.projectStatus({ classifyText: overrideMake });
+  const status = await client.projectStatus({ classifyText: overrideMake, savedInventory: overrideMake });
   await requireTeamMode(client, status);
   const mainFlat = lsTree(ctx, main.commit);
   let state;
@@ -641,9 +641,11 @@ function plannedState(receipt, status) {
   }
   const planned = new Set(receipt.plan.files.map(file => file.path));
   const original = new Map(receipt.makeBefore.inventory?.map(item => [item.path, item.sha256]));
+  const saved = new Map(receipt.makeBefore.savedInventory?.map(item => [item.path, item.sha256]));
   const others = receipt.mode === 'override-make'
     ? [...new Set([...original.keys(), ...status.workingFlat.keys()])]
-      .filter(path => !planned.has(path) && (status.workingSha256.get(path) ?? null) !== (original.get(path) ?? null))
+      .filter(path => !planned.has(path) && (status.workingSha256.get(path) ?? null) !== (original.get(path) ?? null) &&
+        !(receipt.saveRefusals && (status.workingSha256.get(path) ?? null) === (saved.get(path) ?? null)))
     : [...new Set([...contentDiff(status.workingFlat, status.makeFlat), ...(state.pendingPaths || [])])].filter(path => !planned.has(path));
   if (others.length) return { problem: `Make has unsaved changes outside the deploy ${JSON.stringify(others)}`, code: 'DEPLOY_MAKE_AHEAD' };
   const files = classify(receipt, status);
@@ -933,9 +935,12 @@ const result = (receipt, summary) => ({ deployId: receipt.deployId, fileKey: rec
 // planned, a dependency file Make's own install regenerated, or something
 // else (which stops resume and abort).
 export function classify(receipt, status) {
+  const saved = new Map(receipt.makeBefore.savedInventory?.map(item => [item.path, item.sha256]));
   return receipt.plan.files.map(file => {
     const blob = status.workingFlat.get(file.path)?.blob ?? null;
-    const state = blob === file.afterBlob ? 'after' : blob === file.beforeBlob ? 'before' : blob && isDependency(file.path) ? 'regenerated' : 'other';
+    const state = blob === file.afterBlob ? 'after' : blob === file.beforeBlob ? 'before'
+      : receipt.saveRefusals && saved.has(file.path) && status.workingSha256.get(file.path) === saved.get(file.path) ? 'saved'
+        : blob && isDependency(file.path) ? 'regenerated' : 'other';
     return { ...file, state };
   });
 }
@@ -977,7 +982,7 @@ export async function deployResume(client, { dir, receiptPath } = {}, deps = {})
   if (!revOf(ctx, receipt.mainCommit)) fetchMain(ctx);
   if (!revOf(ctx, receipt.mainCommit)) fail(`The clone does not have main ${short(receipt.mainCommit)}.`, 'DEPLOY_RECEIPT');
   const { status, files } = await resumable(client, receipt, 'resume');
-  const todo = files.filter(file => file.state === 'before' || file.state === 'regenerated' || (file.state === 'after' && isLockfile(file.path)))
+  const todo = files.filter(file => file.state === 'before' || file.state === 'saved' || file.state === 'regenerated' || (file.state === 'after' && isLockfile(file.path)))
     .map(file => ({ ...file, expectedSha256: status.workingSha256.get(file.path) ?? null }));
   receipt.resumedBy = access.login;
   receipt.stage = 'writing';
@@ -1020,7 +1025,7 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
   const restoreOf = file => (file.op === 'add' ? null : backupContent(receipt, file, deps.home));
   // Every backup is read before anything changes.
   const contents = new Map(files.filter(file => (receipt.mode === 'override-make' || !noOriginal(file)) &&
-    (file.state === 'after' || file.state === 'regenerated')).map(file => [file.path, restoreOf(file)]));
+    (file.state === 'after' || file.state === 'saved' || file.state === 'regenerated')).map(file => [file.path, restoreOf(file)]));
   const restored = new Set(receipt.restored || []);
   // Older abort retries replaced this list. Recover paths that this deploy
   // wrote and a previous abort already returned to their starting content;

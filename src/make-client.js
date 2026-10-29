@@ -1150,7 +1150,7 @@ export class MakeClient {
   // sandbox git objects (exact file modes), the project inventory with that
   // tree's paths kept as tracked, the working-copy tree, the marker and the
   // AI-turn version history.
-  async projectStatus({ classifyText = false } = {}) {
+  async projectStatus({ classifyText = false, savedInventory = false } = {}) {
     const git = await this._operation(async deadline => {
       const state = (await this._driftState(deadline)).state;
       const history = await this._evaluate(`(${makeVersionHistory.toString()})()`, deadline);
@@ -1162,10 +1162,19 @@ export class MakeClient {
         const tree = await reader.commitTree(saved || head);
         const flat = await reader.flatten(tree);
         const exclude = await reader.readFile('info/exclude');
+        const savedSha256 = savedInventory ? new Map() : null;
+        if (savedSha256) {
+          const savedFlat = saved === state.savedVersion ? flat : await reader.flatten(await reader.commitTree(state.savedVersion));
+          for (const [path, entry] of savedFlat) {
+            const blob = await reader.object(entry.blob);
+            if (blob.type !== 'blob') throw new Error(`Saved Make path is not a file: ${path}`);
+            savedSha256.set(path, digest(blob.content));
+          }
+        }
         const after = (await this._driftState(deadline)).state;
         if (JSON.stringify(after) !== JSON.stringify(state)) throw new Error('Make state changed while reading its git objects.');
         const headFlat = saved && saved !== head ? await reader.flatten(await reader.commitTree(head)) : flat;
-        return { state, history, head, tree, flat, headFlat, treeSource: saved ? 'saved-version' : 'sandbox-head', exclude };
+        return { state, history, head, tree, flat, headFlat, treeSource: saved ? 'saved-version' : 'sandbox-head', exclude, savedSha256 };
       } finally { await bridge.dispose(); }
     });
     const scan = await this.inventoryProject({ includeBytes: path => path === PROJECT_MARKER || path === '.gitattributes', classifyText,
@@ -1177,6 +1186,7 @@ export class MakeClient {
     return { persistence: scan.state, history: git.history, head: git.head, makeTree: git.tree, treeSource: git.treeSource,
       makeFlat: git.flat, headFlat: git.headFlat, workingFlat: working, workingTree: treeOf(working), fileCount: scan.inventory.size,
       workingSha256: new Map([...scan.inventory].map(([path, file]) => [path, file.sha256])),
+      ...(savedInventory ? { savedSha256: git.savedSha256 } : {}),
       ...(classifyText ? { workingText: new Map([...scan.inventory].map(([path, file]) => [path, file.text])) } : {}),
       excluded: scan.excluded, excludeSource: scan.excludeSource, lfsPaths, isLfs,
       markerBytes: scan.contents.get(PROJECT_MARKER) ?? null, batches: scan.batches };
