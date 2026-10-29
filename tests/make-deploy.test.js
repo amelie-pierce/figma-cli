@@ -432,6 +432,37 @@ describe('guarded Make override (fake Make and local git only)', () => {
     stale(s);
   };
 
+  it('plans from a verified deploy record when the saved sandbox commit is missing', async t => {
+    const s = setup(t);
+    const served = new Map(s.make.working);
+    landChange(s, { 'src/App.tsx': 'export const App = 2;\n' });
+    const first = await deployPlan(s.make, s.opts, s.deps);
+    const deployed = await deployApply(s.make, { ...s.opts, planPath: first.planPath }, s.deps);
+    const prior = readReceipt(deployed.receiptPath);
+    assert.equal(prior.makeAfter.tree, prior.mainTree);
+
+    landChange(s, { 'src/App.tsx': 'export const App = 3;\n' });
+    s.make.working = new Map(served);
+    stale(s);
+    const projectStatus = s.make.projectStatus.bind(s.make);
+    s.make.projectStatus = async options => {
+      if (options?.savedInventory) throw new Error(`Make sandbox git object ${s.make.savedVersion} is missing.`);
+      return projectStatus(options);
+    };
+
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.match(plan.summary, /saved copy unreadable, using deploy record/);
+    assert.deepEqual(plan.files, [{ path: 'src/App.tsx', op: 'modify' }]);
+    const savedInventory = JSON.parse(readFileSync(plan.planPath, 'utf8')).makeBefore.savedInventory;
+    assert.equal(savedInventory.find(item => item.path === 'src/App.tsx').sha256, sha256('export const App = 2;\n'));
+
+    prior.makeAfter.tree = 'f'.repeat(40);
+    writeFileSync(deployed.receiptPath, JSON.stringify(prior));
+    await refuses(deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps), 'DEPLOY_MAKE_STATE', /deploy record.*tree/i);
+    rmSync(deployed.receiptPath);
+    await refuses(deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps), 'DEPLOY_MAKE_STATE', /deploy record/i);
+  });
+
   it('binds confirmation and Make-only policy to the reviewed digest; tags only after reload', async t => {
     const s = setup(t);
     target(s);
