@@ -359,7 +359,7 @@ to connect; it never starts, quits or patches Figma Desktop.
 
 A repo admin deploys merged `main` into the team-mode Make file with
 `make deploy --file KEY` in their clone. The default is a dry run that writes a
-reviewable plan; `--apply PLAN` re-plans, writes the planned files, saves one
+reviewable plan; a normal `--apply PLAN` re-plans, writes the planned files, saves one
 version `deploy <sha7>`, checks the whole project against `main`, writes a private
 receipt under `~/.figma-cli/deploys/` and pushes the annotated tag
 `make-deploy/<n>`. `--verify RECEIPT` confirms it after a fresh reload;
@@ -370,6 +370,11 @@ naming paths the deploy leaves alone on both sides: repo-only files such as
 `/docs/`, `/tests/` or `/README.md` stay in GitHub, and Make-only files such as
 `/AGENTS.md` stay in Make. Make's own `.figma/make/` config is never deployed. See
 [deploying main to Make](REFERENCE.md#deploying-main-to-make-make-deploy).
+
+When Make's saved-version tracker is out of step, an admin can use a reviewed
+`--override-make` plan to deploy current `main` against the files Make serves.
+This mode requires a digest confirmation to apply and a fresh-reload `--verify`
+before the deploy tag is pushed. See the [override contract](REFERENCE.md#deploying-main-to-make-make-deploy).
 
 `make export-delta` writes an explicit saved-version Make delta for workspace
 `atomic-cli intake-make-delta --from`. `make sync` accepts a committed

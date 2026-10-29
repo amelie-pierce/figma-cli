@@ -43,11 +43,15 @@ export async function makeDurablePageAction(action) {
     const current = pendingStates[0];
     // Without a baseline Make lists no pending files; the caller compared the
     // working copy with the sandbox HEAD instead.
-    const expected = action.firstVersion
+    const expected = action.overrideMake
+      ? current?.baseline === action.overrideMake.savedVersion &&
+        (current?.hasBaseline && !current.error || !current?.hasBaseline && current.error) &&
+        Array.isArray(current.paths) && JSON.stringify(current.paths) === JSON.stringify([...action.expectedPaths].sort())
+      : action.firstVersion
       ? !current?.hasBaseline && current?.baseline == null && Array.isArray(current?.paths) && current.paths.length === 0
       : current?.hasBaseline && current.baseline === action.expectedGitSha && Array.isArray(current.paths) &&
         JSON.stringify(current.paths) === JSON.stringify([...action.expectedPaths].sort());
-    if (unique.length !== 1 || !current?.git || current.loading || current.error || !expected) {
+    if (unique.length !== 1 || !current?.git || current.loading || (current.error && !action.overrideMake) || !expected) {
       return { refused: 'Make version or pending file set changed before createVersion.' };
     }
     if (sandboxSet.size !== 1 || threads.size !== 1) throw new Error('Make version function or thread is absent or ambiguous.');
@@ -93,7 +97,7 @@ export async function makeDurablePageAction(action) {
 
 // firstVersion accepts only a git-mode file that has never been saved, the
 // state --first-version works on; it refuses a file that has a baseline.
-export function requireGitMode(state, { firstVersion = false } = {}) {
+export function requireGitMode(state, { firstVersion = false, overrideMake } = {}) {
   if (!state) throw new Error('Make saving mode is unavailable; durable operation refused.');
   if (state.mode !== 'git') throw new Error('Snapshot-mode Make files are unsupported by durable writes; use the Save card workflow.');
   if (firstVersion) {
@@ -102,6 +106,15 @@ export function requireGitMode(state, { firstVersion = false } = {}) {
     }
     if (state.isLoading || state.error || !Array.isArray(state.pendingPaths) || state.pendingPaths.length) {
       throw new Error('Make no-baseline state is unverified; first-version operation refused.');
+    }
+    return state;
+  }
+  if (overrideMake) {
+    if (!/^[a-f0-9]{40}$/.test(overrideMake.savedVersion || '') ||
+        state.savedVersion !== overrideMake.savedVersion || state.isLoading ||
+        !Array.isArray(state.pendingPaths) ||
+        !(state.hasBaseline && !state.error || !state.hasBaseline && state.error)) {
+      throw new Error('Pinned Make pointer or tracker state changed; override operation refused.');
     }
     return state;
   }

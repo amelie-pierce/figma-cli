@@ -112,6 +112,30 @@ test('without a saved baseline the sandbox HEAD tree is used, and packed objects
   assert.equal(result.makeTree, git(dir, 'rev-parse', 'HEAD^{tree}'));
 });
 
+test('a missing saved commit with a baseline reports the sandbox head and missing pointer', async t => {
+  const dir = sandbox(t);
+  const head = git(dir, 'rev-parse', 'HEAD');
+  const { c } = client(dir, { state: clean('d'.repeat(40)), hangOnMissing: false });
+  const result = await c.projectStatus({ savedInventory: true, savedProtected: () => false });
+  assert.equal(result.savedMissing, true);
+  assert.equal(result.persistence.hasBaseline, true);
+  assert.equal(result.head, head);
+  assert.equal(result.treeSource, 'sandbox-head');
+  assert.equal(result.makeTree, git(dir, 'rev-parse', 'HEAD^{tree}'));
+  assert.deepEqual(result.makeFlat, result.headFlat);
+  assert.equal(result.savedSha256.size, 0);
+});
+
+test('filesystem readiness probes only the small sandbox HEAD file', async t => {
+  const dir = sandbox(t);
+  const { c, calls } = client(dir, { state: clean(git(dir, 'rev-parse', 'HEAD')) });
+  let codeReady = false;
+  c._ensureCode = async () => { codeReady = true; };
+  await c.probeFilesystemReady();
+  assert.equal(codeReady, true);
+  assert.deepEqual(calls.filter(call => call.type === 'fs/file/read').map(call => call.path), ['code/.git/HEAD']);
+});
+
 test('a state change while reading the sandbox git objects fails the status', async t => {
   const dir = sandbox(t);
   const head = git(dir, 'rev-parse', 'HEAD');

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gitBlobSha, gitTreeSha } from '../src/git-tree.js';
 import { MakeClient } from '../src/make-client.js';
-import { DEPLOY_IGNORE, deployAbort, deployApply, deployPlan, deployResume, deployVerify, driftProblems, ignoreMatcher, ignorePatterns, readReceipt } from '../src/make-deploy.js';
+import { DEPLOY_IGNORE, defaultReadBlob, deployAbort, deployApply, deployPlan, deployResume, deployVerify, driftProblems, ignoreMatcher, ignorePatterns, readReceipt } from '../src/make-deploy.js';
 import { markerContent } from '../src/make-mode.js';
 import { PROJECT_MARKER } from '../src/make-project.js';
 import { defaultRun } from '../src/make-team.js';
@@ -92,7 +92,7 @@ const lockFor = pkg => `lockfileVersion: 9.0\n# resolved for ${sha256(Buffer.isB
 class FakeMake {
   constructor(files, { marker = true } = {}) {
     this.fileKey = KEY;
-    this.saved = new Map(Object.entries({ ...files, ...(marker ? { [PROJECT_MARKER]: MARKER } : {}) }).map(([p, c]) => [p, Buffer.from(text(c))]));
+    this.saved = new Map(Object.entries({ ...files, ...(marker ? { [PROJECT_MARKER]: MARKER } : {}) }).map(([p, c]) => [p, Buffer.isBuffer(c) ? c : Buffer.from(text(c))]));
     this.working = new Map(this.saved);
     this.version = 3;
     this.savedVersion = 'a'.repeat(40);
@@ -100,6 +100,9 @@ class FakeMake {
     this.ui = { busy: false };
     this.hooks = {};
     this.hasBaseline = true;
+    this.trackerError = false;
+    this.head = this.savedVersion;
+    this.sandbox = new Map(this.saved);
     this.generating = false;
     this.install = null;
     this.installing = false;
@@ -129,7 +132,8 @@ class FakeMake {
     this.calls.push(['idle']);
     if (this.installing) { this.land(); return { busy: true, offline: false, state: null, sha: {} }; }
     const sha = Object.fromEntries(paths.map(path => [path, this.working.has(path) ? sha256(this.working.get(path)) : null]));
-    return { busy: false, offline: false, state: { mode: 'git', savedVersion: this.savedVersion, pendingPaths: this.pending(), isLoading: false, error: false }, sha };
+    return { busy: false, offline: false, state: { mode: 'git', savedVersion: this.savedVersion, pendingPaths: this.pending(), isLoading: false,
+      error: this.trackerError }, sha };
   }
   flat(files) { return new Map([...files].map(([path, bytes]) => [path, { mode: '100644', blob: gitBlobSha(bytes) }])); }
   tree(files) { return gitTreeSha([...this.flat(files)].map(([path, entry]) => ({ path, ...entry }))); }
@@ -141,16 +145,29 @@ class FakeMake {
   pending() { return this.changed().filter(path => !path.split('/').some(part => part.startsWith('.')) && !['pnpm-lock.yaml', 'package-lock.json'].includes(path)); }
   async inspect() { return { fileKey: KEY, ...this.ui }; }
   async projectMarker() { return this.working.get(PROJECT_MARKER) ?? null; }
-  async projectStatus() {
+  async projectStatus({ classifyText = false, savedInventory = false, savedProtected = () => false } = {}) {
     this.calls.push(['status']);
     const pendingPaths = this.pending();
+    const missing = this.savedCommitMissing === true;
+    const base = this.hasBaseline && !missing ? this.saved : this.sandbox;
     return {
-      persistence: { mode: 'git', hasBaseline: this.hasBaseline, savedVersion: this.hasBaseline ? this.savedVersion : null,
-        pendingCount: pendingPaths.length, pendingPaths, isLoading: false, error: false },
+      persistence: { mode: 'git', hasBaseline: this.hasBaseline, savedVersion: this.hasBaseline || this.trackerError ? this.savedVersion : null,
+        pendingCount: pendingPaths.length, pendingPaths, isLoading: false, error: this.trackerError },
       history: { generationInProgress: this.generating, latest: { versionNumber: this.version, gitSha: this.savedVersion } },
-      head: this.savedVersion, treeSource: this.hasBaseline ? 'saved-version' : 'sandbox-head',
-      makeFlat: this.flat(this.saved), workingFlat: this.flat(this.working), makeTree: this.tree(this.saved), workingTree: this.tree(this.working),
+      head: this.head, treeSource: this.hasBaseline && !missing ? 'saved-version' : 'sandbox-head', savedMissing: missing,
+      makeFlat: this.flat(base), headFlat: this.flat(this.sandbox), workingFlat: this.flat(this.working),
+      makeTree: this.tree(base), workingTree: this.tree(this.working),
       workingSha256: new Map([...this.working].map(([path, bytes]) => [path, sha256(bytes)])),
+      ...(savedInventory ? {
+        savedSha256: new Map(missing ? [] : [...this.saved].filter(([path]) => !savedProtected(path)).map(([path, bytes]) => [path, sha256(bytes)])),
+        savedBlobs: new Map(missing ? [] : [...this.saved].filter(([path]) => savedProtected(path)).map(([path, bytes]) => [path, gitBlobSha(bytes)])),
+      } : {}),
+      ...(classifyText ? { workingText: new Map([...this.working].map(([path, bytes]) => {
+        let text = true;
+        try { text = bytes.length <= 2 * 1024 * 1024 && !new TextDecoder('utf-8', { fatal: true }).decode(bytes).includes('\0'); }
+        catch { text = false; }
+        return [path, text];
+      })) } : {}),
       markerBytes: this.working.get(PROJECT_MARKER) ?? null, isLfs: () => false,
     };
   }
@@ -207,14 +224,31 @@ class FakeMake {
     this.clientWrote.clear();
     this.version += 1;
     this.savedVersion = sha256(`v${this.version}`).slice(0, 40);
+    this.head = this.savedVersion;
+    this.sandbox = new Map(this.saved);
+    this.hasBaseline = true;
+    this.trackerError = false;
+    this.savedCommitMissing = false;
     return { versionId: `id-${this.version}`, versionNumber: this.version, gitSha: this.savedVersion, tree: this.tree(this.saved) };
   }
-  async saveCheckedVersion(title, expectedPaths, { listed } = {}) {
+  async saveCheckedVersion(title, expectedPaths, { listed, overrideMake } = {}) {
     this.calls.push(['save', title, [...expectedPaths].sort()]);
     assert.equal(listed, true);
-    const others = this.pending().filter(path => !expectedPaths.includes(path));
+    const others = this.pending().filter(path => !(overrideMake ? overrideMake.expectedDiff : expectedPaths).includes(path));
     if (others.length) throw new Error(`Make lists other pending changes ${JSON.stringify(others)}`);
-    assert.deepEqual(this.changed(), [...expectedPaths].sort());
+    if (overrideMake) {
+      assert.equal(overrideMake.savedVersion, this.savedVersion);
+      assert.equal(overrideMake.head, this.head);
+      const actual = [...new Set([...this.sandbox.keys(), ...this.working.keys()])]
+        .filter(path => !this.sandbox.has(path) || !this.working.has(path) || !this.sandbox.get(path).equals(this.working.get(path))).sort();
+      assert.deepEqual(actual, overrideMake.expectedDiff);
+    } else assert.deepEqual(this.changed(), [...expectedPaths].sort());
+    if (this.hooks.save === 'refused') throw new Error('Make version or pending file set changed before createVersion.');
+    if (this.hooks.save === 'uncertain-no-save') {
+      const error = new Error('Make version outcome is uncertain.');
+      error.createVersionCalled = true;
+      throw error;
+    }
     if (this.hooks.save === 'uncertain') {
       this.commitVersion();
       const error = new Error('Make version outcome is uncertain: socket closed. Inspect versions before retrying.');
@@ -222,6 +256,13 @@ class FakeMake {
       throw error;
     }
     const version = this.commitVersion();
+    if (this.hooks.save === 'tracker-not-recovered') {
+      this.hasBaseline = false;
+      this.trackerError = true;
+      const error = new Error('Make version was created but the tracker did not recover.');
+      error.version = { ...version };
+      throw error;
+    }
     if (this.hooks.save === 'unconfirmed') {
       const error = new Error(`Make version ${version.versionNumber} was created but its baseline was not verified. Do not retry the save.`);
       error.version = { ...version, previousGitSha: null };
@@ -233,6 +274,13 @@ class FakeMake {
     this.calls.push(['reload']);
     this.working = new Map(this.saved);
     return { reloaded: true };
+  }
+  async probeFilesystemReady() {
+    this.calls.push(['probe-filesystem']);
+    if (this.hooks.probeAlwaysFails || this.hooks.probeFailures > 0) {
+      if (this.hooks.probeFailures > 0) this.hooks.probeFailures--;
+      throw new Error('Make filesystem request timed out');
+    }
   }
   get writes() { return this.calls.filter(([kind]) => ['write', 'delete', 'save'].includes(kind)); }
 }
@@ -382,6 +430,403 @@ describe('make deploy unopened deep-file read-back', () => {
     assert.equal(s.make.deepReadback, 'tree-vfs-sandbox-matched');
     assert.equal(resumed.stage, 'deployed');
     assert.equal(s.make.saved.get(DEEP_PATH).toString(), 'new\n');
+  });
+});
+
+describe('guarded Make override (fake Make and local git only)', () => {
+  const stale = s => {
+    s.make.hasBaseline = false;
+    s.make.trackerError = true;
+    s.make.head = 'b'.repeat(40);
+    s.make.sandbox = new Map(s.make.working);
+  };
+  const target = s => {
+    landChange(s);
+    stale(s);
+  };
+
+  it('plans from a verified deploy record when the saved sandbox commit is missing', async t => {
+    const s = setup(t, { files: { ...BASE, '.npmrc': 'secret=do-not-read\n' } });
+    const served = new Map(s.make.working);
+    landChange(s, { 'src/App.tsx': 'export const App = 2;\n' });
+    const first = await deployPlan(s.make, s.opts, s.deps);
+    const deployed = await deployApply(s.make, { ...s.opts, planPath: first.planPath }, s.deps);
+    const prior = readReceipt(deployed.receiptPath);
+    assert.equal(prior.makeAfter.tree, prior.mainTree);
+
+    landChange(s, { 'src/App.tsx': 'export const App = 3;\n' });
+    s.make.working = new Map(served);
+    stale(s);
+    const projectStatus = s.make.projectStatus.bind(s.make);
+    s.make.projectStatus = async options => {
+      if (options?.savedInventory) throw new Error(`Make sandbox git object ${s.make.savedVersion} is missing.`);
+      return projectStatus(options);
+    };
+    const npmrcBlob = sh(s.p.clone, 'rev-parse', 'HEAD:.npmrc');
+    const readBlobs = [];
+    s.deps.readBlob = (root, blob) => {
+      readBlobs.push(blob);
+      if (blob === npmrcBlob) throw new Error('Protected .npmrc blob was read');
+      return defaultReadBlob(root, blob);
+    };
+
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.equal(readBlobs.includes(npmrcBlob), false);
+    assert.match(plan.summary, /saved copy unreadable, using deploy record/);
+    assert.deepEqual(plan.files, [{ path: 'src/App.tsx', op: 'modify' }]);
+    const savedInventory = JSON.parse(readFileSync(plan.planPath, 'utf8')).makeBefore.savedInventory;
+    assert.equal(savedInventory.find(item => item.path === 'src/App.tsx').sha256, sha256('export const App = 2;\n'));
+    assert.deepEqual(savedInventory.find(item => item.path === '.npmrc'), { path: '.npmrc', blob: npmrcBlob });
+
+    prior.makeAfter.tree = 'f'.repeat(40);
+    writeFileSync(deployed.receiptPath, JSON.stringify(prior));
+    assert.match((await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps)).summary, /using deploy tag record/);
+    rmSync(deployed.receiptPath);
+    sh(s.p.origin, 'tag', '-d', 'make-deploy/0');
+    await refuses(deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps), 'DEPLOY_MAKE_STATE', /deploy record/i);
+  });
+
+  it('plans from the annotated deploy tag record when the saved commit and local receipt are missing', async t => {
+    const s = setup(t, { files: { ...BASE, '.npmrc': 'fixture-only\n' } });
+    landChange(s, { 'src/App.tsx': 'export const App = 2;\n' });
+    const first = await deployPlan(s.make, s.opts, s.deps);
+    const deployed = await deployApply(s.make, { ...s.opts, planPath: first.planPath }, s.deps);
+    assert.deepEqual(s.p.tags(), ['make-deploy/0']);
+    const prior = readReceipt(deployed.receiptPath);
+    rmSync(deployed.receiptPath);
+
+    landChange(s, { 'src/App.tsx': 'export const App = 3;\n' });
+    stale(s);
+    const projectStatus = s.make.projectStatus.bind(s.make);
+    s.make.projectStatus = async options => {
+      if (options?.savedInventory) throw new Error(`Make sandbox git object ${s.make.savedVersion} is missing.`);
+      return projectStatus(options);
+    };
+    const protectedBlob = sh(s.p.clone, 'rev-parse', 'HEAD:.npmrc');
+    s.deps.readBlob = (root, blob) => {
+      if (blob === protectedBlob) throw new Error('Protected blob was read');
+      return defaultReadBlob(root, blob);
+    };
+
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.match(plan.summary, /saved copy unreadable, using deploy tag record/);
+    assert.deepEqual(plan.files, [{ path: 'src/App.tsx', op: 'modify' }]);
+    const saved = JSON.parse(readFileSync(plan.planPath, 'utf8')).makeBefore;
+    assert.equal(saved.savedInventorySource, 'deploy-tag-record');
+    assert.deepEqual(saved.savedInventory.find(item => item.path === '.npmrc'), { path: '.npmrc', blob: protectedBlob });
+    assert.equal(saved.savedInventory.find(item => item.path === 'src/App.tsx').sha256, sha256('export const App = 2;\n'));
+
+    const oldRecord = { ...prior, makeAfter: { ...prior.makeAfter, versionGitSha: 'd'.repeat(40) } };
+    delete oldRecord.receiptPath;
+    writeFileSync(deployed.receiptPath, JSON.stringify(oldRecord));
+    assert.match((await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps)).summary, /using deploy tag record/);
+    rmSync(deployed.receiptPath);
+
+    const pointer = s.make.savedVersion;
+    s.make.savedVersion = 'c'.repeat(40);
+    await refuses(deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps), 'DEPLOY_MAKE_STATE', /deploy record.*saved pointer/i);
+    s.make.savedVersion = pointer;
+    const tagMessage = sh(s.p.origin, 'cat-file', 'tag', 'make-deploy/0');
+    const record = JSON.parse(tagMessage.slice(tagMessage.indexOf('{')));
+    assert.equal(record.plan, undefined);
+    assert.equal(record.outcome, undefined);
+    record.mainTree = 'f'.repeat(40);
+    sh(s.p.origin, 'tag', '-f', '-a', '-m', JSON.stringify(record), 'make-deploy/0', record.mainCommit);
+    await refuses(deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps), 'DEPLOY_MAKE_STATE', /tagged commit's tree/i);
+  });
+
+  it('plans and applies with a baseline flag when the saved commit is absent', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'export const App = 2;\n' });
+    const first = await deployPlan(s.make, s.opts, s.deps);
+    const deployed = await deployApply(s.make, { ...s.opts, planPath: first.planPath }, s.deps);
+    rmSync(deployed.receiptPath);
+
+    landChange(s, { 'src/App.tsx': 'export const App = 3;\n' });
+    s.make.head = 'b'.repeat(40);
+    s.make.sandbox = new Map(s.make.working);
+    s.make.savedCommitMissing = true;
+    assert.equal(s.make.hasBaseline, true);
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.match(plan.summary, /using deploy tag record/);
+    assert.deepEqual(plan.files, [{ path: 'src/App.tsx', op: 'modify' }]);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
+      confirmOverride: plan.digest.slice(0, 12) }, s.deps);
+    assert.equal(applied.stage, 'saved-unverified');
+    assert.deepEqual(s.p.tags(), ['make-deploy/0']);
+    s.make.savedCommitMissing = true;
+    s.make.head = 'c'.repeat(40);
+    await refuses(deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps),
+      'DEPLOY_MAKE_STATE', /deploy record.*saved pointer/i);
+    assert.equal(readReceipt(applied.receiptPath).stage, 'saved-unverified');
+    s.make.savedCommitMissing = false;
+    s.make.head = s.make.savedVersion;
+    const verified = await deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps);
+    assert.equal(verified.stage, 'deployed');
+    assert.deepEqual(s.p.tags(), ['make-deploy/0', 'make-deploy/1']);
+  });
+
+  it('waits for the reloaded Make filesystem before verifying', async t => {
+    const s = setup(t);
+    target(s);
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
+      confirmOverride: plan.digest.slice(0, 12) }, s.deps);
+    s.make.hooks.probeFailures = 2;
+    const verified = await deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps);
+    assert.equal(verified.stage, 'deployed');
+    const afterReload = s.make.calls.slice(s.make.calls.findIndex(([kind]) => kind === 'reload') + 1);
+    assert.deepEqual(afterReload.slice(0, 4).map(([kind]) => kind), ['probe-filesystem', 'probe-filesystem', 'probe-filesystem', 'status']);
+  });
+
+  it('keeps the receipt unverified when the reloaded filesystem never becomes ready', async t => {
+    const s = setup(t);
+    target(s);
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
+      confirmOverride: plan.digest.slice(0, 12) }, s.deps);
+    s.make.hooks.probeAlwaysFails = true;
+    s.deps.reloadReady = { timeoutMs: 30, initialMs: 10, maxMs: 10 };
+    await refuses(deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps),
+      'DEPLOY_VERIFY_FAILED', /filesystem and code panel were not ready after reload/);
+    assert.equal(readReceipt(applied.receiptPath).stage, 'saved-unverified');
+    assert.deepEqual(s.p.tags(), []);
+    assert.ok(s.make.calls.filter(([kind]) => kind === 'probe-filesystem').length >= 2);
+  });
+
+  it('binds confirmation and Make-only policy to the reviewed digest; tags only after reload', async t => {
+    const s = setup(t);
+    target(s);
+    await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_MAKE_STATE');
+    const keep = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    const strict = await deployPlan(s.make, { ...s.opts, overrideMake: true, deleteMakeOnly: true }, s.deps);
+    assert.notEqual(keep.digest, strict.digest);
+    assert.deepEqual(keep.counts, { add: 1, modify: 1, delete: 0, keepMakeOnly: 1,
+      unsupported: 0, ignored: 0 });
+    assert.deepEqual(keep.keepMakeOnly, ['src/old.ts']);
+    assert.equal(readFileSync(keep.planPath, 'utf8').includes('export const App'), false);
+    await refuses(deployApply(s.make, { ...s.opts, planPath: strict.planPath, confirmOverride: keep.digest.slice(0, 12) }, s.deps), 'DEPLOY_STALE_PLAN');
+    const applied = await deployApply(s.make, { ...s.opts, planPath: strict.planPath,
+      confirmOverride: strict.digest.slice(0, 12) }, s.deps);
+    assert.equal(applied.stage, 'saved-unverified');
+    assert.deepEqual(s.p.tags(), []);
+    const receipt = readReceipt(applied.receiptPath);
+    assert.equal(receipt.mode, 'override-make');
+    assert.equal(receipt.makeBefore.inventory.length, Object.keys(BASE).length + 1);
+    assert.ok(receipt.files.filter(file => ['modify', 'delete'].includes(file.op)).every(file =>
+      file.backupPath && sha256(readFileSync(file.backupPath)) === file.beforeSha256));
+    const verified = await deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps);
+    assert.equal(verified.stage, 'deployed');
+    assert.deepEqual(s.p.tags(), ['make-deploy/0']);
+    const tagMessage = sh(s.p.origin, 'cat-file', 'tag', 'make-deploy/0');
+    const shared = JSON.parse(tagMessage.slice(tagMessage.indexOf('{')));
+    assert.equal(shared.mode, undefined);
+    assert.equal(shared.keptMakeOnly, undefined);
+    assert.equal(shared.makeBefore.inventory, undefined, 'private full inventory is not published in the tag');
+    assert.equal(s.make.saved.has('src/old.ts'), false);
+  });
+
+  it('keeps Make-only files by default and detects stale Make inventory before writing', async t => {
+    const s = setup(t);
+    target(s);
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    s.make.working.set('src/old.ts', Buffer.from('changed in Make\n'));
+    await refuses(deployApply(s.make, { ...s.opts, planPath: plan.planPath,
+      confirmOverride: plan.digest.slice(0, 12) }, s.deps), 'DEPLOY_STALE_PLAN');
+    assert.deepEqual(s.make.writes, []);
+    s.make.working.set('src/old.ts', Buffer.from(BASE['src/old.ts']));
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
+      confirmOverride: plan.digest.slice(0, 12) }, s.deps);
+    await deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps);
+    assert.equal(s.make.saved.get('src/old.ts').toString(), BASE['src/old.ts']);
+  });
+
+  it('aborts create, modify and delete from read-back backups after a save refusal', async t => {
+    const s = setup(t);
+    target(s);
+    const original = new Map(s.make.working);
+    s.make.hooks.save = 'refused';
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true, deleteMakeOnly: true }, s.deps);
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
+      confirmOverride: plan.digest.slice(0, 12) }, s.deps).catch(cause => cause);
+    assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+    assert.equal(readReceipt(error.receiptPath).stage, 'written');
+    const abort = await deployAbort(s.make, { receiptPath: error.receiptPath }, s.deps);
+    assert.equal(abort.outcome, 'aborted');
+    assert.deepEqual([...s.make.working].map(([path, bytes]) => [path, bytes.toString()]).sort(),
+      [...original].map(([path, bytes]) => [path, bytes.toString()]).sort());
+    assert.deepEqual(s.p.tags(), []);
+  });
+
+  it('recovers after a refused save reloads saved v2 over sandbox v1', async t => {
+    const prepareAhead = s => {
+      landChange(s, { 'src/App.tsx': 'export const App = 3;\n' });
+      s.make.saved.set('src/App.tsx', Buffer.from('export const App = 2;\n'));
+      s.make.savedVersion = sha256('saved v2').slice(0, 40);
+      s.make.hasBaseline = false;
+      s.make.trackerError = true;
+      s.make.head = 'b'.repeat(40);
+      s.make.sandbox = new Map(s.make.working);
+      s.make.hooks.save = 'refused';
+    };
+    const abortCase = setup(t);
+    prepareAhead(abortCase);
+    const abortPlan = await deployPlan(abortCase.make, { ...abortCase.opts, overrideMake: true }, abortCase.deps);
+    const abortError = await deployApply(abortCase.make, { ...abortCase.opts, planPath: abortPlan.planPath,
+      confirmOverride: abortPlan.digest.slice(0, 12) }, abortCase.deps).catch(cause => cause);
+    assert.equal(abortError.code, 'DEPLOY_WRITE_FAILED');
+    const receipt = readReceipt(abortError.receiptPath);
+    assert.equal(receipt.makeBefore.savedInventory.find(file => file.path === 'src/App.tsx').sha256,
+      sha256('export const App = 2;\n'));
+    await abortCase.make.reloadPage();
+    const aborted = await deployAbort(abortCase.make, { receiptPath: abortError.receiptPath }, abortCase.deps);
+    assert.equal(aborted.outcome, 'aborted');
+    assert.equal(abortCase.make.working.get('src/App.tsx').toString(), BASE['src/App.tsx']);
+    assert.deepEqual(abortCase.p.tags(), []);
+
+    const resumeCase = setup(t);
+    prepareAhead(resumeCase);
+    const resumePlan = await deployPlan(resumeCase.make, { ...resumeCase.opts, overrideMake: true }, resumeCase.deps);
+    const resumeError = await deployApply(resumeCase.make, { ...resumeCase.opts, planPath: resumePlan.planPath,
+      confirmOverride: resumePlan.digest.slice(0, 12) }, resumeCase.deps).catch(cause => cause);
+    assert.equal(resumeError.code, 'DEPLOY_WRITE_FAILED');
+    delete resumeCase.make.hooks.save;
+    const resumed = await deployResume(resumeCase.make, { ...resumeCase.opts, receiptPath: resumeError.receiptPath }, resumeCase.deps);
+    assert.equal(resumed.stage, 'saved-unverified');
+    assert.equal(resumeCase.make.saved.get('src/App.tsx').toString(), 'export const App = 3;\n');
+    assert.deepEqual(resumeCase.p.tags(), []);
+  });
+
+  it('does not tag when a created version leaves the tracker broken', async t => {
+    const s = setup(t);
+    target(s);
+    s.make.hooks.save = 'tracker-not-recovered';
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
+      confirmOverride: plan.digest.slice(0, 12) }, s.deps).catch(cause => cause);
+    assert.equal(error.code, 'DEPLOY_SAVE_UNCERTAIN');
+    assert.equal(readReceipt(error.receiptPath).stage, 'saved-unverified');
+    assert.deepEqual(s.p.tags(), []);
+    await refuses(deployVerify(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps), 'DEPLOY_VERIFY_FAILED');
+    assert.deepEqual(s.p.tags(), []);
+  });
+
+  it('keeps an uncertain createVersion call at verify-only when the old pointer reappears', async t => {
+    const s = setup(t);
+    target(s);
+    s.make.hooks.save = 'uncertain-no-save';
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
+      confirmOverride: plan.digest.slice(0, 12) }, s.deps).catch(cause => cause);
+    assert.equal(error.code, 'DEPLOY_SAVE_UNCERTAIN');
+    assert.equal(readReceipt(error.receiptPath).stage, 'save-uncertain');
+    await refuses(deployVerify(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps), 'DEPLOY_SAVE_UNCERTAIN');
+    assert.equal(readReceipt(error.receiptPath).stage, 'save-uncertain');
+    await refuses(deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps), 'DEPLOY_RECEIPT');
+    assert.deepEqual(s.p.tags(), []);
+  });
+
+  it('shows both hashes for an overwritten Make-ahead path', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'export const App = 2;\n' });
+    const first = await deployPlan(s.make, s.opts, s.deps);
+    await deployApply(s.make, { ...s.opts, planPath: first.planPath }, s.deps);
+    const makeEdit = 'export const App = 3;\n';
+    s.make.saved.set('src/App.tsx', Buffer.from(makeEdit));
+    s.make.working.set('src/App.tsx', Buffer.from(makeEdit));
+    s.make.savedVersion = sha256('make edit').slice(0, 40);
+    s.make.head = s.make.savedVersion;
+    s.make.sandbox = new Map(s.make.saved);
+    landChange(s, { 'src/App.tsx': 'export const App = 4;\n' });
+    await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_MAKE_AHEAD');
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.deepEqual(plan.makeAhead, [{ path: 'src/App.tsx', makeSha256: sha256(makeEdit),
+      mainSha256: sha256('export const App = 4;\n') }]);
+  });
+
+  it('does not report main-only changes or Make-only deletions as Make-ahead', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'export const App = 2;\n' });
+    const first = await deployPlan(s.make, s.opts, s.deps);
+    await deployApply(s.make, { ...s.opts, planPath: first.planPath }, s.deps);
+    landChange(s, { 'src/App.tsx': 'export const App = 3;\n' });
+    s.make.saved.set('src/make-only.ts', Buffer.from('Make only\n'));
+    s.make.working.set('src/make-only.ts', Buffer.from('Make only\n'));
+    s.make.sandbox.set('src/make-only.ts', Buffer.from('Make only\n'));
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true, deleteMakeOnly: true }, s.deps);
+    assert.deepEqual(plan.makeAhead, []);
+    assert.ok(plan.files.some(file => file.path === 'src/make-only.ts' && file.op === 'delete'));
+  });
+
+  it('shows all override refusals and withholds apply for unsupported paths', async t => {
+    const s = setup(t, { makeFiles: { ...BASE, 'src/raw.bin': Buffer.from([0, 255]) } });
+    target(s);
+    landChange(s, { 'README.md': 'new root file\n', 'src/logo.png': Buffer.from([0, 255]) });
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true, deleteMakeOnly: true }, s.deps);
+    assert.ok(plan.counts.modify > 0);
+    assert.ok(plan.refused.unsupported.includes('README.md'));
+    assert.ok(plan.refused.binary.includes('src/logo.png'));
+    assert.ok(plan.refused.binary.includes('src/raw.bin'));
+    assert.equal(plan.counts.unsupported, 3);
+    assert.equal(plan.planPath, undefined);
+    assert.deepEqual(s.make.writes, []);
+  });
+
+  it('refuses pending Make config and deploy-ignore edits', async t => {
+    const s = setup(t);
+    target(s);
+    landChange(s, { [DEPLOY_IGNORE]: '/src/old.ts\n' });
+    s.make.working.set('.figma/make/config.json', Buffer.from('{"dev":true}\n'));
+    s.make.working.set('src/old.ts', Buffer.from('pending edit\n'));
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.deepEqual(plan.refused.pendingExcluded, ['.figma/make/config.json', 'src/old.ts']);
+    assert.equal(plan.planPath, undefined);
+    assert.deepEqual(s.make.writes, []);
+  });
+
+  it('refuses saved-only changes to protected Make paths', async t => {
+    const configPath = '.figma/make/config.json';
+    const s = setup(t, { makeFiles: { ...BASE, [configPath]: '{"version":1}\n', [DEPLOY_IGNORE]: '/src/private.ts\n' } });
+    target(s);
+    const clean = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.ok(clean.planPath);
+    s.make.saved.set(configPath, Buffer.from('{"version":2}\n'));
+    s.make.saved.set(DEPLOY_IGNORE, Buffer.from('/src/private-v2.ts\n'));
+    assert.deepEqual(s.make.pending(), []);
+    const refused = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.deepEqual(refused.refused.pendingExcluded, [configPath, DEPLOY_IGNORE].sort());
+    assert.equal(refused.planPath, undefined);
+    await refuses(deployApply(s.make, { ...s.opts, planPath: clean.planPath,
+      confirmOverride: clean.digest.slice(0, 12) }, s.deps), 'DEPLOY_STALE_PLAN');
+    assert.deepEqual(s.make.writes, []);
+  });
+
+  it('allows one reload-and-resume after save refusal, then stops', async t => {
+    const s = setup(t);
+    target(s);
+    s.make.hooks.save = 'refused';
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
+      confirmOverride: plan.digest.slice(0, 12) }, s.deps).catch(cause => cause);
+    assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+    await refuses(deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps), 'DEPLOY_WRITE_FAILED');
+    assert.equal(readReceipt(error.receiptPath).saveRefusals, 2);
+    await refuses(deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps), 'DEPLOY_RECEIPT');
+  });
+
+  it('keeps the other deploy refusals under override', async t => {
+    const s = setup(t);
+    target(s);
+    s.make.ui.busy = true;
+    await refuses(deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps), 'DEPLOY_MAKE_BUSY');
+    s.make.ui.busy = false;
+    s.make.hasBaseline = false;
+    s.make.trackerError = false;
+    await refuses(deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps), 'DEPLOY_MAKE_STATE');
+    s.make.trackerError = true;
+    s.make.working.set(PROJECT_MARKER, Buffer.from(markerContent(KEY, 'owner/other')));
+    s.make.projectMarker = async () => Buffer.from(MARKER);
+    await refuses(deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps), 'DEPLOY_MAKE_STATE');
   });
 });
 

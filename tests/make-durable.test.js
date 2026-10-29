@@ -547,6 +547,55 @@ test('first-version gate accepts only a clean no-baseline git file', () => {
   assert.throws(() => requireGitMode(blank()), /no saved version; pass --first-version/);
 });
 
+test('override gate accepts only the pinned saved pointer in git mode', () => {
+  const pin = { savedVersion: base, head };
+  const broken = { ...state(), hasBaseline: false, error: true };
+  assert.equal(requireGitMode(broken, { overrideMake: pin }), broken);
+  assert.equal(requireGitMode(state(['src/edit.ts']), { overrideMake: pin }).savedVersion, base);
+  for (const bad of [{ ...broken, savedVersion: next }, { ...broken, isLoading: true },
+    { ...broken, pendingPaths: null }, { ...broken, mode: 'snapshot' },
+    { ...broken, error: false }, { ...state(), error: true }]) {
+    assert.throws(() => requireGitMode(bad, { overrideMake: pin }));
+  }
+  assert.throws(() => requireGitMode(broken), /unverified/);
+});
+
+test('override write checks the sandbox head before the VFS mutation', async () => {
+  const broken = { ...state(), hasBaseline: false, error: true };
+  const { client, calls } = fakeClient({ original: 'old', post: broken });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._sandboxGit = () => ({ head: async () => next, reaches: async () => false });
+  await assert.rejects(client.writeDurable('src/App.tsx', 'new', {
+    expectedSha256: hash('old'), overrideMake: { savedVersion: base, head },
+  }), /sandbox head is not an ancestor/);
+  assert.equal(calls.some(call => call[0] === 'write'), false);
+});
+
+test('page-side override save requires the pinned pointer and unchanged pending set', async () => {
+  const prior = globalThis.document;
+  let calls = 0;
+  const changes = { isGitSourceOfTruth: true, hasBaseline: false,
+    baselineMakeVersionGitSha: base, changedFiles: [], isLoading: false, error: new Error('stale') };
+  const props = { codeFileChanges: changes,
+    state: { sandbox: { createVersion: async () => { calls++; return { id: 'v', versionNumber: 2, gitSha: next }; } } },
+    chatController: { chatSdkState: { threadId: 'thread' } } };
+  globalThis.document = { querySelectorAll: () => [{ '__reactFiber$test': { memoizedProps: props } }] };
+  const action = { type: 'save', title: 'Override', expectedPaths: [], expectedGitSha: base,
+    overrideMake: { savedVersion: base, head } };
+  try {
+    assert.deepEqual(await makeDurablePageAction(action), { id: 'v', versionNumber: 2, gitSha: next });
+    changes.changedFiles = [{ path: 'src/other.ts' }];
+    assert.match((await makeDurablePageAction(action)).refused, /pending file set/);
+    changes.changedFiles = [];
+    changes.baselineMakeVersionGitSha = next;
+    assert.match((await makeDurablePageAction(action)).refused, /pending file set/);
+    changes.baselineMakeVersionGitSha = base;
+    changes.isLoading = true;
+    assert.match((await makeDurablePageAction(action)).refused, /pending file set/);
+    assert.equal(calls, 1);
+  } finally { globalThis.document = prior; }
+});
+
 test('first-version pending set is the exact working-copy difference from the --since commit', () => {
   const working = flat({ 'src/App.tsx': '1'.repeat(40), 'package.json': '2'.repeat(40), 'src/probe.ts': '3'.repeat(40) });
   assert.deepEqual(requireFirstVersionPending(sinceFlat, working, ['src/probe.ts']), ['src/probe.ts']);
@@ -563,8 +612,8 @@ function firstVersionClient({ statuses, version = { id: 'version-id', versionNum
   const queue = [...statuses];
   client.projectStatus = async () => { calls.push(['status']); return queue.length > 1 ? queue.shift() : queue[0]; };
   client._fileBridge = async () => ({ dispose: async () => {} });
-  client._sandboxGit = () => ({ head: async () => head, reaches: async (from, to) => from === head && to === since,
-    commitTree: async sha => { assert.equal(sha, since); return 'tree'; }, flatten: async () => sinceFlat });
+  client._sandboxGit = () => ({ head: async () => head, reaches: async (from, to) => from === head && [since, head].includes(to),
+    commitTree: async sha => { assert.ok([since, head].includes(sha)); return 'tree'; }, flatten: async () => sinceFlat });
   const durable = client._durable;
   client._durable = async action => { if (action.type === 'save') calls.push(['first', action.firstVersion, action.expectedPaths]); return durable(action); };
   const states = drift ?? [blank(), { ...state(), savedVersion: next }];
@@ -708,6 +757,86 @@ test('a deploy save accepts a saved file mode Make kept, but not different conte
   const wrong = new Map([...edited, ['src/App.tsx', { mode: '100644', blob: '6'.repeat(40) }]]);
   const error = await run({ ...afterStatus('f'.repeat(40)), makeFlat: wrong, workingFlat: wrong }).catch(cause => cause);
   assert.match(error.message, /version 9 .* differs from the checked working tree.*Do not retry/);
+});
+
+test('override save binds sandbox head and exact working-copy diff before createVersion', async () => {
+  const broken = { ...state(), hasBaseline: false, error: true };
+  const advancedHead = '9'.repeat(40);
+  const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
+  const before = savedStatus({ persistence: broken, head: advancedHead, treeSource: 'sandbox-head', workingFlat: edited });
+  const { client, calls } = checkedClient({ before, drift: [broken, { ...state(), savedVersion: next }] });
+  client._sandboxGit = () => ({ head: async () => advancedHead,
+    reaches: async (from, to) => from === advancedHead && to === head,
+    commitTree: async sha => { assert.equal(sha, head); return 'recorded-tree'; },
+    flatten: async () => sinceFlat });
+  const queue = [before, { ...afterStatus(), makeFlat: edited, workingFlat: edited }];
+  client.projectStatus = async () => (queue.length > 1 ? queue.shift() : queue[0]);
+  const pin = { savedVersion: base, head, expectedDiff: ['.figma-cli/project.json', 'src/App.tsx'],
+    allowedPaths: ['.figma-cli/project.json', 'src/App.tsx'] };
+  const result = await client.saveCheckedVersion('Override', pin.allowedPaths, { listed: true, overrideMake: pin });
+  assert.equal(result.gitSha, next);
+  const action = calls.find(call => call[0] === 'action')[1];
+  assert.equal(action.overrideMake.savedVersion, base);
+  assert.deepEqual(action.expectedPaths, []);
+  const moved = checkedClient({ before: { ...before, head: next }, drift: [broken] });
+  moved.client._sandboxGit = () => ({ reaches: async () => false });
+  await assert.rejects(moved.client.saveCheckedVersion('Override', pin.allowedPaths,
+    { listed: true, overrideMake: pin }), /sandbox head is not an ancestor/);
+  assert.equal(moved.calls.some(call => call[0] === 'action'), false);
+  const wrong = checkedClient({ before, drift: [broken] });
+  wrong.client._sandboxGit = client._sandboxGit;
+  await assert.rejects(wrong.client.saveCheckedVersion('Override', pin.allowedPaths,
+    { listed: true, overrideMake: { ...pin, expectedDiff: ['src/App.tsx'] } }), /unrelated or missing/);
+  assert.equal(wrong.calls.some(call => call[0] === 'action'), false);
+});
+
+test('project status exposes the sandbox head inventory when it differs from the saved pointer', async () => {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 5000 });
+  client.fileKey = 'ScratchKey';
+  client._operation = fn => fn(Date.now() + 5000);
+  client._driftState = async () => ({ state: state() });
+  client._evaluate = async () => ({ generationInProgress: false });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  const saved = flat({ 'src/App.tsx': '1'.repeat(40) });
+  const current = flat({ 'src/App.tsx': '1'.repeat(40), 'src/new.ts': '2'.repeat(40) });
+  client._sandboxGit = () => ({ head: async () => head, commitTree: async rev => rev === base ? 'saved' : 'current',
+    flatten: async tree => tree === 'saved' ? saved : current, readFile: async () => null });
+  client.inventoryProject = async ({ tracked }) => {
+    assert.ok(tracked.includes('src/new.ts'));
+    return { state: state(), inventory: new Map([['src/App.tsx', { blob: '1'.repeat(40), sha256: hash('app') }],
+      ['src/new.ts', { blob: '2'.repeat(40), sha256: hash('new') }]]), contents: new Map(), excluded: [], batches: 1 };
+  };
+  const status = await client.projectStatus();
+  assert.equal(status.makeFlat.has('src/new.ts'), false);
+  assert.equal(status.headFlat.has('src/new.ts'), true);
+  assert.equal(status.workingFlat.has('src/new.ts'), true);
+});
+
+test('saved inventory keeps protected blob IDs without reading their contents', async () => {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 5000 });
+  client.fileKey = 'ScratchKey';
+  client._operation = fn => fn(Date.now() + 5000);
+  client._driftState = async () => ({ state: state() });
+  client._evaluate = async () => ({ generationInProgress: false });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  const npmrcBlob = '3'.repeat(40);
+  const appBlob = '4'.repeat(40);
+  const saved = flat({ '.npmrc': npmrcBlob, 'src/App.tsx': appBlob });
+  const read = [];
+  client._sandboxGit = () => ({ head: async () => head, commitTree: async () => 'saved',
+    flatten: async () => saved, readFile: async () => null,
+    object: async blob => {
+      read.push(blob);
+      if (blob === npmrcBlob) throw new Error('Protected .npmrc blob was read');
+      return { type: 'blob', content: Buffer.from('app') };
+    } });
+  client.inventoryProject = async () => ({ state: state(), inventory: new Map([
+    ['src/App.tsx', { blob: appBlob, sha256: hash('app') }]]), contents: new Map(), excluded: ['.npmrc'], batches: 1 });
+  const status = await client.projectStatus({ savedInventory: true, savedProtected: path => path === '.npmrc' });
+  assert.deepEqual(read, [appBlob]);
+  assert.equal(status.savedBlobs.get('.npmrc'), npmrcBlob);
+  assert.equal(status.savedSha256.get('src/App.tsx'), hash('app'));
+  assert.equal(status.savedSha256.has('.npmrc'), false);
 });
 
 test('reload waits for a new document and its Make state', async () => {

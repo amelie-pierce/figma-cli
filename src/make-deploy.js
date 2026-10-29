@@ -13,9 +13,10 @@ import { currentBranch, defaultRun, fetchMain, projectScripts, requireNoOperatio
 // `make deploy`: a repo admin deploys GitHub main, from a local clone, into
 // the team-mode Make file. Dry run (the default) writes a reviewed plan;
 // --apply re-plans, writes the planned paths through the durable client VFS,
-// saves one version `deploy <sha7>`, checks the whole project root against
-// main, writes a private receipt and pushes the annotated tag
-// make-deploy/<n> on the deployed commit. --verify, --resume and --abort
+// saves one version `deploy <sha7>` and writes a private receipt. A normal
+// deploy checks the project root and pushes the annotated make-deploy/<n>
+// tag then; an override requires a fresh-reload --verify before tagging.
+// --verify, --resume and --abort
 // finish or undo an interrupted deploy from its receipt. The tag's receipt is
 // the shared base `make status` and the next deploy compare against.
 
@@ -76,7 +77,10 @@ const matchesOrUnder = rules => path =>
   path.split('/').some((_, index, parts) => isIgnored(rules, parts.slice(0, index + 1).join('/'), index < parts.length - 1));
 const isHardExcluded = matchesOrUnder(parseIgnore(PROJECT_EXCLUDES.join('\n')));
 const isMakeManaged = matchesOrUnder(parseIgnore(MAKE_MANAGED.join('\n')));
-const alwaysExcluded = path => isHardExcluded(path) || isMakeManaged(path) || isRepoOnly(path);
+const alwaysExcluded = path => isHardExcluded(path) || isMakeManaged(path) || isRepoOnly(path) ||
+  path === '.git' || path.startsWith('.git/') || path === 'node_modules' || path.startsWith('node_modules/');
+const protectedPath = (path, ignored, mainFlat) => alwaysExcluded(path) || ignored(path) ||
+  (path === PROJECT_MARKER && !mainFlat.has(path));
 const excludedReason = path => isRepoOnly(path) ? 'never deployed: project vault notes stay in the repo'
   : isMakeManaged(path) ? 'never deployed: Make manages its own config' : 'never deployed: Make manages it or it can hold secrets';
 
@@ -163,6 +167,89 @@ export function openReceipts(fileKey, { home } = {}) {
     try { return { ...JSON.parse(readFileSync(join(dir, name), 'utf8')), receiptPath: join(dir, name) }; }
     catch { return null; }
   }).filter(receipt => receipt?.schema === RECEIPT_SCHEMA && receipt.fileKey === fileKey && receipt.outcome === 'uncertain' && !receipt.supersededBy);
+}
+
+function inventoryFromCommit(ctx, commit, readBlob, savedProtected, source) {
+  const savedSha256 = new Map();
+  const savedBlobs = new Map();
+  try {
+    for (const [path, entry] of lsTree(ctx, commit)) {
+      if (entry.type !== 'blob') throw new Error('non-file path');
+      if (savedProtected(path)) savedBlobs.set(path, entry.blob);
+      else savedSha256.set(path, sha256(readBlob(ctx.root, entry.blob)));
+    }
+  } catch {
+    fail(`Make saved copy is unreadable and the ${source} files cannot be verified against GitHub main. Nothing was deployed.`, 'DEPLOY_MAKE_STATE');
+  }
+  return { savedSha256, savedBlobs };
+}
+
+// A remote tag is the cross-machine record when this machine has no receipt.
+// The tag's commit and public receipt must name the same main tree and Make
+// saved pointer before its blobs can stand in for the missing saved commit.
+function savedInventoryFromTag({ fileKey, repo, savedVersion, tags, ctx, readBlob, savedProtected }) {
+  const tag = tags[0];
+  if (!tag) fail('Make saved copy is unreadable and no deploy record exists for this file. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
+  let base;
+  try { base = tagBase(ctx, tag); }
+  catch (error) { fail(`Make saved copy is unreadable and ${tag.name} cannot be verified: ${error.message}`, 'DEPLOY_MAKE_STATE'); }
+  if (ctx.git(['cat-file', '-t', `refs/tags/${tag.name}`]) !== 'tag') {
+    fail(`Make saved copy is unreadable and ${tag.name} has no annotated deploy record. Nothing was deployed.`, 'DEPLOY_MAKE_STATE');
+  }
+  const record = receiptJson(ctx.git(['cat-file', 'tag', `refs/tags/${tag.name}`]));
+  if (record?.schema !== RECEIPT_SCHEMA || record.fileKey !== fileKey ||
+      typeof record.repo !== 'string' || record.repo.toLowerCase() !== repo.toLowerCase() || record.n !== tag.n) {
+    fail(`Make saved copy is unreadable and ${tag.name}'s deploy record does not identify this file and repo. Nothing was deployed.`, 'DEPLOY_MAKE_STATE');
+  }
+  if (record.makeAfter?.versionGitSha !== savedVersion) {
+    fail(`Make saved copy is unreadable and ${tag.name}'s deploy record does not match Make's saved pointer. Nothing was deployed.`, 'DEPLOY_MAKE_STATE');
+  }
+  if (!SHA.test(record.mainCommit || '') || record.mainCommit !== base.commit || record.mainTree !== base.mainTree ||
+      (record.makeAfter.tree != null && record.makeAfter.tree !== base.mainTree)) {
+    fail(`Make saved copy is unreadable and ${tag.name}'s deploy record does not match its tagged main tree. Nothing was deployed.`, 'DEPLOY_MAKE_STATE');
+  }
+  return { ...inventoryFromCommit(ctx, base.commit, readBlob, savedProtected, 'deploy tag record'),
+    savedInventorySource: 'deploy-tag-record' };
+}
+
+// A missing saved commit may be reconstructed from the newest completed local
+// receipt, or from the newest annotated deploy tag when no usable local receipt exists.
+function savedInventoryFromRecord({ fileKey, repo, savedVersion, home, tags, ctx, readBlob, savedProtected }) {
+  const dir = deployDir(home);
+  const newest = existsSync(dir) ? readdirSync(dir).filter(name => name.endsWith('.json')).map(name => {
+    try {
+      const value = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+      return value?.schema === RECEIPT_SCHEMA && value.fileKey === fileKey ? { name, at: value.at || '' } : null;
+    } catch { return null; }
+  }).filter(Boolean).sort((a, b) => b.at.localeCompare(a.at) || b.name.localeCompare(a.name))[0] : null;
+  if (newest) {
+    try {
+      let receipt;
+      try { receipt = readReceipt(join(dir, newest.name)); }
+      catch { fail('Make saved copy is unreadable and the newest deploy record is invalid. Nothing was deployed.', 'DEPLOY_MAKE_STATE'); }
+      if (receipt.repo?.toLowerCase() !== repo.toLowerCase() || receipt.outcome !== 'ok' ||
+          receipt.makeAfter?.versionGitSha !== savedVersion || !SHA.test(receipt.mainCommit || '') ||
+          receipt.makeAfter?.tree !== receipt.mainTree) {
+        fail('Make saved copy is unreadable and the newest deploy record does not match its saved pointer or tree. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
+      }
+      const tree = ctx.tryGit(['rev-parse', '--verify', '--quiet', `${receipt.mainCommit}^{tree}`]);
+      if (tree.status !== 0 || tree.stdout.trim() !== receipt.mainTree) {
+        fail('Make saved copy is unreadable and the deploy record tree does not match its GitHub main commit. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
+      }
+      return { ...inventoryFromCommit(ctx, receipt.mainCommit, readBlob, savedProtected, 'deploy record'),
+        savedInventorySource: 'deploy-record' };
+    } catch (error) {
+      if (!tags.length) throw error;
+    }
+  }
+  return savedInventoryFromTag({ fileKey, repo, savedVersion, tags, ctx, readBlob, savedProtected });
+}
+
+function recoverMissingSaved(status, { fileKey, repo, home, tags, ctx, readBlob, savedProtected }) {
+  if (!status.savedMissing) return;
+  const savedVersion = status.persistence?.savedVersion;
+  if (!SHA.test(savedVersion || '')) fail('Make saved pointer is unavailable. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
+  Object.assign(status, savedInventoryFromRecord({ fileKey, repo, savedVersion, home, tags, ctx, readBlob, savedProtected }));
 }
 
 const recovery = receipt => {
@@ -339,9 +426,9 @@ const decode = bytes => {
   } catch { return null; }
 };
 
-// Compare main with Make's saved tree and decide every path. Pure apart from
+// Compare main with the selected Make tree and decide every path. Pure apart from
 // mainBytes(blob), which reads a blob from the clone.
-export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes }) {
+export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes, overrideMake = false, deleteMakeOnly = false }) {
   const patterns = ignoreOf(main.flat, mainBytes);
   const ignored = ignoreMatcher(patterns);
   const gitattributes = main.flat.get('.gitattributes');
@@ -350,23 +437,37 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes }) {
   const makeFolders = new Set([...status.workingFlat.keys()].filter(path => path.includes('/')).map(path => path.split('/')[0]));
   const files = [];
   const excluded = [];
+  const keepMakeOnly = [];
   const modeOnly = [];
-  const refused = { binary: [], lfs: [], unsupported: [], marker: [] };
-  for (const path of [...new Set([...main.flat.keys(), ...status.makeFlat.keys()])].sort()) {
+  const refused = { binary: [], lfs: [], unsupported: [], marker: [], pendingExcluded: [] };
+  const makeFlat = overrideMake ? status.workingFlat : status.makeFlat;
+  if (overrideMake) {
+    const pending = new Set([...(status.persistence.pendingPaths || []),
+      ...contentDiff(status.headFlat || status.makeFlat, status.workingFlat)]);
+    const isProtected = path => protectedPath(path, ignored, main.flat);
+    const savedAndServed = new Set([...status.savedBlobs.keys(), ...status.headFlat.keys()]);
+    for (const path of savedAndServed) {
+      if (isProtected(path) && (status.savedBlobs.get(path) ?? null) !== (status.headFlat.get(path)?.blob ?? null)) pending.add(path);
+    }
+    refused.pendingExcluded = [...pending].filter(isProtected).sort();
+  }
+  for (const path of [...new Set([...main.flat.keys(), ...makeFlat.keys()])].sort()) {
     const m = main.flat.get(path);
-    const k = status.makeFlat.get(path);
+    const k = makeFlat.get(path);
     if (alwaysExcluded(path)) {
       excluded.push({ path, reason: excludedReason(path) });
       continue;
     }
     if (ignored(path)) { excluded.push({ path, reason: ignoredReason(path, m, k) }); continue; }
     if (path === PROJECT_MARKER && !m) { excluded.push({ path, reason: 'main has no team marker; Make keeps its own' }); continue; }
+    if (overrideMake && k && !m && !deleteMakeOnly) { keepMakeOnly.push(path); continue; }
     if (m && (m.type !== 'blob' || !['100644', '100755'].includes(m.mode))) { refused.unsupported.push(`${path} (${m.type === 'commit' ? 'submodule' : 'symbolic link'})`); continue; }
     if (m?.blob === k?.blob) {
       if (m.mode !== k.mode) modeOnly.push(path);
       continue;
     }
     if (isLfs(path)) { refused.lfs.push(path); continue; }
+    if (overrideMake && k && status.workingText?.get(path) === false) { refused.binary.push(path); continue; }
     const op = !k ? 'add' : !m ? 'delete' : 'modify';
     const top = path.split('/')[0];
     if ((op !== 'modify' && !path.includes('/')) || (op === 'add' && !top.startsWith('.') && !makeFolders.has(top))) {
@@ -381,7 +482,7 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes }) {
       if (path === PROJECT_MARKER) {
         const marker = parseMarker(content, fileKey);
         if (marker.state !== 'valid' || marker.repo.toLowerCase() !== repo.toLowerCase() || marker.trunk !== TRUNK) {
-          refused.marker.push(marker.reason || `names ${marker.repo} (${marker.trunk})`);
+          refused.marker.push(`${path} (${marker.reason || `names ${marker.repo} (${marker.trunk})`})`);
           continue;
         }
       }
@@ -393,25 +494,44 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes }) {
     files.push({ path, op, beforeBlob: k?.blob ?? null, afterBlob: m?.blob ?? null, beforeSha256, afterSha256, bytes });
   }
   files.sort(byWriteOrder);
-  if (refused.marker.length) fail(`main's ${PROJECT_MARKER} would change this file's team mode (${refused.marker[0]}). Fix it in main through a pull request.`, 'DEPLOY_MARKER');
-  if (refused.binary.length) {
+  if (!overrideMake && refused.marker.length) fail(`main's ${PROJECT_MARKER} would change this file's team mode (${refused.marker[0]}). Fix it in main through a pull request.`, 'DEPLOY_MARKER');
+  if (!overrideMake && refused.binary.length) {
     fail(`Deploy writes UTF-8 text only (at most 2 MiB a file); main has binary or large files that differ from Make: ${JSON.stringify(refused.binary)}. ` +
       'Add those in Make by hand, or keep them out of main. Nothing was deployed.', 'DEPLOY_BINARY', { paths: refused.binary });
   }
-  if (refused.lfs.length) {
+  if (!overrideMake && refused.lfs.length) {
     fail(`Git LFS files differ between main and Make: ${JSON.stringify(refused.lfs)}. Make stores LFS pointers, so deploy refuses them. Nothing was deployed.`, 'DEPLOY_LFS', { paths: refused.lfs });
   }
-  if (refused.unsupported.length) {
+  if (!overrideMake && refused.unsupported.length) {
     fail(`Make cannot take these changes through figma-cli: ${JSON.stringify(refused.unsupported)}. Files directly in the project root or in a new ` +
       'top-level folder cannot be created or deleted, and submodules and symbolic links are unsupported. Nothing was deployed.', 'DEPLOY_UNSUPPORTED_PATH', { paths: refused.unsupported });
   }
+  const target = new Map(status.workingFlat);
+  if (overrideMake) for (const file of files) {
+    if (file.op === 'delete') target.delete(file.path);
+    else target.set(file.path, { mode: '100644', type: 'blob', blob: file.afterBlob });
+  }
+  const expectedDiff = overrideMake ? contentDiff(status.headFlat || status.makeFlat, target) : null;
   const plan = { schema: PLAN_SCHEMA, fileKey, repo, trunk: TRUNK, n, tag: `${TAG_PREFIX}${n}`,
     mainCommit: main.commit, mainTree: main.tree,
-    makeBefore: { versionGitSha: status.persistence.savedVersion, tree: status.makeTree },
+    makeBefore: { versionGitSha: status.persistence.savedVersion, tree: status.makeTree,
+      ...(overrideMake ? { head: status.head, workingTree: status.workingTree, treeSource: status.treeSource,
+        tracker: { hasBaseline: status.persistence.hasBaseline, error: status.persistence.error,
+          isLoading: status.persistence.isLoading, pendingPaths: status.persistence.pendingPaths },
+        inventory: [...status.workingFlat.keys()].sort().map(path => {
+          const sha = status.workingSha256.get(path);
+          if (!/^[a-f0-9]{64}$/.test(sha || '')) fail(`Make's content hash for ${path} is unavailable.`, 'DEPLOY_MAKE_STATE');
+          return { path, sha256: sha };
+        }), savedInventory: [...status.savedSha256].map(([path, sha256]) => ({ path, sha256 }))
+          .concat([...status.savedBlobs].map(([path, blob]) => ({ path, blob }))).sort((a, b) => a.path.localeCompare(b.path)),
+        ...(status.savedInventorySource ? { savedInventorySource: status.savedInventorySource } : {}) } : {}) },
     base: { source: base.source, ...(base.tag ? { tag: base.tag } : {}), ...(base.mainTree ? { mainTree: base.mainTree } : {}),
       ...(base.receipt ? { receipt: base.receipt } : {}) },
     ...(main.flat.has(DEPLOY_IGNORE) ? { ignore: { path: DEPLOY_IGNORE, blob: main.flat.get(DEPLOY_IGNORE).blob, patterns } } : {}),
-    files, excluded, modeOnly };
+    files, excluded, modeOnly,
+    ...(overrideMake ? { mode: 'override-make', deleteMakeOnly, keepMakeOnly, expectedDiff, refused,
+      makeAhead: files.filter(file => file.op === 'modify' && base.flat.get(file.path)?.blob !== status.workingFlat.get(file.path)?.blob)
+        .map(file => ({ path: file.path, makeSha256: file.beforeSha256, mainSha256: file.afterSha256 })) } : {}) };
   return { ...plan, digest: planDigest(plan) };
 }
 
@@ -419,6 +539,7 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes }) {
 // path main's DEPLOY_IGNORE patterns name (a Make-only file added later too).
 const skipOf = plan => {
   const excluded = new Set(plan.excluded.map(entry => entry.path));
+  for (const path of plan.keepMakeOnly || []) excluded.add(path);
   const ignored = ignoreMatcher(plan.ignore?.patterns);
   return path => alwaysExcluded(path) || excluded.has(path) || ignored(path);
 };
@@ -431,7 +552,29 @@ function defaults(deps = {}) {
     readBlob: deps.readBlob || defaultReadBlob,
     install: deps.install || (ctx => installProject(ctx.root, { run, warn: deps.warn || (() => {}) })),
     build: deps.build || defaultBuild, settle: { ...SETTLE, ...deps.settle },
+    reloadReady: { timeoutMs: 120000, initialMs: 500, maxMs: 5000, ...deps.reloadReady },
     sleep: deps.sleep || (ms => new Promise(done => setTimeout(done, ms))) };
+}
+
+async function waitForReloadFilesystem(client, receipt, deps) {
+  const { timeoutMs, initialMs, maxMs } = deps.reloadReady;
+  const started = Date.now();
+  let waited = 0;
+  let delay = initialMs;
+  let last;
+  for (;;) {
+    try { await client.probeFilesystemReady(); return; }
+    catch (error) { last = error; }
+    const remaining = timeoutMs - Math.max(Date.now() - started, waited);
+    if (remaining <= 0) {
+      fail(`Make filesystem and code panel were not ready after reload within ${Math.ceil(timeoutMs / 1000)} second(s): ${last.message}. ` +
+        `Verification did not run; retry --verify ${receipt.receiptPath}.`, 'DEPLOY_VERIFY_FAILED', { receiptPath: receipt.receiptPath });
+    }
+    const pause = Math.min(delay, remaining);
+    await deps.sleep(pause);
+    waited += pause;
+    delay = Math.min(maxMs, delay * 2);
+  }
 }
 
 // The team mode the Make file is in. Solo has nothing to deploy from.
@@ -451,10 +594,11 @@ export async function requireTeamMode(client, status) {
   return mode;
 }
 
-async function prepare(client, { dir, reviewed }, deps) {
+async function prepare(client, { dir, reviewed, overrideMake = false, deleteMakeOnly = false }, deps) {
   const { run, gh, home, readBlob, install, build } = deps;
   // Compare with the sandbox from the start: a stale client VFS must not read as solo.
-  const mode = await requireTeamMode(client, await client.projectStatus());
+  const firstStatus = await client.projectStatus();
+  const mode = await requireTeamMode(client, firstStatus);
   const repo = repoName(mode.repo);
   const ctx = teamContext({ dir: resolve(dir || '.'), run, warn: deps.warn });
   const main = localMain(ctx, repo);
@@ -466,6 +610,10 @@ async function prepare(client, { dir, reviewed }, deps) {
   requireClean(ctx, true);
   const tags = remoteTags(ctx);
   const n = tags.length ? tags[0].n + 1 : 0;
+  const mainFlat = lsTree(ctx, main.commit);
+  const mainBytes = blob => readBlob(ctx.root, blob);
+  const ignored = ignoreMatcher(ignoreOf(mainFlat, mainBytes));
+  const savedProtected = path => protectedPath(path, ignored, mainFlat);
   if (reviewed && tags.some(tag => tag.name === reviewed.tag)) {
     fail(`${reviewed.tag} was taken by another deploy since the dry run. Run a new dry run. Nothing was deployed.`, 'DEPLOY_TAG_CLASH');
   }
@@ -477,48 +625,73 @@ async function prepare(client, { dir, reviewed }, deps) {
       { receiptPath: blocking.receiptPath });
   }
   const ui = await client.inspect();
-  const status = await client.projectStatus();
+  let status;
+  try { status = await client.projectStatus({ classifyText: overrideMake, savedInventory: overrideMake, savedProtected }); }
+  catch (error) {
+    const savedVersion = firstStatus.persistence?.savedVersion;
+    if (!overrideMake || !SHA.test(savedVersion || '') || error.message !== `Make sandbox git object ${savedVersion} is missing.`) throw error;
+    status = await client.projectStatus({ classifyText: true });
+    if (status.persistence?.savedVersion !== savedVersion) fail('Make saved pointer changed while reading its served copy. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
+    status.savedMissing = true;
+  }
+  if (overrideMake) recoverMissingSaved(status, { fileKey: client.fileKey, repo, home, tags, ctx, readBlob, savedProtected });
   await requireTeamMode(client, status);
-  const mainFlat = lsTree(ctx, main.commit);
-  const state = requireMakeReady(status, ui, mainFlat);
+  let state;
+  if (overrideMake) {
+    if (ui?.busy || ui?.offline || ui?.readOnly === true || status.history?.generationInProgress) {
+      fail('Make is busy, offline, read-only or generating. Nothing was deployed.', 'DEPLOY_MAKE_BUSY');
+    }
+    try { state = requireGitMode(status.persistence, { overrideMake: { savedVersion: status.persistence?.savedVersion } }); }
+    catch (error) { fail(`Make is not ready for override: ${error.message}`, 'DEPLOY_MAKE_STATE'); }
+    if (!SHA.test(status.head || '') || !Array.isArray(state.pendingPaths) || state.pendingCount !== state.pendingPaths.length) {
+      fail('Make sandbox head or pending paths are unavailable.', 'DEPLOY_MAKE_STATE');
+    }
+  } else state = requireMakeReady(status, ui, mainFlat);
   const gitattributes = mainFlat.get('.gitattributes');
   const mainLfs = lfsMatcher(gitattributes ? readBlob(ctx.root, gitattributes.blob).toString('utf8') : null);
   const isLfs = path => mainLfs(path) || (status.isLfs ? status.isLfs(path) : false);
   // A version an earlier deploy saved but did not finish is a known base.
   const own = unfinished.find(receipt => KNOWN_BASE.includes(receipt.stage) && receipt.makeAfter?.versionGitSha === state.savedVersion);
   let base;
-  if (own) base = { source: 'receipt', receipt: own.deployId, flat: status.makeFlat };
+  if (own && !overrideMake) base = { source: 'receipt', receipt: own.deployId, flat: status.makeFlat };
   else if (tags.length) {
     base = tagBase(ctx, tags[0]);
     const blob = hash => readBlob(ctx.root, hash);
     const now = ignoreMatcher(ignoreOf(mainFlat, blob));
     const then = ignoreMatcher(ignoreOf(base.flat, blob));
-    requireBase(status, base, { isLfs, ignored: path => now(path) || then(path) });
+    if (!overrideMake) requireBase(status, base, { isLfs, ignored: path => now(path) || then(path) });
   } else base = { source: 'first-deploy', flat: status.makeFlat };
   const plan = buildPlan({ fileKey: client.fileKey, repo, n, main: { ...main, flat: mainFlat }, status, base,
-    mainBytes: blob => readBlob(ctx.root, blob) });
+    mainBytes, overrideMake, deleteMakeOnly });
   return { ctx, repo, access, pr, built, main: { ...main, flat: mainFlat }, status, plan };
 }
 
 const counts = files => ({ add: files.filter(f => f.op === 'add').length, modify: files.filter(f => f.op === 'modify').length,
   delete: files.filter(f => f.op === 'delete').length });
+const hasRefusals = plan => Object.values(plan.refused || {}).some(paths => paths.length);
 const countText = c => `${c.add} new, ${c.modify} changed and ${c.delete} deleted file(s)`;
 const excludedText = plan => (plan.excluded.length ? ` ${plan.excluded.length} excluded path(s) stay as they are on each side.` : '');
 
 // --- dry run -----------------------------------------------------------------
 
-export async function deployPlan(client, { dir } = {}, deps = {}) {
+export async function deployPlan(client, { dir, overrideMake = false, deleteMakeOnly = false } = {}, deps = {}) {
   deps = defaults(deps);
-  const { plan, access, pr, built } = await prepare(client, { dir }, deps);
+  if (deleteMakeOnly && !overrideMake) fail('--delete-make-only requires --override-make.', 'DEPLOY_STALE_PLAN');
+  const { plan, access, pr, built } = await prepare(client, { dir, overrideMake, deleteMakeOnly }, deps);
   const c = counts(plan.files);
   const planPath = join(deployDir(deps.home), 'plans', `${plan.fileKey}-${short(plan.mainCommit)}-${plan.digest.slice(0, 12)}.json`);
-  if (plan.files.length) writeJson(planPath, plan);
+  if (plan.files.length && !hasRefusals(plan)) writeJson(planPath, plan);
   return { dryRun: true, fileKey: plan.fileKey, repo: plan.repo, who: access.login, mainCommit: plan.mainCommit, pr, build: built,
     base: plan.base, tag: plan.tag, counts: c, files: plan.files.map(({ path, op }) => ({ path, op })),
     excluded: plan.excluded, excludedCount: plan.excluded.length, ...(plan.ignore ? { ignore: plan.ignore } : {}),
     modeOnly: plan.modeOnly, digest: plan.digest,
-    ...(plan.files.length ? { planPath, next: `figma-cli make deploy --file ${plan.fileKey} --dir ${dir || '.'} --apply ${planPath}` } : {}),
-    summary: plan.files.length
+    ...(overrideMake ? { mode: plan.mode, tracker: plan.makeBefore.tracker, keepMakeOnly: plan.keepMakeOnly,
+      makeAhead: plan.makeAhead, deleteMakeOnly, refused: plan.refused,
+      counts: { ...c, keepMakeOnly: plan.keepMakeOnly.length,
+        unsupported: Object.values(plan.refused).reduce((total, paths) => total + paths.length, 0), ignored: plan.excluded.length } } : {}),
+    ...(plan.files.length && !hasRefusals(plan) ? { planPath, next: `figma-cli make deploy --file ${plan.fileKey} --dir ${dir || '.'} --apply ${planPath}` +
+      (overrideMake ? ` --confirm-override ${plan.digest.slice(0, 12)}` : '') } : {}),
+    summary: overrideMake ? `${plan.makeBefore.savedInventorySource === 'deploy-record' ? 'saved copy unreadable, using deploy record. ' : plan.makeBefore.savedInventorySource === 'deploy-tag-record' ? 'saved copy unreadable, using deploy tag record. ' : ''}Override would write ${countText(c)}, keep ${plan.keepMakeOnly.length} Make-only path(s) and ignore ${plan.excluded.length} path(s). ${hasRefusals(plan) ? 'Refused paths must be resolved before applying.' : `Confirm with digest ${plan.digest.slice(0, 12)}.`} Nothing was changed yet.` : plan.files.length
       ? `Deploying main ${short(plan.mainCommit)} would write ${countText(c)} to Make and save it as one version "deploy ${short(plan.mainCommit)}", tagged ${plan.tag}.${excludedText(plan)} Nothing was changed yet.`
       : `Make already matches main ${short(plan.mainCommit)}; there is nothing to deploy.${excludedText(plan)}` };
 }
@@ -528,13 +701,16 @@ export async function deployPlan(client, { dir } = {}, deps = {}) {
 function newReceipt(plan, who, at, home) {
   const deployId = `${at.replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}-${plan.fileKey}-${short(plan.mainCommit)}`;
   return { schema: RECEIPT_SCHEMA, deployId, who, at, repo: plan.repo, mainCommit: plan.mainCommit, mainTree: plan.mainTree,
-    fileKey: plan.fileKey, tag: { name: plan.tag, n: plan.n, pushed: false }, makeBefore: plan.makeBefore, makeAfter: null,
+    fileKey: plan.fileKey, tag: { name: plan.tag, n: plan.n, pushed: false }, ...(plan.mode ? { mode: plan.mode } : {}),
+    makeBefore: plan.makeBefore, makeAfter: null,
     planDigest: plan.digest, files: plan.files.map(({ path, op, beforeSha256, afterSha256 }) => ({ path, op, beforeSha256, afterSha256, backupPath: null })),
     excluded: plan.excluded, excludedCount: plan.excluded.length, base: plan.base, completedWrites: [], stage: 'writing', outcome: 'uncertain', verification: null, error: null,
     plan, receiptPath: join(deployDir(home), `${deployId}.json`) };
 }
 
 const backupDir = (receipt, home) => join(deployDir(home), 'backups', receipt.deployId);
+const overridePin = receipt => receipt.mode === 'override-make'
+  ? { savedVersion: receipt.makeBefore.versionGitSha, head: receipt.makeBefore.head } : undefined;
 
 function stop(receipt, error, stage, message, code) {
   receipt.stage = stage;
@@ -553,7 +729,8 @@ async function waitIdle(client, receipt, deps) {
   let since = 0;
   for (;;) {
     const probe = await client.idleState(paths);
-    const idle = !probe.busy && !probe.offline && probe.state && !probe.state.isLoading && !probe.state.error;
+    const idle = !probe.busy && !probe.offline && probe.state && !probe.state.isLoading &&
+      (receipt.mode === 'override-make' || !probe.state.error);
     const key = idle ? JSON.stringify(probe) : null;
     if (key && key === last && Date.now() - since >= quietMs) return;
     if (key !== last) { last = key; since = Date.now(); }
@@ -583,8 +760,21 @@ function plannedState(receipt, status) {
   if (state?.savedVersion !== receipt.makeBefore.versionGitSha) {
     return { problem: `Make's saved version is ${state?.savedVersion ?? 'unknown'}, not ${receipt.makeBefore.versionGitSha} where the deploy started`, code: 'DEPLOY_RECEIPT' };
   }
+  if (receipt.mode === 'override-make') {
+    const allowed = new Set([...receipt.makeBefore.tracker.pendingPaths, ...receipt.plan.files.map(file => file.path)]);
+    if (state.isLoading || !Array.isArray(state.pendingPaths) ||
+        state.pendingPaths.some(path => !allowed.has(path))) {
+      return { problem: 'Make sandbox head or pending paths changed outside the reviewed plan', code: 'DEPLOY_RECEIPT' };
+    }
+  }
   const planned = new Set(receipt.plan.files.map(file => file.path));
-  const others = [...new Set([...contentDiff(status.workingFlat, status.makeFlat), ...(state.pendingPaths || [])])].filter(path => !planned.has(path));
+  const original = new Map(receipt.makeBefore.inventory?.map(item => [item.path, item.sha256]));
+  const saved = new Map(receipt.makeBefore.savedInventory?.map(item => [item.path, item.sha256]));
+  const others = receipt.mode === 'override-make'
+    ? [...new Set([...original.keys(), ...status.workingFlat.keys()])]
+      .filter(path => !planned.has(path) && (status.workingSha256.get(path) ?? null) !== (original.get(path) ?? null) &&
+        !(receipt.saveRefusals && (status.workingSha256.get(path) ?? null) === (saved.get(path) ?? null)))
+    : [...new Set([...contentDiff(status.workingFlat, status.makeFlat), ...(state.pendingPaths || [])])].filter(path => !planned.has(path));
   if (others.length) return { problem: `Make has unsaved changes outside the deploy ${JSON.stringify(others)}`, code: 'DEPLOY_MAKE_AHEAD' };
   const files = classify(receipt, status);
   const odd = files.filter(file => file.state === 'other').map(file => file.path);
@@ -605,6 +795,10 @@ const recordWrite = (receipt, file, backupPath, extra = {}) => {
 // every unsaved path against the plan, then try that path again.
 async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
   for (const file of [...todo].sort(byWriteOrder)) {
+    if (receipt.mode === 'override-make') {
+      const checked = plannedState(receipt, await client.projectStatus());
+      if (checked.problem) stop(receipt, null, 'writing', `Override stopped before writing ${file.path}: ${checked.problem}.`, checked.code);
+    }
     let content = null;
     if (file.op !== 'delete') {
       const bytes = mainBytes(file.afterBlob);
@@ -617,10 +811,12 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
     for (let attempt = 1; ; attempt++) {
       let result;
       try {
-        if (file.op === 'delete') result = await client.deleteDurable(file.path, { expectedSha256: expected, backupDir: backupDir(receipt, home) });
+        if (file.op === 'delete') result = await client.deleteDurable(file.path, { expectedSha256: expected, backupDir: backupDir(receipt, home),
+          overrideMake: overridePin(receipt) });
         else {
           result = await client.writeDurable(file.path, content, { expectedSha256: expected ?? undefined, backupDir: backupDir(receipt, home),
-            rewrite: isLockfile(file.path), baseFolders: baseFolders(receipt.plan) });
+            rewrite: isLockfile(file.path), baseFolders: baseFolders(receipt.plan),
+            overrideMake: overridePin(receipt) });
         }
       } catch (error) {
         if (error.backupPath) recordWrite(receipt, file, error.backupPath, { uncertain: true });
@@ -646,6 +842,28 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
   }
   receipt.stage = 'written';
   saveReceipt(receipt);
+}
+
+// An override may discard Make edits. Save and read back every original before
+// the first VFS mutation, including deletes and dependency files.
+async function backupOverride(client, receipt, home) {
+  if (receipt.mode !== 'override-make') return;
+  for (const file of receipt.plan.files.filter(item => item.beforeSha256)) {
+    const original = await client.readDurable(file.path);
+    if (!original.exists || sha256(original.content) !== file.beforeSha256 || decode(Buffer.from(original.content)) == null) {
+      stop(receipt, null, 'writing', `Make changed or has non-text content at ${file.path} before backup. Nothing was written.`, 'DEPLOY_MAKE_STATE');
+    }
+    const dir = join(backupDir(receipt, home), sha256(file.path));
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const backup = join(dir, 'original.txt');
+    writeFileSync(backup, original.content, { mode: 0o600 });
+    writeFileSync(join(dir, 'metadata.json'), `${JSON.stringify({ fileKey: receipt.fileKey, path: file.path, sha256: file.beforeSha256 })}\n`, { mode: 0o600 });
+    if (sha256(readFileSync(backup)) !== file.beforeSha256) {
+      stop(receipt, null, 'writing', `Backup read-back failed for ${file.path}. Nothing was written.`, 'DEPLOY_MAKE_STATE');
+    }
+    receipt.files.find(item => item.path === file.path).backupPath = backup;
+    saveReceipt(receipt);
+  }
 }
 
 // Make's install rewrites a planned lockfile as soon as package.json is
@@ -689,7 +907,9 @@ async function reconcile(client, receipt, { mainBytes, home, deps }) {
 // The public part of a receipt, carried in the tag's message.
 const publicReceipt = receipt => ({ schema: receipt.schema, deployId: receipt.deployId, n: receipt.tag.n, who: receipt.who, at: receipt.at,
   repo: receipt.repo, mainCommit: receipt.mainCommit, mainTree: receipt.mainTree, fileKey: receipt.fileKey,
-  makeBefore: receipt.makeBefore, makeAfter: receipt.makeAfter, planDigest: receipt.planDigest,
+  makeBefore: receipt.mode === 'override-make'
+    ? { versionGitSha: receipt.makeBefore.versionGitSha, tree: receipt.makeBefore.tree } : receipt.makeBefore,
+  makeAfter: receipt.makeAfter, planDigest: receipt.planDigest,
   files: receipt.files.map(({ path, op, beforeSha256, afterSha256 }) => ({ path, op, beforeSha256, afterSha256 })),
   excluded: receipt.excluded, excludedCount: receipt.excluded.length });
 
@@ -740,14 +960,17 @@ async function tagAndFinish(ctx, receipt, home) {
   }
 }
 
-// After the writes: one version, the full-root drift check, then the tag.
+// After the writes: save one version. Normal deploys then check drift and tag;
+// overrides defer both until a fresh-reload verification.
 async function finish(client, ctx, receipt, mainFlat, home) {
   const plan = receipt.plan;
   receipt.stage = 'saving';
   saveReceipt(receipt);
   let version;
   try {
-    version = await client.saveCheckedVersion(`deploy ${short(plan.mainCommit)}`, plan.files.map(file => file.path), { listed: true });
+    version = await client.saveCheckedVersion(`deploy ${short(plan.mainCommit)}`, plan.files.map(file => file.path),
+      { listed: true, ...(receipt.mode === 'override-make' ? { overrideMake: {
+        ...overridePin(receipt), expectedDiff: plan.expectedDiff, allowedPaths: plan.files.map(file => file.path) } } : {}) });
   } catch (error) {
     if (error.version) {
       receipt.makeAfter = { versionId: error.version.versionId, versionNumber: error.version.versionNumber, versionGitSha: error.version.gitSha, tree: null };
@@ -757,9 +980,15 @@ async function finish(client, ctx, receipt, mainFlat, home) {
     if (error.createVersionCalled) {
       stop(receipt, error, 'save-uncertain', `Make's save outcome is unknown: ${error.message} Never retry the save; run ${recovery(receipt)}.`, 'DEPLOY_SAVE_UNCERTAIN');
     }
+    if (receipt.mode === 'override-make') receipt.saveRefusals = (receipt.saveRefusals || 0) + 1;
     stop(receipt, error, 'written', `Make refused the save before creating a version: ${error.message} Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
   }
   receipt.makeAfter = { versionId: version.versionId, versionNumber: version.versionNumber, versionGitSha: version.gitSha, tree: version.tree };
+  if (receipt.mode === 'override-make') {
+    receipt.stage = 'saved-unverified';
+    saveReceipt(receipt);
+    return;
+  }
   receipt.stage = 'saved';
   saveReceipt(receipt);
   let after;
@@ -784,6 +1013,7 @@ export function driftProblems(status, receipt, mainFlat) {
   if (receipt.makeAfter?.versionGitSha && state?.savedVersion !== receipt.makeAfter.versionGitSha) {
     problems.push(`Make's saved version is ${state?.savedVersion ?? 'none'}, not ${receipt.makeAfter.versionGitSha}`);
   }
+  if (receipt.mode === 'override-make' && state?.savedVersion !== status.head) problems.push('Make sandbox head is not its saved pointer');
   const unsaved = contentDiff(status.workingFlat, status.makeFlat);
   if (unsaved.length) problems.push(`${unsaved.length} unsaved path(s) ${JSON.stringify(unsaved.slice(0, 20))}`);
   const differ = contentDiff(status.makeFlat, mainFlat, skipOf(receipt.plan));
@@ -791,11 +1021,19 @@ export function driftProblems(status, receipt, mainFlat) {
   return problems;
 }
 
-export async function deployApply(client, { dir, planPath } = {}, deps = {}) {
+export async function deployApply(client, { dir, planPath, confirmOverride, overrideMake = false, deleteMakeOnly = false } = {}, deps = {}) {
   deps = defaults(deps);
   const reviewed = readPlan(planPath);
+  if (hasRefusals(reviewed)) fail('The reviewed plan has refused paths; resolve them and run a new dry run. Nothing was deployed.', 'DEPLOY_UNSUPPORTED_PATH');
+  if (reviewed.mode === 'override-make') {
+    if (confirmOverride !== reviewed.digest.slice(0, 12)) {
+      fail(`Override requires --confirm-override ${reviewed.digest.slice(0, 12)} for this reviewed plan. Nothing was deployed.`, 'DEPLOY_STALE_PLAN');
+    }
+    if (deleteMakeOnly && !reviewed.deleteMakeOnly) fail('Make-only deletion was not in the reviewed plan.', 'DEPLOY_STALE_PLAN');
+  } else if (confirmOverride || overrideMake || deleteMakeOnly) fail('Override flags do not match the reviewed plan.', 'DEPLOY_STALE_PLAN');
   if (reviewed.fileKey !== client.fileKey) fail(`The plan is for Make file ${reviewed.fileKey}, not ${client.fileKey}.`, 'DEPLOY_STALE_PLAN');
-  const { ctx, plan, access, main } = await prepare(client, { dir, reviewed }, deps);
+  const { ctx, plan, access, main } = await prepare(client, { dir, reviewed,
+    overrideMake: reviewed.mode === 'override-make', deleteMakeOnly: reviewed.deleteMakeOnly === true }, deps);
   if (plan.mainCommit !== reviewed.mainCommit) {
     fail(`main moved from ${short(reviewed.mainCommit)} to ${short(plan.mainCommit)} since the dry run. Run a new dry run. Nothing was deployed.`, 'DEPLOY_MAIN_MOVED');
   }
@@ -806,12 +1044,15 @@ export async function deployApply(client, { dir, planPath } = {}, deps = {}) {
   receipt.planPath = resolve(planPath);
   saveReceipt(receipt);
   const mainBytes = blob => deps.readBlob(ctx.root, blob);
+  await backupOverride(client, receipt, deps.home);
   await backupLockfiles(client, receipt, deps.home);
   await writeFiles(client, receipt, plan.files, { mainBytes, home: deps.home, deps });
   await reconcile(client, receipt, { mainBytes, home: deps.home, deps });
   await finish(client, ctx, receipt, main.flat, deps.home);
-  return result(receipt, `Deployed main ${short(plan.mainCommit)} to Make as version ${receipt.makeAfter.versionNumber} and tagged it ${receipt.tag.name}. ` +
-    `Next: confirm it after a fresh reload with --verify ${receipt.receiptPath}.`);
+  return result(receipt, receipt.mode === 'override-make'
+    ? `Override saved Make version ${receipt.makeAfter.versionNumber}. Reload and verify with --verify ${receipt.receiptPath} before the tag can be pushed.`
+    : `Deployed main ${short(plan.mainCommit)} to Make as version ${receipt.makeAfter.versionNumber} and tagged it ${receipt.tag.name}. ` +
+      `Next: confirm it after a fresh reload with --verify ${receipt.receiptPath}.`);
 }
 
 const result = (receipt, summary) => ({ deployId: receipt.deployId, fileKey: receipt.fileKey, repo: receipt.repo, who: receipt.who,
@@ -823,9 +1064,12 @@ const result = (receipt, summary) => ({ deployId: receipt.deployId, fileKey: rec
 // planned, a dependency file Make's own install regenerated, or something
 // else (which stops resume and abort).
 export function classify(receipt, status) {
+  const saved = new Map(receipt.makeBefore.savedInventory?.map(item => [item.path, item.sha256]));
   return receipt.plan.files.map(file => {
     const blob = status.workingFlat.get(file.path)?.blob ?? null;
-    const state = blob === file.afterBlob ? 'after' : blob === file.beforeBlob ? 'before' : blob && isDependency(file.path) ? 'regenerated' : 'other';
+    const state = blob === file.afterBlob ? 'after' : blob === file.beforeBlob ? 'before'
+      : receipt.saveRefusals && saved.has(file.path) && status.workingSha256.get(file.path) === saved.get(file.path) ? 'saved'
+        : blob && isDependency(file.path) ? 'regenerated' : 'other';
     return { ...file, state };
   });
 }
@@ -842,7 +1086,7 @@ async function resumable(client, receipt, what) {
   if (ui?.busy || ui?.offline || ui?.readOnly === true) fail('Make is busy, offline or read-only. Wait until it is idle.', 'DEPLOY_MAKE_BUSY');
   const status = await client.projectStatus();
   let state;
-  try { state = requireGitMode(status.persistence); }
+  try { state = requireGitMode(status.persistence, { overrideMake: overridePin(receipt) }); }
   catch (error) { fail(`Make is not ready: ${error.message}`, 'DEPLOY_MAKE_STATE'); }
   if (state.savedVersion !== receipt.makeBefore.versionGitSha) {
     fail(`Make's saved version is ${state.savedVersion}, not ${receipt.makeBefore.versionGitSha} where the deploy started, so a version was saved. ` +
@@ -856,6 +1100,10 @@ async function resumable(client, receipt, what) {
 export async function deployResume(client, { dir, receiptPath } = {}, deps = {}) {
   deps = defaults(deps);
   const receipt = readReceipt(receiptPath);
+  if (receipt.mode === 'override-make') {
+    if (receipt.saveRefusals >= 2) fail('Override save was refused twice; use --abort or seek Make support.', 'DEPLOY_RECEIPT');
+    await client.reloadPage({ allowError: true });
+  }
   const ctx = teamContext({ dir: resolve(dir || '.'), run: deps.run, warn: deps.warn });
   requireNoOperation(ctx);
   if (ctx.repo().toLowerCase() !== receipt.repo.toLowerCase()) fail(`This clone belongs to ${ctx.repo()}, not ${receipt.repo}.`, 'DEPLOY_REPO_MISMATCH');
@@ -863,7 +1111,7 @@ export async function deployResume(client, { dir, receiptPath } = {}, deps = {})
   if (!revOf(ctx, receipt.mainCommit)) fetchMain(ctx);
   if (!revOf(ctx, receipt.mainCommit)) fail(`The clone does not have main ${short(receipt.mainCommit)}.`, 'DEPLOY_RECEIPT');
   const { status, files } = await resumable(client, receipt, 'resume');
-  const todo = files.filter(file => file.state === 'before' || file.state === 'regenerated' || (file.state === 'after' && isLockfile(file.path)))
+  const todo = files.filter(file => file.state === 'before' || file.state === 'saved' || file.state === 'regenerated' || (file.state === 'after' && isLockfile(file.path)))
     .map(file => ({ ...file, expectedSha256: status.workingSha256.get(file.path) ?? null }));
   receipt.resumedBy = access.login;
   receipt.stage = 'writing';
@@ -872,8 +1120,10 @@ export async function deployResume(client, { dir, receiptPath } = {}, deps = {})
   await writeFiles(client, receipt, todo, { mainBytes, home: deps.home, deps });
   await reconcile(client, receipt, { mainBytes, home: deps.home, deps });
   await finish(client, ctx, receipt, lsTree(ctx, receipt.mainCommit), deps.home);
-  return result(receipt, `Resumed: wrote ${todo.length} remaining file(s), saved version ${receipt.makeAfter.versionNumber} and tagged ${receipt.tag.name}. ` +
-    `Next: --verify ${receipt.receiptPath}.`);
+  return result(receipt, receipt.mode === 'override-make'
+    ? `Resumed once: saved version ${receipt.makeAfter.versionNumber}; run --verify ${receipt.receiptPath} after a fresh reload.`
+    : `Resumed: wrote ${todo.length} remaining file(s), saved version ${receipt.makeAfter.versionNumber} and tagged ${receipt.tag.name}. ` +
+      `Next: --verify ${receipt.receiptPath}.`);
 }
 
 // The original bytes of a planned path, from this deploy's private backups.
@@ -903,7 +1153,8 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
   const { status: first, files } = await resumable(client, receipt, 'abort');
   const restoreOf = file => (file.op === 'add' ? null : backupContent(receipt, file, deps.home));
   // Every backup is read before anything changes.
-  const contents = new Map(files.filter(file => !noOriginal(file) && (file.state === 'after' || file.state === 'regenerated')).map(file => [file.path, restoreOf(file)]));
+  const contents = new Map(files.filter(file => (receipt.mode === 'override-make' || !noOriginal(file)) &&
+    (file.state === 'after' || file.state === 'saved' || file.state === 'regenerated')).map(file => [file.path, restoreOf(file)]));
   const restored = new Set(receipt.restored || []);
   // Older abort retries replaced this list. Recover paths that this deploy
   // wrote and a previous abort already returned to their starting content;
@@ -943,10 +1194,11 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
         const current = status.workingSha256.get(file.path) ?? null;
         try {
           const content = contents.has(file.path) ? contents.get(file.path) : restoreOf(file);
-          if (file.op === 'add') await client.deleteDurable(file.path, { expectedSha256: current, backupDir: backupDir(receipt, deps.home) });
+          if (file.op === 'add') await client.deleteDurable(file.path, { expectedSha256: current, backupDir: backupDir(receipt, deps.home),
+            overrideMake: overridePin(receipt) });
           else {
             await client.writeDurable(file.path, content, { expectedSha256: current ?? undefined, backupDir: backupDir(receipt, deps.home),
-              baseFolders: baseFolders(receipt.plan) });
+              baseFolders: baseFolders(receipt.plan), overrideMake: overridePin(receipt) });
           }
         } catch (error) {
           if (attempt >= ROUNDS || (error.code !== 'MAKE_PENDING_CHANGED' && !isDependency(file.path))) {
@@ -965,9 +1217,12 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
       }
     }
     const checked = await recheck();
-    todo = checked.files.filter(file => file.state !== 'before' && !noOriginal(file));
+    todo = checked.files.filter(file => file.state !== 'before' && (receipt.mode === 'override-make' || !noOriginal(file)));
     const pending = status.persistence?.pendingPaths || [];
-    if (!todo.length && status.workingTree === receipt.makeBefore.tree && !pending.length) break;
+    const originalTree = receipt.mode === 'override-make' ? receipt.makeBefore.workingTree : receipt.makeBefore.tree;
+    const originalPending = receipt.mode === 'override-make' ? receipt.makeBefore.tracker.pendingPaths : [];
+    if (!todo.length && status.workingTree === originalTree &&
+        JSON.stringify(pending) === JSON.stringify(originalPending)) break;
     const unrestorable = checked.files.filter(file => noOriginal(file) && status.workingFlat.get(file.path)?.blob !== status.makeFlat.get(file.path)?.blob);
     if (!todo.length && !pending.length && unrestorable.length) {
       const named = unrestorable.map(file => `${file.path} (working sha256 ${status.workingSha256.get(file.path) ?? 'none'}, saved blob ${status.makeFlat.get(file.path)?.blob ?? 'none'})`);
@@ -979,8 +1234,8 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
         'Once the lockfile matches the saved version again, run --abort once more to close the receipt.');
     }
     if (!todo.length || round >= ROUNDS) {
-      const mismatch = status.workingTree !== receipt.makeBefore.tree
-        ? `working tree ${status.workingTree} != saved tree ${receipt.makeBefore.tree}`
+      const mismatch = status.workingTree !== originalTree
+        ? `working tree ${status.workingTree} != ${receipt.mode === 'override-make' ? 'original' : 'saved'} tree ${originalTree}`
         : `pending paths ${JSON.stringify(pending)}`;
       stopAbort(null, `Restored ${restored.size} file(s), but Make still differs from its saved version: ${mismatch}. Run --abort again.`);
     }
@@ -993,7 +1248,8 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
   saveReceipt(receipt);
   return { ...result(receipt, `Aborted: restored ${restoredPaths.length} file(s)` +
     `${savedUncertain.size ? `, and ${savedUncertain.size} more whose write outcome is uncertain are at saved content` : ''}; ` +
-    `Make is back at its saved version ${short(receipt.makeBefore.versionGitSha)} and nothing was saved.`),
+    `${receipt.mode === 'override-make' ? 'Make is back at its original working tree' :
+      `Make is back at its saved version ${short(receipt.makeBefore.versionGitSha)}`} and nothing was saved.`),
   ...(savedUncertain.size ? { restoredUncertain: [...savedUncertain] } : {}) };
 }
 
@@ -1013,11 +1269,22 @@ export async function deployVerify(client, { dir, receiptPath } = {}, deps = {})
   if (!revOf(ctx, receipt.mainCommit)) fetchMain(ctx);
   if (!revOf(ctx, receipt.mainCommit)) fail(`The clone does not have main ${short(receipt.mainCommit)}.`, 'DEPLOY_RECEIPT');
   const mainFlat = lsTree(ctx, receipt.mainCommit);
-  await client.reloadPage();
+  await client.reloadPage({ allowError: receipt.mode === 'override-make' });
+  await waitForReloadFilesystem(client, receipt, deps);
   const status = await client.projectStatus();
+  if (receipt.mode === 'override-make' && status.savedMissing) {
+    const ignored = ignoreMatcher(ignoreOf(mainFlat, blob => deps.readBlob(ctx.root, blob)));
+    recoverMissingSaved(status, { fileKey: client.fileKey, repo: receipt.repo, home: deps.home, tags: remoteTags(ctx), ctx,
+      readBlob: deps.readBlob, savedProtected: path => protectedPath(path, ignored, mainFlat) });
+  }
   const state = status.persistence;
   if (!receipt.makeAfter) {
     if (state?.savedVersion === receipt.makeBefore.versionGitSha) {
+      if (receipt.mode === 'override-make' && receipt.stage === 'save-uncertain') {
+        fail(`The save call may have reached Make, but the original pointer remains after a fresh reload. ` +
+          `Do not retry the save. Inspect Make's version history or seek support. Receipt: ${receipt.receiptPath}.`,
+        'DEPLOY_SAVE_UNCERTAIN', { receiptPath: receipt.receiptPath });
+      }
       receipt.stage = 'writing';
       receipt.error = 'No deploy version was found after a fresh reload.';
       saveReceipt(receipt);
@@ -1038,7 +1305,7 @@ export async function deployVerify(client, { dir, receiptPath } = {}, deps = {})
   if (problems.length && receipt.outcome === 'ok') {
     fail(`Make no longer holds this deploy after a fresh reload: ${problems.join('; ')}. A later deploy or a Make edit changed it.`, 'DEPLOY_VERIFY_FAILED');
   }
-  if (problems.length && receipt.stage === 'tag-pending') {
+  if (problems.length && receipt.stage === 'tag-pending' && receipt.mode !== 'override-make') {
     await requireAdmin(receipt.repo, deps.gh);
     await tagAndFinish(ctx, receipt, deps.home);
     return result(receipt, `Pushed ${receipt.tag.name}: Make version ${receipt.makeAfter.versionNumber ?? short(receipt.makeAfter.versionGitSha)} matched main ` +
