@@ -1,0 +1,24 @@
+src/make-deploy.js
+  s_ddbbcac29216cb::t_621210b22883cd 434,508,644,647-648,938,941-943,985,1028
+src/make-client.js
+  s_ddbbcac29216cb::t_04e742cc6f2ea3 1153,1165-1173,1177,1189
+tests/make-deploy.test.js
+  s_ddbbcac29216cb::t_a5a2f375f8d181 148,159,499-535
+  s_ddbbcac29216cb::t_a7bc2410f28198 536-537
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ebc5dadc223e10d10a783649d420a982b8424d06",
+  "prompts": {},
+  "sessions": {
+    "s_ddbbcac29216cb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a186b1-1fa5-7cd2-a220-28dfdcf49833",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
