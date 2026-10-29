@@ -12,6 +12,7 @@ Updated 2026-10-24: the committed deploy ignore list `.figma-cli/deploy-ignore`,
 Updated 2026-10-24: `.figma/make/` is always excluded, and the built-in exclusions match files below their folders.
 Updated 2026-10-24: deletes run after the other writes, and a create may re-enter a planned top-level folder an earlier delete emptied (the LMA apply stop).
 Updated 2026-10-29: current-main override is documented in the command reference; live save behavior remains unverified.
+Updated 2026-10-29: a missing saved commit can use the newest validated annotated deploy tag when no usable local receipt exists.
 
 # make deploy
 
@@ -21,6 +22,7 @@ For commands, guards and recovery, see the
 [current-main override contract](../../../../REFERENCE.md#deploying-main-to-make-make-deploy).
 The live `createVersion` behavior with a broken tracker is **UNVERIFIED**;
 coverage uses fake Make (`tests/make-deploy.test.js`, `tests/make-durable.test.js`).
+When the saved sandbox commit is missing, override reconstructs its inventory from a completed local receipt or, if none is usable, the newest annotated deploy tag. The tag record must identify the file and repo, match Make's saved pointer, and name the tagged commit's tree; protected paths use blob IDs without reading contents (`src/make-deploy.js:171`, `src/make-deploy.js:189`, `src/make-deploy.js:216`). This tag fallback has fake coverage only (`tests/make-deploy.test.js:479`).
 
 `make deploy` (`src/make-deploy.js`, wired at `src/commands/make.js`) is the one Make write team mode allows. A repo admin runs it in a local clone of `main`. It skips the team-mode write gate and runs its own guards instead (`prepare`, `src/make-deploy.js:528`). Command details are in REFERENCE.md, "Deploying main to Make".
 

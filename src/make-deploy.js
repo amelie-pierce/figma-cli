@@ -168,9 +168,52 @@ export function openReceipts(fileKey, { home } = {}) {
   }).filter(receipt => receipt?.schema === RECEIPT_SCHEMA && receipt.fileKey === fileKey && receipt.outcome === 'uncertain' && !receipt.supersededBy);
 }
 
-// A missing saved commit may be reconstructed only from the newest completed
-// deploy record for this file, after checking its saved tree against Git.
-function savedInventoryFromRecord({ fileKey, repo, savedVersion, home, ctx, readBlob, savedProtected }) {
+function inventoryFromCommit(ctx, commit, readBlob, savedProtected, source) {
+  const savedSha256 = new Map();
+  const savedBlobs = new Map();
+  try {
+    for (const [path, entry] of lsTree(ctx, commit)) {
+      if (entry.type !== 'blob') throw new Error('non-file path');
+      if (savedProtected(path)) savedBlobs.set(path, entry.blob);
+      else savedSha256.set(path, sha256(readBlob(ctx.root, entry.blob)));
+    }
+  } catch {
+    fail(`Make saved copy is unreadable and the ${source} files cannot be verified against GitHub main. Nothing was deployed.`, 'DEPLOY_MAKE_STATE');
+  }
+  return { savedSha256, savedBlobs };
+}
+
+// A remote tag is the cross-machine record when this machine has no receipt.
+// The tag's commit and public receipt must name the same main tree and Make
+// saved pointer before its blobs can stand in for the missing saved commit.
+function savedInventoryFromTag({ fileKey, repo, savedVersion, tags, ctx, readBlob, savedProtected }) {
+  const tag = tags[0];
+  if (!tag) fail('Make saved copy is unreadable and no deploy record exists for this file. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
+  let base;
+  try { base = tagBase(ctx, tag); }
+  catch (error) { fail(`Make saved copy is unreadable and ${tag.name} cannot be verified: ${error.message}`, 'DEPLOY_MAKE_STATE'); }
+  if (ctx.git(['cat-file', '-t', `refs/tags/${tag.name}`]) !== 'tag') {
+    fail(`Make saved copy is unreadable and ${tag.name} has no annotated deploy record. Nothing was deployed.`, 'DEPLOY_MAKE_STATE');
+  }
+  const record = receiptJson(ctx.git(['cat-file', 'tag', `refs/tags/${tag.name}`]));
+  if (record?.schema !== RECEIPT_SCHEMA || record.fileKey !== fileKey ||
+      typeof record.repo !== 'string' || record.repo.toLowerCase() !== repo.toLowerCase() || record.n !== tag.n) {
+    fail(`Make saved copy is unreadable and ${tag.name}'s deploy record does not identify this file and repo. Nothing was deployed.`, 'DEPLOY_MAKE_STATE');
+  }
+  if (record.makeAfter?.versionGitSha !== savedVersion) {
+    fail(`Make saved copy is unreadable and ${tag.name}'s deploy record does not match Make's saved pointer. Nothing was deployed.`, 'DEPLOY_MAKE_STATE');
+  }
+  if (!SHA.test(record.mainCommit || '') || record.mainCommit !== base.commit || record.mainTree !== base.mainTree ||
+      (record.makeAfter.tree != null && record.makeAfter.tree !== base.mainTree)) {
+    fail(`Make saved copy is unreadable and ${tag.name}'s deploy record does not match its tagged main tree. Nothing was deployed.`, 'DEPLOY_MAKE_STATE');
+  }
+  return { ...inventoryFromCommit(ctx, base.commit, readBlob, savedProtected, 'deploy tag record'),
+    savedInventorySource: 'deploy-tag-record' };
+}
+
+// A missing saved commit may be reconstructed from the newest completed local
+// receipt, or from the newest annotated deploy tag when no usable local receipt exists.
+function savedInventoryFromRecord({ fileKey, repo, savedVersion, home, tags, ctx, readBlob, savedProtected }) {
   const dir = deployDir(home);
   const newest = existsSync(dir) ? readdirSync(dir).filter(name => name.endsWith('.json')).map(name => {
     try {
@@ -178,31 +221,27 @@ function savedInventoryFromRecord({ fileKey, repo, savedVersion, home, ctx, read
       return value?.schema === RECEIPT_SCHEMA && value.fileKey === fileKey ? { name, at: value.at || '' } : null;
     } catch { return null; }
   }).filter(Boolean).sort((a, b) => b.at.localeCompare(a.at) || b.name.localeCompare(a.name))[0] : null;
-  if (!newest) fail('Make saved copy is unreadable and no deploy record exists for this file. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
-  let receipt;
-  try { receipt = readReceipt(join(dir, newest.name)); }
-  catch { fail('Make saved copy is unreadable and the newest deploy record is invalid. Nothing was deployed.', 'DEPLOY_MAKE_STATE'); }
-  if (receipt.repo.toLowerCase() !== repo.toLowerCase() || receipt.outcome !== 'ok' ||
-      receipt.makeAfter?.versionGitSha !== savedVersion || !SHA.test(receipt.mainCommit || '') ||
-      receipt.makeAfter?.tree !== receipt.mainTree) {
-    fail('Make saved copy is unreadable and the newest deploy record does not match its saved pointer or tree. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
-  }
-  const tree = ctx.tryGit(['rev-parse', '--verify', '--quiet', `${receipt.mainCommit}^{tree}`]);
-  if (tree.status !== 0 || tree.stdout.trim() !== receipt.mainTree) {
-    fail('Make saved copy is unreadable and the deploy record tree does not match its GitHub main commit. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
-  }
-  const savedSha256 = new Map();
-  const savedBlobs = new Map();
-  try {
-    for (const [path, entry] of lsTree(ctx, receipt.mainCommit)) {
-      if (entry.type !== 'blob') throw new Error('non-file path');
-      if (savedProtected(path)) savedBlobs.set(path, entry.blob);
-      else savedSha256.set(path, sha256(readBlob(ctx.root, entry.blob)));
+  if (newest) {
+    try {
+      let receipt;
+      try { receipt = readReceipt(join(dir, newest.name)); }
+      catch { fail('Make saved copy is unreadable and the newest deploy record is invalid. Nothing was deployed.', 'DEPLOY_MAKE_STATE'); }
+      if (receipt.repo?.toLowerCase() !== repo.toLowerCase() || receipt.outcome !== 'ok' ||
+          receipt.makeAfter?.versionGitSha !== savedVersion || !SHA.test(receipt.mainCommit || '') ||
+          receipt.makeAfter?.tree !== receipt.mainTree) {
+        fail('Make saved copy is unreadable and the newest deploy record does not match its saved pointer or tree. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
+      }
+      const tree = ctx.tryGit(['rev-parse', '--verify', '--quiet', `${receipt.mainCommit}^{tree}`]);
+      if (tree.status !== 0 || tree.stdout.trim() !== receipt.mainTree) {
+        fail('Make saved copy is unreadable and the deploy record tree does not match its GitHub main commit. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
+      }
+      return { ...inventoryFromCommit(ctx, receipt.mainCommit, readBlob, savedProtected, 'deploy record'),
+        savedInventorySource: 'deploy-record' };
+    } catch (error) {
+      if (!tags.length) throw error;
     }
-  } catch {
-    fail('Make saved copy is unreadable and the deploy record files cannot be verified against GitHub main. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
   }
-  return { savedSha256, savedBlobs };
+  return savedInventoryFromTag({ fileKey, repo, savedVersion, tags, ctx, readBlob, savedProtected });
 }
 
 const recovery = receipt => {
@@ -564,8 +603,7 @@ async function prepare(client, { dir, reviewed, overrideMake = false, deleteMake
     status = await client.projectStatus({ classifyText: true });
     if (status.persistence?.savedVersion !== savedVersion) fail('Make saved pointer changed while reading its served copy. Nothing was deployed.', 'DEPLOY_MAKE_STATE');
     Object.assign(status, savedInventoryFromRecord({ fileKey: client.fileKey, repo, savedVersion,
-      home, ctx, readBlob, savedProtected }));
-    status.savedInventorySource = 'deploy-record';
+      home, tags, ctx, readBlob, savedProtected }));
   }
   await requireTeamMode(client, status);
   let state;
@@ -623,7 +661,7 @@ export async function deployPlan(client, { dir, overrideMake = false, deleteMake
         unsupported: Object.values(plan.refused).reduce((total, paths) => total + paths.length, 0), ignored: plan.excluded.length } } : {}),
     ...(plan.files.length && !hasRefusals(plan) ? { planPath, next: `figma-cli make deploy --file ${plan.fileKey} --dir ${dir || '.'} --apply ${planPath}` +
       (overrideMake ? ` --confirm-override ${plan.digest.slice(0, 12)}` : '') } : {}),
-    summary: overrideMake ? `${plan.makeBefore.savedInventorySource === 'deploy-record' ? 'saved copy unreadable, using deploy record. ' : ''}Override would write ${countText(c)}, keep ${plan.keepMakeOnly.length} Make-only path(s) and ignore ${plan.excluded.length} path(s). ${hasRefusals(plan) ? 'Refused paths must be resolved before applying.' : `Confirm with digest ${plan.digest.slice(0, 12)}.`} Nothing was changed yet.` : plan.files.length
+    summary: overrideMake ? `${plan.makeBefore.savedInventorySource === 'deploy-record' ? 'saved copy unreadable, using deploy record. ' : plan.makeBefore.savedInventorySource === 'deploy-tag-record' ? 'saved copy unreadable, using deploy tag record. ' : ''}Override would write ${countText(c)}, keep ${plan.keepMakeOnly.length} Make-only path(s) and ignore ${plan.excluded.length} path(s). ${hasRefusals(plan) ? 'Refused paths must be resolved before applying.' : `Confirm with digest ${plan.digest.slice(0, 12)}.`} Nothing was changed yet.` : plan.files.length
       ? `Deploying main ${short(plan.mainCommit)} would write ${countText(c)} to Make and save it as one version "deploy ${short(plan.mainCommit)}", tagged ${plan.tag}.${excludedText(plan)} Nothing was changed yet.`
       : `Make already matches main ${short(plan.mainCommit)}; there is nothing to deploy.${excludedText(plan)}` };
 }

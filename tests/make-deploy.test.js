@@ -470,9 +470,59 @@ describe('guarded Make override (fake Make and local git only)', () => {
 
     prior.makeAfter.tree = 'f'.repeat(40);
     writeFileSync(deployed.receiptPath, JSON.stringify(prior));
-    await refuses(deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps), 'DEPLOY_MAKE_STATE', /deploy record.*tree/i);
+    assert.match((await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps)).summary, /using deploy tag record/);
     rmSync(deployed.receiptPath);
+    sh(s.p.origin, 'tag', '-d', 'make-deploy/0');
     await refuses(deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps), 'DEPLOY_MAKE_STATE', /deploy record/i);
+  });
+
+  it('plans from the annotated deploy tag record when the saved commit and local receipt are missing', async t => {
+    const s = setup(t, { files: { ...BASE, '.npmrc': 'fixture-only\n' } });
+    landChange(s, { 'src/App.tsx': 'export const App = 2;\n' });
+    const first = await deployPlan(s.make, s.opts, s.deps);
+    const deployed = await deployApply(s.make, { ...s.opts, planPath: first.planPath }, s.deps);
+    assert.deepEqual(s.p.tags(), ['make-deploy/0']);
+    const prior = readReceipt(deployed.receiptPath);
+    rmSync(deployed.receiptPath);
+
+    landChange(s, { 'src/App.tsx': 'export const App = 3;\n' });
+    stale(s);
+    const projectStatus = s.make.projectStatus.bind(s.make);
+    s.make.projectStatus = async options => {
+      if (options?.savedInventory) throw new Error(`Make sandbox git object ${s.make.savedVersion} is missing.`);
+      return projectStatus(options);
+    };
+    const protectedBlob = sh(s.p.clone, 'rev-parse', 'HEAD:.npmrc');
+    s.deps.readBlob = (root, blob) => {
+      if (blob === protectedBlob) throw new Error('Protected blob was read');
+      return defaultReadBlob(root, blob);
+    };
+
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.match(plan.summary, /saved copy unreadable, using deploy tag record/);
+    assert.deepEqual(plan.files, [{ path: 'src/App.tsx', op: 'modify' }]);
+    const saved = JSON.parse(readFileSync(plan.planPath, 'utf8')).makeBefore;
+    assert.equal(saved.savedInventorySource, 'deploy-tag-record');
+    assert.deepEqual(saved.savedInventory.find(item => item.path === '.npmrc'), { path: '.npmrc', blob: protectedBlob });
+    assert.equal(saved.savedInventory.find(item => item.path === 'src/App.tsx').sha256, sha256('export const App = 2;\n'));
+
+    const oldRecord = { ...prior, makeAfter: { ...prior.makeAfter, versionGitSha: 'd'.repeat(40) } };
+    delete oldRecord.receiptPath;
+    writeFileSync(deployed.receiptPath, JSON.stringify(oldRecord));
+    assert.match((await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps)).summary, /using deploy tag record/);
+    rmSync(deployed.receiptPath);
+
+    const pointer = s.make.savedVersion;
+    s.make.savedVersion = 'c'.repeat(40);
+    await refuses(deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps), 'DEPLOY_MAKE_STATE', /deploy record.*saved pointer/i);
+    s.make.savedVersion = pointer;
+    const tagMessage = sh(s.p.origin, 'cat-file', 'tag', 'make-deploy/0');
+    const record = JSON.parse(tagMessage.slice(tagMessage.indexOf('{')));
+    assert.equal(record.plan, undefined);
+    assert.equal(record.outcome, undefined);
+    record.mainTree = 'f'.repeat(40);
+    sh(s.p.origin, 'tag', '-f', '-a', '-m', JSON.stringify(record), 'make-deploy/0', record.mainCommit);
+    await refuses(deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps), 'DEPLOY_MAKE_STATE', /tagged commit's tree/i);
   });
 
   it('binds confirmation and Make-only policy to the reviewed digest; tags only after reload', async t => {
