@@ -1,0 +1,21 @@
+tests/make-deploy.test.js
+  s_fcbf03fe256097::t_7725839102fc20 435-465
+src/make-deploy.js
+  s_fcbf03fe256097::t_cfbe7ebdcca756 169-203,474-475,526-527,550-560,618
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "953deb5f4eafec07c4c9a0c7365c5610c7a6c9d2",
+  "prompts": {},
+  "sessions": {
+    "s_fcbf03fe256097": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a18662-281f-7551-9862-acf64136043d",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
