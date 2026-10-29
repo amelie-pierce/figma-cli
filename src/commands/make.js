@@ -392,7 +392,7 @@ target(make.command('deploy').description('Deploy GitHub main from a local clone
   .option('--resume <receipt>', 'Finish an interrupted deploy that saved no version: write the remaining paths, then save')
   .option('--abort <receipt>', 'Undo an interrupted deploy that saved no version: restore the written paths from backups')
   .option('--override-make', 'Plan against Make\'s served working tree, including Make edits; requires per-plan confirmation to apply')
-  .option('--delete-make-only', 'With --override-make, delete Make-only files for a strict mirror (backed up first)')
+  .option('--delete-make-only', 'With --override-make, delete eligible Make-only files (backed up first)')
   .option('--confirm-override <digest-prefix>', 'Required with an override apply: first 12 characters of its reviewed plan digest')
   .addHelpText('after', '\nGuards: team-mode Make file; your gh login is an admin of its repo; the clone is on main, clean and equal' +
     '\nto GitHub\'s main, which arrived through a merged pull request; pnpm install --frozen-lockfile and the build pass; Make' +

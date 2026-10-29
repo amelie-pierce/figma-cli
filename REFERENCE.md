@@ -392,7 +392,7 @@ figma-cli make deploy --file KEY [--dir CLONE] --apply PLAN
 figma-cli make deploy --file KEY [--dir CLONE] --verify RECEIPT
 figma-cli make deploy --file KEY [--dir CLONE] --resume RECEIPT
 figma-cli make deploy --file KEY --abort RECEIPT
-figma-cli make deploy --file KEY --override-make [--delete-make-only] # reviewed dry run
+figma-cli make deploy --file KEY [--dir CLONE] --override-make [--delete-make-only] # reviewed dry run
 figma-cli make deploy --file KEY --apply PLAN --confirm-override DIGEST12
 ```
 
@@ -518,9 +518,11 @@ right after the save is not proof that the version persists.
 
 **Guarded current-main override.** `--override-make` plans against Make's served
 working tree, even if its saved-version tracker is in error or Make contains
-edits ahead of the last deploy. The dry run records the saved pointer and tree,
-sandbox head, served working tree, tracker flags, main commit and tree, SHA-256
-inventories of saved and served paths, counts and paths for creates,
+edits ahead of the last deploy. The plan records the saved pointer and tree,
+sandbox head, served working tree, tracker flags, main commit and tree, and
+per-path inventories. The served inventory uses SHA-256; the saved inventory
+uses SHA-256 for deployable files and Git blob IDs for protected or excluded
+paths, without reading their contents. It lists counts and paths for creates,
 modifications, deletions, kept Make-only paths and ignored paths, and hashes
 for overwritten Make-ahead paths.
 It does not print file contents. `--delete-make-only` opts into deleting Make-only
