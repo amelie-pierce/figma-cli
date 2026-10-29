@@ -387,26 +387,38 @@ modeCommand(mode.command('solo').description('Remove the team marker, save that 
 // team mode allows, so it runs its own guards instead of the write gate.
 target(make.command('deploy').description('Deploy GitHub main from a local clone into a team-mode Make file (repo admins only). Dry run by default'), 120000)
   .option('--dir <path>', 'Local clone of the repo, on a clean main equal to GitHub\'s (default: current folder)')
-  .option('--apply <plan>', 'Re-plan, check the reviewed plan still holds, then write, save one version, check drift, record the receipt and push the tag')
+  .option('--apply <plan>', 'Re-plan, check the reviewed plan, then write and save; normal deploy tags now, override requires --verify first')
   .option('--verify <receipt>', 'Reload Make, confirm the deployed version and tree, and finalise an uncertain receipt (pushes a missing tag)')
   .option('--resume <receipt>', 'Finish an interrupted deploy that saved no version: write the remaining paths, then save')
   .option('--abort <receipt>', 'Undo an interrupted deploy that saved no version: restore the written paths from backups')
+  .option('--override-make', 'Plan against Make\'s served working tree, including Make edits; requires per-plan confirmation to apply')
+  .option('--delete-make-only', 'With --override-make, delete Make-only files for a strict mirror (backed up first)')
+  .option('--confirm-override <digest-prefix>', 'Required with an override apply: first 12 characters of its reviewed plan digest')
   .addHelpText('after', '\nGuards: team-mode Make file; your gh login is an admin of its repo; the clone is on main, clean and equal' +
     '\nto GitHub\'s main, which arrived through a merged pull request; pnpm install --frozen-lockfile and the build pass; Make' +
-    '\nis in git mode with a saved version, nothing pending, idle, and equal to the last make-deploy/<n> tag\'s main tree.' +
+    '\nis in git mode with a saved version, nothing pending, idle, and equal to the last make-deploy/<n> tag\'s main tree' +
+    '\nfor a normal deploy. Override still requires git mode and idle Make, but permits tracker error and Make-ahead content.' +
     '\nBinary, large and LFS files are refused. Receipts are private, under ~/.figma-cli/deploys/.' +
     '\nmain may commit .figma-cli/deploy-ignore (gitignore syntax; /docs/, /README.md, /AGENTS.md): listed paths are never' +
-    '\nwritten, created or deleted on either side, so repo-only files stay in GitHub and Make-only files stay in Make.')
+    '\nwritten, created or deleted on either side, so repo-only files stay in GitHub and Make-only files stay in Make.' +
+    '\n--override-make keeps Make-only files by default, backs up every overwritten/deleted path, and requires --verify' +
+    '\nafter a fresh reload before the tag is pushed. --delete-make-only is included in the reviewed digest.')
   .action(options => withClient(options, async client => {
     const chosen = ['apply', 'verify', 'resume', 'abort'].filter(name => options[name]);
     if (chosen.length > 1) throw new Error(`Choose one of --apply, --verify, --resume or --abort, not ${chosen.map(name => `--${name}`).join(' and ')}.`);
     const deps = { warn: message => console.error(`warning: ${message}`) };
     const dir = options.dir ? resolve(options.dir) : undefined;
-    if (options.apply) return report(await deployApply(client, { dir, planPath: options.apply }, deps));
+    if (options.apply) return report(await deployApply(client, { dir, planPath: options.apply, confirmOverride: options.confirmOverride,
+      overrideMake: options.overrideMake === true, deleteMakeOnly: options.deleteMakeOnly === true }, deps));
+    if (options.confirmOverride) throw new Error('--confirm-override requires --apply.');
+    if ((options.verify || options.resume || options.abort) && (options.overrideMake || options.deleteMakeOnly)) {
+      throw new Error('Override planning flags do not apply to receipt recovery; the receipt records the mode.');
+    }
     if (options.verify) return report(await deployVerify(client, { dir, receiptPath: options.verify }, deps));
     if (options.resume) return report(await deployResume(client, { dir, receiptPath: options.resume }, deps));
     if (options.abort) return report(await deployAbort(client, { receiptPath: options.abort }, deps));
-    report(await deployPlan(client, { dir }, deps));
+    report(await deployPlan(client, { dir, overrideMake: options.overrideMake === true,
+      deleteMakeOnly: options.deleteMakeOnly === true }, deps));
   }));
 
 // Local runs of a team-mode project. They read GitHub through the caller's

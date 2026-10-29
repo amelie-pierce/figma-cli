@@ -11,8 +11,37 @@ Updated 2026-10-16: guarded tree refresh after a new file creates folders or a d
 Updated 2026-10-24: the committed deploy ignore list `.figma-cli/deploy-ignore`, read-only evidence on Make's root writes, and the LMA dry run.
 Updated 2026-10-24: `.figma/make/` is always excluded, and the built-in exclusions match files below their folders.
 Updated 2026-10-24: deletes run after the other writes, and a create may re-enter a planned top-level folder an earlier delete emptied (the LMA apply stop).
+Updated 2026-10-29: guarded current-main override, with a working-tree plan, full inventory, pre-write backups and fresh-reload tag gate.
 
 # make deploy
+
+## Current-main override
+
+`--override-make` is a separate plan mode over Make's served working tree. It
+keeps Make-only files by default; `--delete-make-only` opts into deleting them.
+Both choices, the complete working-path SHA-256 inventory, tracker state,
+pointer, head, trees, expected working-copy diff, and Make-ahead hashes are
+bound into the plan digest (`src/make-deploy.js:345`, `src/make-deploy.js:417`,
+`src/make-deploy.js:420`). Apply re-plans and requires the first 12 digest
+characters as a per-use confirmation (`src/make-deploy.js:889`).
+
+The normal admin, team, local-main, merged-PR, install/build, busy, unsupported
+path and unfinished-receipt guards still run; the override only relaxes the
+tracker and Make-ahead checks (`src/make-deploy.js:476`, `src/make-deploy.js:506`,
+`src/make-deploy.js:528`). Before any VFS write, it saves and reads back every
+modified or deleted path (`src/make-deploy.js:711`, `src/make-deploy.js:908`).
+Durable writes and the page save action accept a pinned pointer exception;
+the client checks that the current sandbox head descends from the pinned head
+and that the exact working-copy diff matches the recorded head before
+`createVersion` (`src/make-durable.js:46`, `src/make-durable.js:100`,
+`src/make-client.js:827`). Apply leaves a successful override save unverified,
+without a tag; `--verify` reloads and checks the clean pointer, head, pending
+set and content before tagging (`src/make-deploy.js:850`, `src/make-deploy.js:878`,
+`src/make-deploy.js:1130`). An unsaved receipt may be aborted to its original
+working tree, or a refused save retried once after a reload (`src/make-deploy.js:962`,
+`src/make-deploy.js:1080`). The live createVersion behavior in a broken tracker
+state is **UNVERIFIED**; the tests use fake Make only
+(`tests/make-deploy.test.js:416`, `tests/make-durable.test.js:550`).
 
 `make deploy` (`src/make-deploy.js`, wired at `src/commands/make.js`) is the one Make write team mode allows. A repo admin runs it in a local clone of `main`. It skips the team-mode write gate and runs its own guards instead (`prepare`, `src/make-deploy.js:444`). Command details are in REFERENCE.md, "Deploying main to Make".
 

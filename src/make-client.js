@@ -651,7 +651,7 @@ export class MakeClient {
   // owns it (createVersion skips a lockfile only Make's install rewrote).
   // baseFolders: see _requireListableAncestor.
   writeDurable(path, content, { expectedSha256, firstVersion = false, rewrite = false, releaseAsset = false, vendorTreeFallback = false,
-    baseFolders = [], backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
+    overrideMake, baseFolders = [], backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     sourcePath(path);
     if (releaseAsset && !path.startsWith('public/atomicaui/')) {
       throw new Error('Three-view release verification is limited to public/atomicaui/.');
@@ -664,7 +664,7 @@ export class MakeClient {
     return this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
       if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
-      const before = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
+      const before = requireGitMode((await this._driftState(deadline)).state, { firstVersion, overrideMake });
       const existing = await this._durable({ type: 'read', path }, deadline);
       if (existing.exists !== (expectedSha256 != null)) throw new Error('Expected SHA-256 is required for an existing file and forbidden for a new file.');
       const originalSha256 = existing.exists ? sha256(existing.content) : null;
@@ -676,9 +676,16 @@ export class MakeClient {
       const backupPath = existing.exists ? await this._bounded(() => this._backup(path, existing.content, {
         backupDir, operation: 'durable-write', replacementSha256: sha256(content),
       }), deadline) : null;
-      const immediate = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
+      const immediate = requireGitMode((await this._driftState(deadline)).state, { firstVersion, overrideMake });
       if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {
         throw pendingChanged('write');
+      }
+      if (overrideMake) {
+        const bridge = await this._fileBridge(deadline);
+        try {
+          const reader = this._sandboxGit(bridge);
+          if (!await reader.reaches(await reader.head(), overrideMake.head)) throw new Error('Pinned Make sandbox head is not an ancestor before override write.');
+        } finally { await bridge.dispose(); }
       }
       let verification;
       try {
@@ -699,7 +706,7 @@ export class MakeClient {
   }
 
   deleteDurable(path, { expectedSha256, firstVersion = false, vendorTreeFallback = false,
-    backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
+    overrideMake, backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     sourcePath(path);
     if (vendorTreeFallback && !path.startsWith('src/vendor/atomic-aui/')) {
       throw new Error('Vendor tree fallback is limited to src/vendor/atomic-aui/.');
@@ -708,16 +715,23 @@ export class MakeClient {
     return this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
       if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
-      const before = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
+      const before = requireGitMode((await this._driftState(deadline)).state, { firstVersion, overrideMake });
       const original = await this._durable({ type: 'read', path }, deadline);
       if (!original.exists || sha256(original.content) !== expectedSha256.toLowerCase()) throw new Error('Make source is missing or changed; delete refused.');
       await this._requireListableAncestor(path, deadline);
       const treeState = {};
       await this._durableAgreement(path, original.content, deadline, { treeState, vendorTreeFallback });
       const backupPath = await this._bounded(() => this._backup(path, original.content, { backupDir, operation: 'durable-delete' }), deadline);
-      const immediate = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
+      const immediate = requireGitMode((await this._driftState(deadline)).state, { firstVersion, overrideMake });
       if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {
         throw pendingChanged('delete');
+      }
+      if (overrideMake) {
+        const bridge = await this._fileBridge(deadline);
+        try {
+          const reader = this._sandboxGit(bridge);
+          if (!await reader.reaches(await reader.head(), overrideMake.head)) throw new Error('Pinned Make sandbox head is not an ancestor before override delete.');
+        } finally { await bridge.dispose(); }
       }
       try {
         const accepted = await this._durable({ type: 'delete', path, expectedContent: original.content }, deadline);
@@ -810,44 +824,59 @@ export class MakeClient {
   // equal the working tree this check read. With `listed` (deploy), Make may
   // list pending paths, but only expected ones; createVersion is then given
   // exactly the set Make lists, and the tree check still covers every path.
-  async saveCheckedVersion(title, expectedPaths, { firstVersion = false, since, listed = false } = {}) {
+  async saveCheckedVersion(title, expectedPaths, { firstVersion = false, since, listed = false, overrideMake } = {}) {
     saveRequest(title, expectedPaths);
     if (firstVersion && !/^[a-f0-9]{40}$/.test(since || '')) {
       throw new Error('--first-version requires --since <commit>: the sandbox head make status reported before the writes.');
     }
     const before = await this.projectStatus();
-    const state = requireGitMode(before.persistence, { firstVersion });
+    const state = requireGitMode(before.persistence, { firstVersion, overrideMake });
+    if (overrideMake) await this._operation(async deadline => {
+      const bridge = await this._fileBridge(deadline);
+      try {
+        if (!await this._sandboxGit(bridge).reaches(before.head, overrideMake.head)) {
+          throw new Error('Pinned Make sandbox head is not an ancestor before override save.');
+        }
+      } finally { await bridge.dispose(); }
+    });
     if (firstVersion && before.treeSource !== 'sandbox-head') throw new Error('Make sandbox HEAD was not the comparison base; first version refused.');
-    if (!firstVersion) {
+    if (!firstVersion && !overrideMake) {
       if (before.treeSource !== 'saved-version') throw new Error('Make saved version was not the comparison base; version refused.');
       const others = listed ? state.pendingPaths.filter(path => !expectedPaths.includes(path)) : state.pendingPaths;
       if (others.length) {
         throw new Error(`Make lists other pending changes; expected ${listed ? 'only the expected paths' : 'none'}, found ${JSON.stringify(others)}.`);
       }
     }
-    const baseFlat = !firstVersion ? before.makeFlat : await this._operation(async deadline => {
+    const baseFlat = !firstVersion && !overrideMake ? before.makeFlat : await this._operation(async deadline => {
       const bridge = await this._fileBridge(deadline);
       try {
         const reader = this._sandboxGit(bridge);
-        if (!await reader.reaches(before.head, since)) {
-          throw new Error(`Commit ${since} is not in the sandbox history of HEAD ${before.head}; first version refused.`);
+        const base = overrideMake ? overrideMake.head : since;
+        if (!await reader.reaches(before.head, base)) {
+          throw new Error(`Commit ${base} is not in the sandbox history of HEAD ${before.head}; version refused.`);
         }
-        return await reader.flatten(await reader.commitTree(since));
+        return await reader.flatten(await reader.commitTree(base));
       } finally { await bridge.dispose(); }
     });
-    const changedFiles = requireFirstVersionPending(baseFlat, before.workingFlat, expectedPaths);
+    const changedFiles = requireFirstVersionPending(baseFlat, before.workingFlat, overrideMake?.expectedDiff || expectedPaths);
+    if (overrideMake && expectedPaths.some(path => !overrideMake.allowedPaths.includes(path))) {
+      throw new Error('Override save paths differ from the reviewed receipt.');
+    }
     const version = await this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
       if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
-      const now = requireGitMode((await this._driftState(deadline)).state, { firstVersion });
+      const now = requireGitMode((await this._driftState(deadline)).state, { firstVersion, overrideMake });
       if (JSON.stringify(now) !== JSON.stringify(state)) throw new Error(`Make state changed before the ${firstVersion ? 'first ' : ''}version.`);
       const bridge = await this._fileBridge(deadline);
       try {
-        if (await this._sandboxGit(bridge).head() !== before.head) throw new Error(`Make sandbox HEAD changed before the ${firstVersion ? 'first ' : ''}version.`);
+        const reader = this._sandboxGit(bridge);
+        if (overrideMake ? !await reader.reaches(await reader.head(), overrideMake.head) : await reader.head() !== before.head) {
+          throw new Error(`Make sandbox HEAD changed before the ${firstVersion ? 'first ' : ''}version.`);
+        }
       } finally { await bridge.dispose(); }
       let created;
       try {
-        created = await this._durable({ type: 'save', ...(firstVersion ? { firstVersion: true } : {}), title,
+        created = await this._durable({ type: 'save', ...(firstVersion ? { firstVersion: true } : {}), ...(overrideMake ? { overrideMake } : {}), title,
           expectedPaths: listed ? state.pendingPaths : [],
           expectedGitSha: firstVersion ? null : state.savedVersion }, deadline);
       }
@@ -877,13 +906,13 @@ export class MakeClient {
       // Make rewrote itself (its own reinstall of pnpm-lock.yaml) can keep
       // 100755 where the working tree guessed 100644 (scratch, 2026-10-15).
       const contentDiffers = (a, b) => [...new Set([...a.keys(), ...b.keys()])].filter(path => a.get(path)?.blob !== b.get(path)?.blob);
-      const differs = listed
+      const differs = (listed || overrideMake)
         ? contentDiffers(after.makeFlat, before.workingFlat).length || contentDiffers(after.workingFlat, after.makeFlat).length
         : after.makeTree !== before.workingTree || after.workingTree !== after.makeTree;
       if (differs) throw new Error(`saved tree ${after.makeTree} differs from the checked working tree ${before.workingTree}`);
       const modeOnly = listed ? [...after.makeFlat].filter(([path, entry]) => before.workingFlat.get(path)?.mode !== entry.mode).map(([path]) => path).sort() : [];
       return { ...saved, tree: after.makeTree, ...(modeOnly.length ? { modeOnly } : {}),
-        verification: `${firstVersion ? 'first-version' : 'saved-version'}-clean-baseline; saved-${listed ? 'content' : 'tree'}-matched` };
+        verification: `${firstVersion ? 'first-version' : 'saved-version'}-clean-baseline; saved-${listed || overrideMake ? 'content' : 'tree'}-matched` };
     } catch (cause) {
       const error = new Error(`Make version ${version.versionNumber} (${version.gitSha}) was created but its baseline or tree was not verified: ${cause.message}. Do not retry the save.`);
       error.version = saved;
@@ -893,7 +922,7 @@ export class MakeClient {
 
   // Reload only this Make tab, then wait for the new document's Make state:
   // what a later session sees, rather than this page's in-memory copy.
-  reloadPage() {
+  reloadPage({ allowError = false } = {}) {
     return this._operation(async deadline => {
       const nonce = randomUUID();
       await this._evaluate(`(() => { window.__figmaCliReload = ${JSON.stringify(nonce)}; return true; })()`, deadline);
@@ -908,7 +937,7 @@ export class MakeClient {
           // The old document's context is destroyed while the page navigates.
           if (error.message === 'Make operation timed out.') throw error;
         }
-        if (state && !state.isLoading && !state.error) return { reloaded: true, persistence: state };
+        if (state && !state.isLoading && (allowError || !state.error)) return { reloaded: true, persistence: state };
       }
     });
   }
@@ -1130,17 +1159,18 @@ export class MakeClient {
         const exclude = await reader.readFile('info/exclude');
         const after = (await this._driftState(deadline)).state;
         if (JSON.stringify(after) !== JSON.stringify(state)) throw new Error('Make state changed while reading its git objects.');
-        return { state, history, head, tree, flat, treeSource: saved ? 'saved-version' : 'sandbox-head', exclude };
+        const headFlat = saved && saved !== head ? await reader.flatten(await reader.commitTree(head)) : flat;
+        return { state, history, head, tree, flat, headFlat, treeSource: saved ? 'saved-version' : 'sandbox-head', exclude };
       } finally { await bridge.dispose(); }
     });
     const scan = await this.inventoryProject({ includeBytes: path => path === PROJECT_MARKER || path === '.gitattributes',
-      tracked: [...git.flat.keys()], exclude: git.exclude });
+      tracked: [...new Set([...git.flat.keys(), ...git.headFlat.keys()])], exclude: git.exclude });
     if (JSON.stringify(scan.state) !== JSON.stringify(git.state)) throw new Error('Make state changed during inventory.');
     const isLfs = lfsMatcher(scan.contents.get('.gitattributes')?.toString('utf8'));
     const working = workingFlat(scan.inventory, git.flat);
     const lfsPaths = [...new Set([...scan.inventory.keys(), ...git.flat.keys()])].filter(isLfs).sort();
     return { persistence: scan.state, history: git.history, head: git.head, makeTree: git.tree, treeSource: git.treeSource,
-      makeFlat: git.flat, workingFlat: working, workingTree: treeOf(working), fileCount: scan.inventory.size,
+      makeFlat: git.flat, headFlat: git.headFlat, workingFlat: working, workingTree: treeOf(working), fileCount: scan.inventory.size,
       workingSha256: new Map([...scan.inventory].map(([path, file]) => [path, file.sha256])),
       excluded: scan.excluded, excludeSource: scan.excludeSource, lfsPaths, isLfs,
       markerBytes: scan.contents.get(PROJECT_MARKER) ?? null, batches: scan.batches };

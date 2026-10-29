@@ -392,6 +392,8 @@ figma-cli make deploy --file KEY [--dir CLONE] --apply PLAN
 figma-cli make deploy --file KEY [--dir CLONE] --verify RECEIPT
 figma-cli make deploy --file KEY [--dir CLONE] --resume RECEIPT
 figma-cli make deploy --file KEY --abort RECEIPT
+figma-cli make deploy --file KEY --override-make [--delete-make-only] # reviewed dry run
+figma-cli make deploy --file KEY --apply PLAN --confirm-override DIGEST12
 ```
 
 Guards, each refusing with nothing written:
@@ -513,6 +515,37 @@ Recovery:
 deploy's with nothing pending, adopts the version an unconfirmed save created,
 pushes a missing tag and marks the receipt `fresh-sandbox-verified`. A warm match
 right after the save is not proof that the version persists.
+
+**Guarded current-main override.** `--override-make` plans against Make's served
+working tree, even if its saved-version tracker is in error or Make contains
+edits ahead of the last deploy. The dry run records the saved pointer, sandbox
+head and tree, tracker flags, main commit and tree, a SHA-256 inventory of every
+working path, counts and paths for creates, modifications, deletions, kept
+Make-only paths and ignored paths, and hashes for overwritten Make-ahead paths.
+It does not print file contents. `--delete-make-only` opts into deleting Make-only
+files for a strict mirror; the default keeps them. Both choices are part of the
+plan digest. `.figma/make/`, `node_modules/`, `.npmrc`, `.git` internals and
+deploy-ignore paths remain untouched. Existing admin, team, main, build, busy,
+marker, binary, LFS, unsupported-path, unfinished-receipt, stale-plan and tag
+guards remain in force.
+
+Apply requires the first 12 characters of that plan's digest in
+`--confirm-override`. Replanning must produce the same digest. Before the first
+Make write, it saves and reads back the original bytes of every modified or
+deleted path. The private receipt has `mode: override-make`, the complete
+inventory and backup locations. `--abort RECEIPT` restores modified and
+deleted files and removes created files, but only before a version is saved.
+The public deploy tag omits the private full inventory and backup locations.
+The save pins the reviewed pointer and sandbox head and checks the working-copy
+diff against the receipt; a refused save leaves the receipt at `written`, where
+one `--resume RECEIPT` after reload or `--abort RECEIPT` is available. A created
+version whose tracker did not recover reports `DEPLOY_SAVE_UNCERTAIN` and permits
+`--verify` only. A createVersion call with an unknown outcome remains verify-only
+even if a reload shows the old pointer. Override apply never pushes the deploy tag. `--verify RECEIPT`
+reloads Make and requires a clean tracker, zero pending paths, matching saved
+pointer and sandbox head, and main-equal content apart from explicitly kept
+Make-only files before pushing the tag. A mismatch records `saved-drift` with
+no tag and no save retry.
 
 ### Team git workflow (`team`)
 
