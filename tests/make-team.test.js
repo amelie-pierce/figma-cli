@@ -1,4 +1,5 @@
 import { describe, it } from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -883,5 +884,35 @@ describe('team status', () => {
     assert.match(result.summary, /get the latest/);
     assert.match(result.summary, /save my progress/);
     assert.match(result.summary, /merge it/);
+  });
+});
+
+describe('team save and the AtomicAUI release vendor folder', () => {
+  const vendor = text => ({ files: [{ path: 'index.ts', bytes: Buffer.byteLength(text), sha256: createHash('sha256').update(text).digest('hex') }],
+    atomicauiRelease: { version: '7.0.2', manifestSha256: 'f'.repeat(64), site: 'https://example.test' } });
+  const installed = { 'src/vendor/atomic-aui/VENDOR.json': vendor('export {}\n'), 'src/vendor/atomic-aui/index.ts': 'export {}\n' };
+
+  it('refuses to save, sync or open a pull request with edited release files, before committing', t => {
+    const p = project(t, { files: installed });
+    const f = fakes(p);
+    start(f.ctx(), 'edit vendor');
+    write(p.clone, { 'src/App.tsx': lines(21), 'src/vendor/atomic-aui/index.ts': 'export const hacked = 1\n' });
+    const head = sh(p.clone, 'rev-parse', 'HEAD');
+    for (const verb of [() => save(f.ctx()), () => sync(f.ctx())]) code(verb, 'TEAM_VENDOR_EDITED');
+    assert.equal(sh(p.clone, 'rev-parse', 'HEAD'), head, 'nothing was committed');
+    assert.throws(() => save(f.ctx()), error => /changed index\.ts/.test(error.message) && /figma-cli make atomicaui upgrade/.test(error.message));
+  });
+
+  it('saves app changes when the release files are untouched, and a kit vendor without a release record is not locked', t => {
+    const p = project(t, { files: installed });
+    const f = fakes(p);
+    start(f.ctx(), 'app change');
+    write(p.clone, { 'src/App.tsx': lines(21) });
+    assert.equal(save(f.ctx()).saved, true);
+    const kit = project(t, { files: { 'src/vendor/atomic-aui/VENDOR.json': { files: vendor('export {}\n').files }, 'src/vendor/atomic-aui/index.ts': 'export {}\n' } });
+    const g = fakes(kit);
+    start(g.ctx(), 'kit authoring');
+    write(kit.clone, { 'src/vendor/atomic-aui/index.ts': 'export const authored = 1\n' });
+    assert.equal(save(g.ctx()).saved, true);
   });
 });

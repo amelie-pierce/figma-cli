@@ -16,6 +16,7 @@ Updated 2026-10-29: saved-inventory fallback implementation and fake coverage.
 Updated 2026-10-29: status marks a missing saved commit even when Make claims a baseline; verify waits for the reloaded code panel and sandbox filesystem before reading.
 
 # make deploy
+Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI files first (`DEPLOY_VENDOR_EDITED`); see [vendor-lock.md](vendor-lock.md).
 
 ## Current-main override
 

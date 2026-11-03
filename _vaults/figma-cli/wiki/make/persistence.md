@@ -10,6 +10,7 @@ Updated 2026-10-13: git-mode client-VFS writes and version creation are implemen
 Updated 2026-10-14: preview-only files (Markdown) and Make's unlisted root files; see the two sections below.
 Updated 2026-10-14: first version of a never-saved git-mode file (`--first-version`); see "First version" below.
 Updated 2026-10-16: durable read-back for unopened source files and deep tree paths.
+Updated 2026-11-03: `make write` confirms an uncertain write by one read-back, exposes `--vendor-tree-fallback`, and a new file's absence check reuses the ancestor check's tree listing; see "Uncertain writes" below.
 Updated 2026-10-24: current async client-VFS lookup and text-entry validation; see [durable-vfs-api.md](durable-vfs-api.md).
 
 ## Saving modes
@@ -64,3 +65,27 @@ Hinge (`ydPjoL41RjmufNbv93gPnq`), read-only on 2026-10-14: git mode, no baseline
 The snapshot-mode Save card is not automated. `make drift` reads a complete hidden-file inventory and fails closed when snapshot persistence or a saved git baseline is unverified (`src/make-client.js:743`, `src/make-drift.js:72`). It does not itself prove a fresh sandbox. See [drift.md](drift.md).
 
 Tests: `tests/make-session.test.js`, `tests/make-client.test.js`, `tests/make-drift.test.js`, and `tests/make-durable.test.js`.
+
+## Uncertain writes
+
+`writeDurable` marks an error `uncertainWrite` unless the page refused the
+write. `writeDurableConfirmed`, used by `make write`, then runs one fresh
+read-only operation (`readBackDurable`) over the client VFS and the session
+sandbox: both equal to the target return
+`verification: "vfs-sandbox-matched-after-uncertain-write"` with the original
+`uncertainCause`; anything else keeps the error and attaches `readBack`. Nothing
+is written again (`src/make-client.js:731`, `src/make-client.js:754`). The
+motivating case: modifying an existing deep vendor file can time out in the
+post-write editor wait although the bytes landed.
+
+`make write --vendor-tree-fallback` passes the same `vendorTreeFallback` that
+sync and solo installs use, limited to `src/vendor/atomic-aui/`; it is refused
+there for release-installed apps by [vendor-lock.md](vendor-lock.md).
+
+For a new file, `_requireListableAncestor` keeps its tree listing and the
+pre-write absence check uses it as its first tree view, so each new-file write
+lists the whole tree once before writing instead of twice
+(`src/make-client.js:552`, `src/make-client.js:596`). Later passes and the
+post-write check list again. Tests: `tests/make-durable.test.js` (uncertain
+write, tree reuse, `readRemoteFiles`).
+

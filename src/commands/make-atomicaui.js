@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { MakeClient } from '../make-client.js';
 import { checkWriteMode } from '../make-project.js';
@@ -41,11 +41,16 @@ export async function releaseAtomicaui(client, { requestedVersion, breakingChang
   const releasePending = state => requireClean(state, resume && state ? new Set(state.pendingPaths.filter(path =>
     path.startsWith(resumePrefix) || path === `${RELEASE_ROOT}/latest.json`)) : null);
   releasePending((await client._driftState(Date.now() + 120000)).state);
+  // Pre-write reads stay inside the per-operation cap: the file tree is listed
+  // once, then the files it showed are read in one sandbox batch, so no read
+  // lists the whole tree again. Nothing is written if any of them fails.
   const tree = fileNames(await client.files());
   const latestPath = `${RELEASE_ROOT}/latest.json`;
+  if (!tree.has('package.json')) throw new Error('Kit package.json is missing.');
+  const preRead = await client.readRemoteFiles(['package.json', ...(tree.has(latestPath) ? [latestPath] : [])]);
   let current = null, oldLatestHash = null;
   if (tree.has(latestPath)) {
-    const prior = await client.read(latestPath, { remote: true });
+    const prior = preRead.get(latestPath);
     current = JSON.parse(prior.content);
     if (current?.schema !== 'figma-cli/atomicaui-latest@1') throw new Error('Existing AtomicAUI latest.json has an unsupported schema.');
     version(current.version);
@@ -56,8 +61,7 @@ export async function releaseAtomicaui(client, { requestedVersion, breakingChang
   const existingRelease = [...tree].filter(path => path.startsWith(prefix));
   if (!resume && existingRelease.length) throw new Error(`AtomicAUI ${selected} already exists. Release folders are immutable.`);
   if (resume && !existingRelease.length) throw new Error(`AtomicAUI ${selected} has no interrupted release to resume.`);
-  if (!tree.has('package.json')) throw new Error('Kit package.json is missing.');
-  const kitPackage = Buffer.from((await client.read('package.json', { remote: true })).content);
+  const kitPackage = Buffer.from(preRead.get('package.json').content);
   const scan = await client.inventoryVendor(ATOMICAUI_ROOT, { includeBytes: true });
   releasePending(scan.state);
   if (resume && (!scan.state.pendingCount || existingRelease.some(path => !scan.state.pendingPaths.includes(path)))) {
@@ -76,14 +80,20 @@ export async function releaseAtomicaui(client, { requestedVersion, breakingChang
   const completed = [];
   const replacements = new Map();
   if (resume) {
+    // Archive parts can be large, so the interrupted files are read in small
+    // batches, each its own bounded operation.
+    const interrupted = new Map();
+    for (let offset = 0; offset < existingRelease.length; offset += 4) {
+      for (const [path, file] of await client.readRemoteFiles(existingRelease.slice(offset, offset + 4))) interrupted.set(path, file);
+    }
     for (const path of existingRelease) {
-      const actual = await client.read(path, { remote: true });
+      const actual = interrupted.get(path);
       const bytes = output.get(path);
       if (Buffer.byteLength(actual.content) === bytes.length && digest(Buffer.from(actual.content)) === digest(bytes)) completed.push(path);
       else replacements.set(path, actual.sha256);
     }
     if (tree.has(latestPath) && current?.version === selected) {
-      const actual = await client.read(latestPath, { remote: true });
+      const actual = preRead.get(latestPath);
       if (digest(Buffer.from(actual.content)) === digest(release.output.get(latestPath))) completed.push(latestPath);
       else replacements.set(latestPath, actual.sha256);
     }
@@ -156,13 +166,45 @@ export async function verifyAtomicauiRelease(client, requestedVersion) {
     verification: 'saved-version-clean-pending; manifest-chain-matched' };
 }
 
-function providerChanges(main, pkg, dependencies) {
+// App source that may render the AtomicAUI provider: script files under src/,
+// outside the vendored library and src/main.tsx (which providerChanges reads).
+const PROVIDER_SOURCE = /\.(?:[cm]?[jt]sx?)$/;
+export function providerCandidates(paths) {
+  return [...new Set(paths)].filter(path => path.startsWith('src/') && !path.startsWith(`${ATOMICAUI_ROOT}/`) &&
+    path !== 'src/main.tsx' && PROVIDER_SOURCE.test(path)).sort();
+}
+// The first app file that already renders <AuiIdentityProvider>, or null.
+export function findProvider(sources) {
+  for (const [path, text] of [...sources].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+    if (typeof text === 'string' && /<AuiIdentityProvider[\s/>]/.test(text)) return path;
+  }
+  return null;
+}
+function localProvider(root) {
+  const paths = [];
+  const walk = relativeDir => {
+    for (const entry of readdirSync(join(root, relativeDir), { withFileTypes: true })) {
+      const path = `${relativeDir}/${entry.name}`;
+      if (entry.isDirectory() && entry.name !== 'node_modules' && path !== ATOMICAUI_ROOT) walk(path);
+      else if (entry.isFile()) paths.push(path);
+    }
+  };
+  if (existsSync(join(root, 'src'))) walk('src');
+  return findProvider(new Map(providerCandidates(paths).map(path => [path, readFileSync(join(root, path), 'utf8')])));
+}
+const providerNote = path => `AtomicAUI's provider is already rendered in ${path}, so src/main.tsx was not wrapped in a second one.`;
+
+function providerChanges(main, pkg, dependencies, { providerAt = null } = {}) {
   const mainPath = 'src/main.tsx';
   let nextMain = main;
+  const notes = [];
   if (!main.includes("./vendor/atomic-aui/tokens/index.scss")) {
     nextMain = `import './vendor/atomic-aui/tokens/index.scss'\n${nextMain}`;
   }
-  if (!main.includes('AuiIdentityProvider')) {
+  // An app that already owns a provider elsewhere (for example a theme-aware
+  // one in App.tsx) keeps it; a fixed one around <App /> would shadow it.
+  if (!main.includes('AuiIdentityProvider') && providerAt) notes.push(providerNote(providerAt));
+  else if (!main.includes('AuiIdentityProvider')) {
     if (!nextMain.includes('<App />')) throw new Error('Cannot find <App /> in src/main.tsx for AtomicAUI provider wiring.');
     nextMain = `import { AuiIdentityProvider } from './vendor/atomic-aui'\n${nextMain}`
       .replace('<App />', '<AuiIdentityProvider brand="atomic" theme="light"><App /></AuiIdentityProvider>');
@@ -175,7 +217,7 @@ function providerChanges(main, pkg, dependencies) {
     added.push({ name: 'sass', from: null, to: '^1.89.0' });
   }
   const nextPackage = added.length ? format(packageValue) : pkg;
-  return { files: new Map([['src/main.tsx', nextMain], ['package.json', nextPackage]]), dependencies: added };
+  return { files: new Map([['src/main.tsx', nextMain], ['package.json', nextPackage]]), dependencies: added, notes };
 }
 function upgradeDirection(mode, before, release, pinned) {
   if (mode !== 'upgrade' || !/^\d+\.\d+\.\d+$/.test(before.version || '')) return 'forward';
@@ -288,12 +330,17 @@ export async function installTeamRelease(directory, release, { mode, pinned = fa
     throw new Error('AtomicAUI needs src/main.tsx and package.json for provider wiring.');
   }
   const fixes = await planBreakingFixes(release.manifest, async path => showAt(ctx, ORIGIN_TRUNK, path));
+  const trunkSources = providerCandidates(ctx.git(['-c', 'core.quotePath=false', 'ls-tree', '-r', '--name-only', ORIGIN_TRUNK, '--', 'src'],
+    'Listing the app source').split('\n').filter(Boolean));
+  const trunkProvider = findProvider(new Map(trunkSources.map(path => [path, fixes.get(path)?.content ?? showAt(ctx, ORIGIN_TRUNK, path)])));
   report.dependencies = providerChanges(fixes.get('src/main.tsx')?.content ?? trunkMain, fixes.get('package.json')?.content ?? trunkPackage,
-    release.manifest.dependencies).dependencies;
+    release.manifest.dependencies, { providerAt: trunkProvider }).dependencies;
   const started = prepareTeamBranch(ctx, { mode, manifest: release.manifest });
   if (installedStatus(vendorDir).localEdits.length) throw new Error('AtomicAUI project changed after starting the branch; install refused.');
   const wiring = providerChanges(fixes.get('src/main.tsx')?.content || readFileSync(join(root, 'src/main.tsx'), 'utf8'),
-    fixes.get('package.json')?.content || readFileSync(join(root, 'package.json'), 'utf8'), release.manifest.dependencies);
+    fixes.get('package.json')?.content || readFileSync(join(root, 'package.json'), 'utf8'), release.manifest.dependencies,
+    { providerAt: findProvider(new Map([...fixes].map(([path, entry]) => [path, entry.content]))) || localProvider(root) });
+  for (const note of wiring.notes) ctx.warn(`note: ${note}`);
   installRelease(root, release);
   const changed = new Map([...fixes].filter(([path]) => path !== 'src/main.tsx' && path !== 'package.json')
     .map(([path, entry]) => [path, entry.content]).concat([...wiring.files]));
@@ -310,7 +357,9 @@ export async function installTeamRelease(directory, release, { mode, pinned = fa
   return { mode: 'team', branch: started.branch, continued: started.continued, report, saved: saved.saved, pullRequest: pullRequest.url,
     review: { dir: visual.dir, run: visual.run, ...(visual.lavish ? { lavish: visual.lavish } : {}) },
     ...(visual.listen ? { listen: visual.listen } : {}), ...(visual.warnings ? { warnings: visual.warnings } : {}),
-    summary: `${started.continued ? 'Continuing your earlier AtomicAUI update. ' : ''}${changeSummary(report)} Opened ${pullRequest.url} on ${started.branch}.` };
+    ...(wiring.notes.length ? { notes: wiring.notes } : {}),
+    summary: `${started.continued ? 'Continuing your earlier AtomicAUI update. ' : ''}${changeSummary(report)} Opened ${pullRequest.url} on ${started.branch}.` +
+      wiring.notes.map(note => ` ${note}`).join('') };
 }
 
 export async function installSoloRelease(client, release, { mode, resume = false, file, pinned = false } = {}) {
@@ -364,8 +413,22 @@ export async function installSoloRelease(client, release, { mode, resume = false
   };
   const baseContent = async path => resume ? savedText.get(path) : (await readCurrent(path)).content;
   const fixes = await planBreakingFixes(release.manifest, baseContent);
+  // The provider check reads every app script in batches, from the saved
+  // version when resuming so it decides as the interrupted run did.
+  const sourcePaths = providerCandidates([...names]);
+  const sources = new Map();
+  if (resume && sourcePaths.length) {
+    for (const [path, text] of await client.readSaved(sourcePaths)) sources.set(path, text);
+  } else {
+    for (let offset = 0; offset < sourcePaths.length; offset += 16) {
+      for (const [path, file] of await client.readRemoteFiles(sourcePaths.slice(offset, offset + 16))) sources.set(path, file.content);
+    }
+  }
+  for (const [path, entry] of fixes) if (sources.has(path)) sources.set(path, entry.content);
   const wiring = providerChanges(fixes.get('src/main.tsx')?.content ?? await baseContent('src/main.tsx'),
-    fixes.get('package.json')?.content ?? await baseContent('package.json'), release.manifest.dependencies);
+    fixes.get('package.json')?.content ?? await baseContent('package.json'), release.manifest.dependencies,
+    { providerAt: findProvider(sources) });
+  for (const note of wiring.notes) console.error(`note: ${note}`);
   report.dependencies = wiring.dependencies;
   const appWrites = new Map([...fixes].map(([path, entry]) => [path, entry.content]).concat([...wiring.files]));
   for (const path of appPaths) {
@@ -412,8 +475,9 @@ export async function installSoloRelease(client, release, { mode, resume = false
   }
   const preview = `figma-cli make preview --file ${file || 'KEY'}`;
   return { mode: 'solo', report, savedVersion: saved.versionNumber, savedGitSha: saved.gitSha,
-    verification: 'saved-version-clean-pending; vendor-content-matched', preview,
-    summary: `${changeSummary(report)} Saved as Make version ${saved.versionNumber}. Review the app in the Make Preview tab (${preview}).` };
+    verification: 'saved-version-clean-pending; vendor-content-matched', preview, ...(wiring.notes.length ? { notes: wiring.notes } : {}),
+    summary: `${changeSummary(report)} Saved as Make version ${saved.versionNumber}. Review the app in the Make Preview tab (${preview}).` +
+      wiring.notes.map(note => ` ${note}`).join('') };
 }
 
 export function registerAtomicaui(make, print, failure) {

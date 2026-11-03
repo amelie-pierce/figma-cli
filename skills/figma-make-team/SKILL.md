@@ -107,7 +107,7 @@ edits into `main`, or use the reviewed override when the admin explicitly reques
 `DEPLOY_NOT_CURRENT`/`DEPLOY_NOT_MAIN`/`DEPLOY_DIRTY`:
 run `figma-cli make pull` on a clean `main`. `DEPLOY_UNREVIEWED`: `main` must come
 from a merged pull request. `DEPLOY_STALE_PLAN`/`DEPLOY_MAIN_MOVED`/`DEPLOY_TAG_CLASH`:
-run a new dry run. `DEPLOY_SOLO`: the file has no repo, so there is nothing to deploy. `DEPLOY_UNSUPPORTED_PATH`:
+run a new dry run. `DEPLOY_VENDOR_EDITED`: release-installed AtomicAUI files on `main` were edited by hand; restore them through a reviewed pull request or `make atomicaui upgrade`, then deploy. `DEPLOY_SOLO`: the file has no repo, so there is nothing to deploy. `DEPLOY_UNSUPPORTED_PATH`:
 Make cannot take new or deleted root files or new top-level folders; a developer
 lists repo-only paths (docs, tests) and Make-only ones (Make's `AGENTS.md`) in
 `.figma-cli/deploy-ignore` through a pull request. `DEPLOY_IGNORE`: that list is
@@ -129,6 +129,7 @@ On failure the CLI prints `{error, code}` on stderr and exits 1:
 | `TEAM_UNSAVED` | List the files; offer to save first |
 | `TEAM_SECRET` | Name each file (and line); ask them to remove the secret. Never print a value |
 | `TEAM_LARGE_FILE` | The file is too big for the repo; make it smaller or keep it outside |
+| `TEAM_VENDOR_EDITED` | AtomicAUI files installed from a release were edited (`files` lists them); every upgrade replaces that folder. Put them back as installed, keep app changes outside `src/vendor/atomic-aui/`, and use `make atomicaui upgrade` for library changes |
 | `TEAM_BUILD_FAILED` / `TEAM_FORMAT_FAILED` | Nothing was saved (or, from `merge`, nothing merged); explain the error lines plainly and offer to fix the code. If the message says a task was started, they are on the new branch with their changes still unsaved |
 | `TEAM_CONFLICT` | Their branch is unchanged. For each file, name the person and the pull request link from `conflicts[].changedBy`, and suggest asking on the pull request |
 | `TEAM_PUSH_REJECTED` | GitHub has newer work on their branch (maybe another computer); their work is still saved here. Run `figma-cli team sync` to bring it in and send theirs |
@@ -168,5 +169,8 @@ Always write pull request links as the full `https://` URL from the result.
   to ask a teammate.
 - `team save` keeps vendored files (under a `VENDOR.json`, or listed in it)
   exactly as they are, even when the project's format step would rewrite them.
+- AtomicAUI installed from a release (`src/vendor/atomic-aui/VENDOR.json`
+  records `atomicauiRelease`) is never edited by hand: `team save`, `sync`,
+  `pr` and `make deploy` refuse while its files differ from that VENDOR.json.
 
 Exact options and behaviour: `figma-cli team --help` and REFERENCE.md.

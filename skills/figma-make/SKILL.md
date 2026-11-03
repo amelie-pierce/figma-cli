@@ -27,7 +27,9 @@ see them. An older release than the current latest keeps `latest.json`
 unchanged; `upgrade` without `--to` never moves an app backward, and
 `upgrade --to` a lower version is labelled a downgrade.
 “Add AtomicAUI to this app” maps to `add`, “update AtomicAUI in this app” to
-`upgrade`, and “is AtomicAUI up to date?” to `status`. Direct solo Make writes
+`upgrade`, and “is AtomicAUI up to date?” to `status`. Once an app installed
+AtomicAUI from a release, its `src/vendor/atomic-aui/` folder is read-only to
+direct writes, team saves and deploys: change the app outside it, or upgrade. Direct solo Make writes
 always require the exact `--file KEY`; team clone commands use `--dir` or the
 current clone and open a normal review PR. These commands verify the public
 HTTPS release before installation. See `src/commands/make-atomicaui.js` for
@@ -194,7 +196,9 @@ For exact commands and safe in-memory examples, read
    and trusted VENDOR.json. Review the dry-run plan and its unresolved conflicts
    before `--apply`. Apply rechecks the plan digest, Make version and inventory
    hashes, then writes a receipt. A component-only request requires full
-   generated-token equality with the package; a token update also needs the
+   generated-token equality with the package (an unbound package, with
+   `generationManifest: null`, is accepted only for this scope and records
+   null in the plan and receipt); a token update also needs the
    committed `generated.manifest.json` sibling supplied separately. Commit the
    `<receipt>.VENDOR.json` apply writes; it is the next trusted manifest.
 4. Run applicable syntax/type checks without violating the user's file constraints.

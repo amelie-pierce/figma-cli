@@ -11,9 +11,10 @@ import { buildStatus, checkWriteMode, linkedRepo, MODE_CODES, parseMarker, readG
 import { CONFIRM_FLAG, runModeChange } from '../make-mode.js';
 import { DEPLOY_CODES, deployAbort, deployApply, deployPlan, deployResume, deployVerify } from '../make-deploy.js';
 import { cloneProject, install, LOCAL_CODES, noticeStore, pullProject, repoRoot, resolveCloneRepo, runDev } from '../make-local.js';
-import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, planSync, validatePlanDigest, VENDOR_ROOT,
+import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, planSync, syncReceipt, validatePlanDigest, VENDOR_ROOT,
   writeApplyOutputs } from '../make-sync.js';
 import { registerAtomicaui } from './make-atomicaui.js';
+import { requireMakeVendorWritable } from '../make-vendor-lock.js';
 
 const make = program.command('make')
   .description('Experimental direct source-file editing in Figma Make Desktop')
@@ -34,7 +35,8 @@ function failure(error) {
     ...(error.receiptPath ? { receiptPath: error.receiptPath } : {}),
     ...(error.version ? { version: error.version } : {}),
     ...(error.completedWrites ? { completedWrites: error.completedWrites } : {}),
-    ...(error.code === 'MAKE_SESSION_ONLY_REQUIRED' || MODE_CODES.includes(error.code) || LOCAL_CODES.includes(error.code) ||
+    ...(error.readBack ? { readBack: error.readBack } : {}),
+    ...(error.code === 'MAKE_SESSION_ONLY_REQUIRED' || error.code === 'MAKE_VENDOR_LOCKED' || MODE_CODES.includes(error.code) || LOCAL_CODES.includes(error.code) ||
       DEPLOY_CODES.includes(error.code) ? { code: error.code } : {}),
     ...(error.paths ? { paths: error.paths } : {}),
     ...(error.dir ? { dir: error.dir } : {}),
@@ -129,6 +131,7 @@ sessionWrite(make.command('replace <path>').description('Session-only: back up a
   .action((path, options) => withClient(options, async client => {
     const bytes = sourceBytes(options.from);
     const content = decodeMakeSource(bytes);
+    await requireMakeVendorWritable(client, [path]);
     report(await client.replace(path, content, {
       expectedSha256: options.expectedSha256,
       backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
@@ -138,7 +141,9 @@ sessionWrite(make.command('replace <path>').description('Session-only: back up a
 sessionWrite(make.command('create <path>').description('Session-only: create one new UTF-8 source file in the open session\'s working copy; existing paths are rejected'))
   .requiredOption('--from <source>', 'Existing UTF-8 file, or - for stdin (no local copy required)')
   .action((path, options) => withClient(options, async client => {
-    report(await client.importFiles([{ path, content: decodeMakeSource(sourceBytes(options.from)) }]));
+    const content = decodeMakeSource(sourceBytes(options.from));
+    await requireMakeVendorWritable(client, [path]);
+    report(await client.importFiles([{ path, content }]));
   }, 'create', [path]));
 
 sessionWrite(make.command('import').description('Session-only: import new source files from a JSON manifest into the open session\'s working copy; never overwrite existing paths'))
@@ -148,12 +153,14 @@ sessionWrite(make.command('import').description('Session-only: import new source
     if (bytes.length > 32 * 1024 * 1024) throw new Error('Make import manifest is limited to 32 MiB.');
     const manifest = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
     refuseMarkerPaths(Array.isArray(manifest?.files) ? manifest.files.map(file => file?.path) : []);
+    await requireMakeVendorWritable(client, Array.isArray(manifest?.files) ? manifest.files.map(file => file?.path) : []);
     report(await client.importFiles(manifest.files));
   }, 'import'));
 
 sessionWrite(make.command('remove <path>').description('Session-only: back up and remove one exact text file from the open session\'s working copy after checking its SHA-256'))
   .requiredOption('--expected-sha256 <hash>', 'Expected original source hash; changed files are refused')
   .action((path, options) => withClient(options, async client => {
+    await requireMakeVendorWritable(client, [path]);
     report(await client.remove(path, { expectedSha256: options.expectedSha256 }));
   }, 'remove', [path]));
 
@@ -234,17 +241,26 @@ modeGated(target(make.command('write <path>').description('Write one git-mode Ma
   .option('--expected-sha256 <hash>', 'Required for an existing file; omit for a new file')
   .option('--backup-dir <directory>', 'Private backup directory for replaced content')
   .option('--first-version', 'Only for a git-mode file with no saved version yet; refused once it has one')
-  .action((path, options) => withClient(options, async client => report(await client.writeDurable(path, decodeMakeSource(sourceBytes(options.from)), {
-    expectedSha256: options.expectedSha256, firstVersion: options.firstVersion === true, backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
-  })), 'mode', [path])));
+  .option('--vendor-tree-fallback', 'For src/vendor/atomic-aui/ paths too deep for the file-tree viewport: accept client VFS, sandbox and tree agreement when the mounted editor shows no path')
+  .action((path, options) => withClient(options, async client => {
+    const content = decodeMakeSource(sourceBytes(options.from));
+    await requireMakeVendorWritable(client, [path]);
+    report(await client.writeDurableConfirmed(path, content, {
+      expectedSha256: options.expectedSha256, firstVersion: options.firstVersion === true, backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
+      vendorTreeFallback: options.vendorTreeFallback === true,
+    }));
+  }, 'mode', [path])));
 
 modeGated(target(make.command('delete <path>').description('Delete one git-mode Make file through Make client VFS after backup; save-version is required'), 120000)
   .requiredOption('--expected-sha256 <hash>', 'Current SHA-256 of the file to remove')
   .option('--backup-dir <directory>', 'Private backup directory')
   .option('--first-version', 'Only for a git-mode file with no saved version yet; refused once it has one')
-  .action((path, options) => withClient(options, async client => report(await client.deleteDurable(path, {
-    expectedSha256: options.expectedSha256, firstVersion: options.firstVersion === true, backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
-  })), 'mode', [path])));
+  .action((path, options) => withClient(options, async client => {
+    await requireMakeVendorWritable(client, [path]);
+    report(await client.deleteDurable(path, {
+      expectedSha256: options.expectedSha256, firstVersion: options.firstVersion === true, backupDir: options.backupDir ? resolve(options.backupDir) : undefined,
+    }));
+  }, 'mode', [path])));
 
 modeGated(target(make.command('save-version').description('Save only the exact expected pending git-mode paths using Make createVersion'), 120000)
   .requiredOption('--title <title>', 'Make version title')
@@ -299,7 +315,7 @@ target(make.command('export-delta').description('Export a clean saved Make delta
       files: delta.files.map(({ path, status, before, after, workspace, conflict }) => ({ path, status, before, after, workspace, conflict })) });
   }));
 
-modeGated(target(make.command('sync').description('Plan or apply an explicit package-bound workspace-to-Make sync'), 120000)
+modeGated(target(make.command('sync').description('Plan or apply an explicit package-bound workspace-to-Make sync (component-only scope also accepts an unbound package whose generated tree equals Make\'s byte for byte)'), 120000)
   .requiredOption('--package <dir>', 'atomic-cli package-make-kit output directory')
   .requiredOption('--manifest <file>', 'Trusted VENDOR.json baseline')
   .requiredOption('--request <file>', 'Explicit sync request JSON')
@@ -329,8 +345,8 @@ modeGated(target(make.command('sync').description('Plan or apply an explicit pac
     if (!options.apply) {
       writeFileSync(output, `${JSON.stringify(plan, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
       return report({ planPath: output, digest: plan.digest, fileKey: plan.fileKey, makeVersion: plan.makeVersion,
-        workspaceCommit: plan.workspaceCommit, unresolved: plan.unresolved, outOfScopeDrift: plan.outOfScopeDrift,
-        actions: plan.actions });
+        workspaceCommit: plan.workspaceCommit, generationManifest: plan.generationManifest, unresolved: plan.unresolved,
+        outOfScopeDrift: plan.outOfScopeDrift, actions: plan.actions });
     }
     const reviewed = validatePlanDigest(JSON.parse(sourceBytes(options.apply).toString('utf8')));
     if (reviewed.digest !== plan.digest) throw new Error('Reviewed sync plan is stale; no Make files were written.');
@@ -344,6 +360,7 @@ modeGated(target(make.command('sync').description('Plan or apply an explicit pac
         const vendorWritten = error.completedWrites?.some(write => write.path === `${VENDOR_ROOT}/VENDOR.json`);
         const manifestPath = writeApplyOutputs(output, { schema: 'figma-cli/make-sync-receipt@1', outcome: 'uncertain',
           planDigest: plan.digest, fileKey: client.fileKey, requestId: request.requestId,
+          generationManifest: plan.generationManifest,
           completedWrites: error.completedWrites, version: error.version || null,
           error: error.message }, vendorWritten ? vendorBytes : null);
         error.message += ` Recovery receipt: ${output}. Run make drift with --manifest ${manifestPath || 'the trusted baseline'} to read the saved version and pending paths before reconciling.`;
@@ -351,13 +368,7 @@ modeGated(target(make.command('sync').description('Plan or apply an explicit pac
       throw error;
     }
     const { version, drift, writes } = result;
-    const receipt = { schema: 'figma-cli/make-sync-receipt@1', requestId: request.requestId, who: request.who,
-      direction: request.direction, fileKey: client.fileKey, scope: plan.scope, choices: request.choices,
-      planDigest: plan.digest, baselineManifestSha256: plan.baselineManifestSha256,
-      beforeManifestSha256: plan.vendorBefore.sha256,
-      workspaceCommit: plan.workspaceCommit, previousMakeVersion: plan.makeVersion,
-      makeVersion: version, files: writes, generatedTreeDigest: plan.generatedTreeDigest,
-      verification: 'saved-clean-drift-matched; fresh-sandbox-reload-pending' };
+    const receipt = syncReceipt({ request, plan, fileKey: client.fileKey, version, writes });
     const manifestPath = writeApplyOutputs(output, receipt, vendorBytes);
     report({ receiptPath: output, afterManifestPath: manifestPath, makeVersion: version, drift: { ok: drift.ok, counts: drift.counts, batches: drift.batches } });
   }, 'mode')));
@@ -394,7 +405,7 @@ target(make.command('deploy').description('Deploy GitHub main from a local clone
   .option('--override-make', 'Plan against Make\'s served working tree, including Make edits; requires per-plan confirmation to apply')
   .option('--delete-make-only', 'With --override-make, delete eligible Make-only files (backed up first)')
   .option('--confirm-override <digest-prefix>', 'Required with an override apply: first 12 characters of its reviewed plan digest')
-  .addHelpText('after', '\nGuards: team-mode Make file; your gh login is an admin of its repo; the clone is on main, clean and equal' +
+  .addHelpText('after', '\nGuards: a release-installed AtomicAUI folder in the clone is unedited; team-mode Make file; your gh login is an admin of its repo; the clone is on main, clean and equal' +
     '\nto GitHub\'s main, which arrived through a merged pull request; pnpm install --frozen-lockfile and the build pass; Make' +
     '\nis in git mode with a saved version, nothing pending, idle, and equal to the last make-deploy/<n> tag\'s main tree' +
     '\nfor a normal deploy. Override still requires git mode and idle Make, but permits tracker error and Make-ahead content.' +

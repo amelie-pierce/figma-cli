@@ -539,14 +539,18 @@ export class MakeClient {
   // folders the caller's saved base holds: one an earlier delete in the same
   // operation emptied (Make then drops it from the tree) may be created again
   // when nothing is rendered at that name and Make's fetchEntry finds no file.
-  async _requireListableAncestor(path, deadline, baseFolders = []) {
+  // treeState, when given, keeps this listing so the absence check that
+  // follows can use it as its first tree view instead of listing again.
+  async _requireListableAncestor(path, deadline, baseFolders = [], treeState) {
     const [top, ...rest] = path.split('/');
     const refuse = () => {
       throw new Error(`Make cannot prove ${path} absent: only files below an existing top-level folder can be created or deleted.`);
     };
     if (!rest.length) refuse();
     if (top.startsWith('.')) return;
-    const tree = await this._sourceTree(deadline);
+    const tree = await this._sourceTree(deadline, undefined, treeState
+      ? snapshot => { treeState.prefetched = { entries: snapshot.entries, rows: snapshot.rows }; } : undefined);
+    if (treeState?.prefetched) treeState.prefetched.tree = tree;
     if (tree.some(entry => entry.kind === 'folder' && entry.path === top)) return;
     if (!baseFolders.includes(top) || tree.some(entry => entry.path === top) ||
         (await this._durable({ type: 'read', path }, deadline)).exists) refuse();
@@ -587,8 +591,19 @@ export class MakeClient {
           } else sandbox = await this._bridgeRead(bridge, path).catch(() => null);
         }
         finally { await bridge.dispose(); }
-        const tree = await this._sourceTree(deadline, expectedChange, treeState
-          ? snapshot => { treeState.entries = snapshot.entries; treeState.rows = snapshot.rows; } : undefined);
+        // A pre-write absence check may start from the listing its ancestor
+        // check just made in the same operation; every later pass lists again.
+        const prefetched = expectedContent === null && !expectedChange ? treeState?.prefetched : undefined;
+        if (treeState) delete treeState.prefetched;
+        let tree;
+        if (prefetched?.tree) {
+          tree = prefetched.tree;
+          treeState.entries = prefetched.entries;
+          treeState.rows = prefetched.rows;
+        } else {
+          tree = await this._sourceTree(deadline, expectedChange, treeState
+            ? snapshot => { treeState.entries = snapshot.entries; treeState.rows = snapshot.rows; } : undefined);
+        }
         const inTree = tree.some(entry => entry.kind === 'file' && entry.path === path);
         if (expectedContent === null) {
           observed = { vfs: vfs.exists ? 'present' : 'absent', sandbox: absentInSandbox ? 'absent' : 'present or unlisted',
@@ -669,8 +684,8 @@ export class MakeClient {
       if (existing.exists !== (expectedSha256 != null)) throw new Error('Expected SHA-256 is required for an existing file and forbidden for a new file.');
       const originalSha256 = existing.exists ? sha256(existing.content) : null;
       if (existing.exists && originalSha256 !== expectedSha256.toLowerCase()) throw new Error('Make source changed; SHA-256 does not match.');
-      if (!existing.exists) await this._requireListableAncestor(path, deadline, baseFolders);
       const treeState = {};
+      if (!existing.exists) await this._requireListableAncestor(path, deadline, baseFolders, treeState);
       await this._durableAgreement(path, existing.exists ? existing.content : null, deadline, { treeState, releaseAsset, vendorTreeFallback });
       if (existing.exists && existing.content === content && !rewrite) return { fileKey: this.fileKey, path, changed: false, sha256: originalSha256, verification: 'unchanged' };
       const backupPath = existing.exists ? await this._bounded(() => this._backup(path, existing.content, {
@@ -688,20 +703,84 @@ export class MakeClient {
         } finally { await bridge.dispose(); }
       }
       let verification;
+      const written = { fileKey: this.fileKey, path, changed: true, beforeSha256: originalSha256,
+        sha256: sha256(content), bytes: Buffer.byteLength(content), backupPath };
+      let refused = false;
       try {
         const accepted = await this._durable({ type: 'write', path, content, expectedContent: existing.exists ? existing.content : null }, deadline);
-        if (accepted?.refused) throw new Error(accepted.refused);
+        if (accepted?.refused) { refused = true; throw new Error(accepted.refused); }
         const expectedChange = !existing.exists && !treeHidden(path)
           ? { beforeEntries: treeState.entries, beforeRows: treeState.rows, writtenPath: path } : undefined;
         verification = await this._durableAgreement(path, content, deadline, { expectedChange, releaseAsset, vendorTreeFallback });
       } catch (cause) {
         const error = new Error(`Make durable write outcome is uncertain: ${cause.message}. Inspect before retrying.`);
         error.backupPath = backupPath;
+        // The page refused before writing; anything else may have landed.
+        if (!refused) error.uncertainWrite = { ...written, cause: cause.message };
         throw error;
       }
-      return { fileKey: this.fileKey, path, changed: true, beforeSha256: originalSha256,
-        sha256: sha256(content), bytes: Buffer.byteLength(content), backupPath,
-        verification, persistence: 'pending-version' };
+      return { ...written, verification, persistence: 'pending-version' };
+    });
+  }
+
+  // writeDurable, then, when its outcome is uncertain (most often a read-back
+  // that outlived the operation deadline after Make accepted the bytes), one
+  // fresh read-only operation reads the path from the client VFS and the
+  // sandbox. Both equal to the target confirms the write; anything else keeps
+  // the uncertain error and reports what was read. Nothing is written again.
+  async writeDurableConfirmed(path, content, options = {}) {
+    try { return await this.writeDurable(path, content, options); }
+    catch (error) {
+      if (!error.uncertainWrite) throw error;
+      let readBack;
+      try { readBack = await this.readBackDurable(path, content); }
+      catch (cause) {
+        error.message += ` The read-back after it also failed: ${cause.message}`;
+        throw error;
+      }
+      error.readBack = readBack;
+      if (readBack.vfs === 'matched' && readBack.sandbox === 'matched') {
+        const { cause, ...written } = error.uncertainWrite;
+        return { ...written, verification: 'vfs-sandbox-matched-after-uncertain-write', uncertainCause: cause,
+          persistence: 'pending-version' };
+      }
+      error.message += ` Read-back after it: client VFS ${readBack.vfs}, sandbox ${readBack.sandbox}.`;
+      throw error;
+    }
+  }
+
+  // Read-only: how the client VFS and the session sandbox hold `path`
+  // compared with `content` (matched, different, absent or unreadable).
+  readBackDurable(path, content) {
+    sourcePath(path);
+    return this._operation(async deadline => {
+      const vfs = await this._durable({ type: 'read', path }, deadline);
+      const bridge = await this._fileBridge(deadline);
+      let sandbox;
+      try { sandbox = await this._bridgeRead(bridge, path).catch(() => null); }
+      finally { await bridge.dispose(); }
+      const view = (exists, value) => !exists ? 'absent' : value === content ? 'matched' : 'different';
+      return { vfs: view(vfs.exists, vfs.content), sandbox: sandbox ? view(true, sandbox.content) : 'unreadable',
+        vfsSha256: vfs.exists ? sha256(vfs.content) : null, sandboxSha256: sandbox ? sha256(sandbox.content) : null,
+        targetSha256: sha256(content) };
+    });
+  }
+
+  // Several sandbox files in one operation, without listing the file tree:
+  // the caller has already proven they exist. Returns path -> { content, sha256 }.
+  readRemoteFiles(paths) {
+    if (!Array.isArray(paths) || !paths.length || paths.length > 64) throw new Error('Read 1–64 Make files at a time.');
+    paths.forEach(sourcePath);
+    return this._operation(async deadline => {
+      const bridge = await this._fileBridge(deadline);
+      try {
+        const files = new Map();
+        for (const path of paths) {
+          const { content } = await this._bridgeRead(bridge, path);
+          files.set(path, { content, sha256: sha256(content) });
+        }
+        return files;
+      } finally { await bridge.dispose(); }
     });
   }
 

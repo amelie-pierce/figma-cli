@@ -3,6 +3,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, stat
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { PROJECT_MARKER, repoName } from './make-project.js';
+import { requireLocalVendorUnedited } from './make-vendor-lock.js';
 import { quietToolEnv } from './tool-env.js';
 
 // `figma-cli team <verb>`: the plain-language git layer for designers working
@@ -20,7 +21,7 @@ const LOCKFILE = 'pnpm-lock.yaml';
 export const LARGE_FILE_BYTES = 50 * 1024 * 1024;
 const SCAN_BYTES = 2 * 1024 * 1024;
 export const TEAM_CODES = Object.freeze(['TEAM_NOT_A_CLONE', 'TEAM_NO_REPO', 'TEAM_GH_FAILED', 'TEAM_BAD_NAME', 'TEAM_UNSAVED',
-  'TEAM_BRANCH_EXISTS', 'TEAM_MAIN_AHEAD', 'TEAM_SWITCH_FAILED', 'TEAM_ON_MAIN', 'TEAM_NOT_YOUR_BRANCH', 'TEAM_DETACHED',
+  'TEAM_BRANCH_EXISTS', 'TEAM_VENDOR_EDITED', 'TEAM_MAIN_AHEAD', 'TEAM_SWITCH_FAILED', 'TEAM_ON_MAIN', 'TEAM_NOT_YOUR_BRANCH', 'TEAM_DETACHED',
   'TEAM_OPERATION_IN_PROGRESS', 'TEAM_SECRET', 'TEAM_LARGE_FILE', 'TEAM_FORMAT_FAILED', 'TEAM_BUILD_FAILED', 'TEAM_PUSH_REJECTED',
   'TEAM_PUSH_BLOCKED', 'TEAM_PUSH_REFUSED', 'TEAM_CONFLICT', 'TEAM_NOTHING_TO_REVIEW', 'TEAM_NO_PR', 'TEAM_PR_NOT_READY', 'TEAM_NOT_APPROVED',
   'TEAM_CHANGES_REQUESTED', 'TEAM_CHECKS_PENDING', 'TEAM_CHECKS_FAILED', 'TEAM_BEHIND_MAIN', 'TEAM_OUT_OF_DATE', 'TEAM_NO_BUILD_CHECK', 'TEAM_MERGE_FAILED',
@@ -492,6 +493,7 @@ function checkChanges(ctx) {
 function commitLocal(ctx, { message } = {}) {
   requireNoOperation(ctx);
   const branch = requireOwnBranch(ctx);
+  requireLocalVendorUnedited(ctx.root, 'TEAM_VENDOR_EDITED', 'saving');
   const { changes, ran, vendored } = checkChanges(ctx);
   const warnings = [];
   if (vendored.restored.length) {
