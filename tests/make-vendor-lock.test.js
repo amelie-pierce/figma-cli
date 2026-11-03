@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { installedRelease, lockedVendorPaths, requireLocalVendorUnedited, requireMakeVendorWritable } from '../src/make-vendor-lock.js';
 import { DEPLOY_CODES, deployApply, deployPlan } from '../src/make-deploy.js';
+import { defaultRun, teamContext } from '../src/make-team.js';
 
 const hash = text => createHash('sha256').update(text).digest('hex');
 const ROOT = 'src/vendor/atomic-aui';
@@ -31,8 +32,13 @@ function clone(t, { vendor = vendorJson(), files = { 'index.ts': 'export {}\n' }
   put('src/App.tsx', 'app\n');
   if (vendor !== null) put(`${ROOT}/VENDOR.json`, vendor);
   for (const [path, text] of Object.entries(files)) put(`${ROOT}/${path}`, text);
-  return { dir, put };
+  const git = (...args) => assert.equal(defaultRun('git', args, { cwd: dir }).status, 0, `git ${args.join(' ')}`);
+  git('init', '-q');
+  return { dir, put, git };
 }
+
+const unedited = (dir, code = 'TEST_CODE') => requireLocalVendorUnedited(teamContext({ dir }), code, 'saving');
+const refusal = dir => { try { unedited(dir); } catch (cause) { return cause; } };
 
 test('only paths inside the vendored AtomicAUI folder are locked', () => {
   assert.deepEqual(lockedVendorPaths(['src/App.tsx', 'src/vendor/atomic-aui/lib/x.tsx', './src/vendor/atomic-aui/VENDOR.json',
@@ -64,7 +70,7 @@ test('app paths, a kit vendor without a release record and a project without VEN
 });
 
 test('a local clone with edited release files is refused; an untouched one, a kit vendor or no VENDOR.json is not', t => {
-  requireLocalVendorUnedited(clone(t).dir, 'TEST_CODE', 'saving');
+  unedited(clone(t).dir);
   for (const [change, expected] of [
     [c => c.put(`${ROOT}/index.ts`, 'export const edited = 1\n'), 'changed index.ts'],
     [c => c.put(`${ROOT}/extra.ts`, 'x\n'), 'added extra.ts'],
@@ -72,15 +78,32 @@ test('a local clone with edited release files is refused; an untouched one, a ki
   ]) {
     const c = clone(t);
     change(c);
-    const error = (() => { try { requireLocalVendorUnedited(c.dir, 'TEST_CODE', 'saving'); } catch (cause) { return cause; } })();
+    const error = refusal(c.dir);
     assert.equal(error?.code, 'TEST_CODE');
     assert.deepEqual(error.files, [expected]);
     assert.match(error.message, /AtomicAUI 7\.0\.2 in src\/vendor\/atomic-aui was edited directly .*so saving was refused.*figma-cli make atomicaui upgrade/);
   }
   const kit = clone(t, { vendor: vendorJson({ release: null }) });
   kit.put(`${ROOT}/index.ts`, 'kit authoring edit\n');
-  requireLocalVendorUnedited(kit.dir, 'TEST_CODE', 'saving');
-  requireLocalVendorUnedited(clone(t, { vendor: null }).dir, 'TEST_CODE', 'saving');
+  unedited(kit.dir);
+  unedited(clone(t, { vendor: null }).dir);
+});
+
+test('git-ignored files and untracked .DS_Store are not vendor edits; tracked changes and untracked additions are', t => {
+  const c = clone(t);
+  c.put('.gitignore', '*.log\n');
+  c.put(`${ROOT}/.DS_Store`, 'finder');
+  c.put(`${ROOT}/lib/.DS_Store`, 'finder');
+  c.put(`${ROOT}/debug.log`, 'log');
+  unedited(c.dir);
+  c.git('add', '-A');
+  c.git('-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '-qm', 'install');
+  unedited(c.dir);
+  c.put(`${ROOT}/index.ts`, 'export const edited = 1\n');
+  c.put(`${ROOT}/lib/extra.ts`, 'x\n');
+  assert.deepEqual(refusal(c.dir).files, ['added lib/extra.ts', 'changed index.ts']);
+  rmSync(join(c.dir, ROOT, 'index.ts'));
+  assert.deepEqual(refusal(c.dir).files, ['added lib/extra.ts', 'missing index.ts']);
 });
 
 test('deploy plan and apply refuse edited release files before reading Make', async t => {
@@ -89,7 +112,9 @@ test('deploy plan and apply refuse edited release files before reading Make', as
   c.put(`${ROOT}/index.ts`, 'export const edited = 1\n');
   // Any Make access would throw: the refusal comes first.
   const client = new Proxy({}, { get: () => { throw new Error('Make was read'); } });
-  for (const run of [() => deployPlan(client, { dir: c.dir }), () => deployApply(client, { dir: c.dir, planPath: join(c.dir, 'plan.json') })]) {
+  const sub = join(c.dir, 'src');
+  for (const run of [() => deployPlan(client, { dir: c.dir }), () => deployApply(client, { dir: c.dir, planPath: join(c.dir, 'plan.json') }),
+    () => deployPlan(client, { dir: sub }), () => deployApply(client, { dir: sub, planPath: join(c.dir, 'plan.json') })]) {
     const error = await run().catch(cause => cause);
     assert.equal(error.code, 'DEPLOY_VENDOR_EDITED', error.message);
     assert.match(error.message, /so the deploy was refused/);

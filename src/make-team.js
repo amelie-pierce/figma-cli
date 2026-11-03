@@ -493,7 +493,7 @@ function checkChanges(ctx) {
 function commitLocal(ctx, { message } = {}) {
   requireNoOperation(ctx);
   const branch = requireOwnBranch(ctx);
-  requireLocalVendorUnedited(ctx.root, 'TEAM_VENDOR_EDITED', 'saving');
+  requireLocalVendorUnedited(ctx, 'TEAM_VENDOR_EDITED', 'saving');
   const { changes, ran, vendored } = checkChanges(ctx);
   const warnings = [];
   if (vendored.restored.length) {

@@ -677,7 +677,7 @@ const excludedText = plan => (plan.excluded.length ? ` ${plan.excluded.length} e
 
 export async function deployPlan(client, { dir, overrideMake = false, deleteMakeOnly = false } = {}, deps = {}) {
   deps = defaults(deps);
-  requireLocalVendorUnedited(resolve(dir || '.'), 'DEPLOY_VENDOR_EDITED', 'the deploy');
+  requireLocalVendorUnedited(teamContext({ dir: resolve(dir || '.'), run: deps.run, warn: deps.warn }), 'DEPLOY_VENDOR_EDITED', 'the deploy');
   if (deleteMakeOnly && !overrideMake) fail('--delete-make-only requires --override-make.', 'DEPLOY_STALE_PLAN');
   const { plan, access, pr, built } = await prepare(client, { dir, overrideMake, deleteMakeOnly }, deps);
   const c = counts(plan.files);
@@ -1025,7 +1025,7 @@ export function driftProblems(status, receipt, mainFlat) {
 
 export async function deployApply(client, { dir, planPath, confirmOverride, overrideMake = false, deleteMakeOnly = false } = {}, deps = {}) {
   deps = defaults(deps);
-  requireLocalVendorUnedited(resolve(dir || '.'), 'DEPLOY_VENDOR_EDITED', 'the deploy');
+  requireLocalVendorUnedited(teamContext({ dir: resolve(dir || '.'), run: deps.run, warn: deps.warn }), 'DEPLOY_VENDOR_EDITED', 'the deploy');
   const reviewed = readPlan(planPath);
   if (hasRefusals(reviewed)) fail('The reviewed plan has refused paths; resolve them and run a new dry run. Nothing was deployed.', 'DEPLOY_UNSUPPORTED_PATH');
   if (reviewed.mode === 'override-make') {

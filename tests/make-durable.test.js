@@ -868,12 +868,14 @@ test('a CDP call gets a timeout scaled to the file it carries, never past the op
 
 // A deep existing file whose post-write read-back outlives the operation
 // deadline although Make accepted the bytes.
-function uncertainClient({ sandbox = current => current, refuse = false } = {}) {
+function uncertainClient({ sandbox = current => current, refuse = false, observed } = {}) {
   const fake = fakeClient({ original: 'old' });
   const { client, calls } = fake;
   client._durableAgreement = async (path, content) => {
     calls.push(['agreement', path, content]);
-    if (content === 'new') throw new Error(`Make read-back for ${path} timed out before every view agreed (vfs matched, editor unavailable)`);
+    if (content === 'new') {
+      throw Object.assign(new Error(`Make read-back for ${path} timed out before every view agreed (vfs matched, editor unavailable)`), { observed });
+    }
   };
   if (refuse) {
     const durable = client._durable;
@@ -916,6 +918,22 @@ test('an uncertain write whose read-back differs keeps the error and reports wha
     targetSha256: error.readBack.targetSha256 }, { vfs: 'matched', sandbox: 'different', sandboxSha256: hash('old'), targetSha256: hash('new') });
   assert.equal(error.backupPath, '/private/backup');
   assert.equal(calls.filter(call => call[0] === 'write').length, 1);
+});
+
+test('an uncertain write whose mounted editor or rendered tree disagreed keeps the error without confirming', async () => {
+  for (const observed of [{ vfs: 'matched', sandbox: 'matched', tree: 'present', editor: 'different' },
+    { vfs: 'matched', sandbox: 'matched', tree: 'absent' }]) {
+    const { client, calls } = uncertainClient({ observed });
+    const error = await client.writeDurableConfirmed('src/App.tsx', 'new', { expectedSha256: hash('old') }).catch(cause => cause);
+    assert.ok(error instanceof Error, JSON.stringify(observed));
+    assert.match(error.message, /outcome is uncertain: .*timed out before every view agreed/);
+    assert.deepEqual(error.uncertainWrite.observed, observed);
+    assert.equal(calls.filter(call => call[0] === 'write').length, 1);
+  }
+  const unanswered = uncertainClient({ observed: { vfs: 'matched', sandbox: 'matched', tree: 'present', editor: 'unavailable' } });
+  const result = await unanswered.client.writeDurableConfirmed('src/App.tsx', 'new', { expectedSha256: hash('old') });
+  assert.equal(result.verification, 'vfs-sandbox-matched-after-uncertain-write');
+  assert.equal('observed' in result, false);
 });
 
 test('a write the page refused is not read back as if it might have landed', async () => {

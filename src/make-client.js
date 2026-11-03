@@ -652,7 +652,9 @@ export class MakeClient {
     } catch (cause) {
       if (!observed || cause.message !== 'Make operation timed out.') throw cause;
       const views = Object.entries(observed).map(([name, value]) => `${name} ${value}`).join(', ');
-      throw new Error(`Make read-back for ${path} timed out before every view agreed (${views}).`);
+      const error = new Error(`Make read-back for ${path} timed out before every view agreed (${views}).`);
+      error.observed = observed;
+      throw error;
     }
   }
 
@@ -716,7 +718,7 @@ export class MakeClient {
         const error = new Error(`Make durable write outcome is uncertain: ${cause.message}. Inspect before retrying.`);
         error.backupPath = backupPath;
         // The page refused before writing; anything else may have landed.
-        if (!refused) error.uncertainWrite = { ...written, cause: cause.message };
+        if (!refused) error.uncertainWrite = { ...written, cause: cause.message, observed: cause.observed };
         throw error;
       }
       return { ...written, verification, persistence: 'pending-version' };
@@ -732,15 +734,16 @@ export class MakeClient {
     try { return await this.writeDurable(path, content, options); }
     catch (error) {
       if (!error.uncertainWrite) throw error;
+      const { cause, observed, ...written } = error.uncertainWrite;
+      if (observed?.editor === 'different' || observed?.tree === 'absent') throw error;
       let readBack;
       try { readBack = await this.readBackDurable(path, content); }
-      catch (cause) {
-        error.message += ` The read-back after it also failed: ${cause.message}`;
+      catch (readError) {
+        error.message += ` The read-back after it also failed: ${readError.message}`;
         throw error;
       }
       error.readBack = readBack;
       if (readBack.vfs === 'matched' && readBack.sandbox === 'matched') {
-        const { cause, ...written } = error.uncertainWrite;
         return { ...written, verification: 'vfs-sandbox-matched-after-uncertain-write', uncertainCause: cause,
           persistence: 'pending-version' };
       }

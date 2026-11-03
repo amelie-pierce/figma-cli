@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { basename, join, relative, sep } from 'node:path';
 import { sourcePath, vendorManifest } from './make-drift.js';
 
 // An app that installed AtomicAUI from a release (make atomicaui add/upgrade)
@@ -80,17 +80,23 @@ export function vendorEdits(inventory, vendorFiles) {
 }
 
 // Local clone side (team commits, deploy): the installed folder must equal the
-// release files VENDOR.json records. `code` names the caller's error family.
-export function requireLocalVendorUnedited(projectRoot, code, action) {
-  const folder = join(projectRoot, ...LOCKED_VENDOR_ROOT.split('/'));
+// release files VENDOR.json records. `ctx` is the clone's team context;
+// `code` names the caller's error family.
+export function requireLocalVendorUnedited(ctx, code, action) {
+  const folder = join(ctx.root, ...LOCKED_VENDOR_ROOT.split('/'));
   const vendorPath = join(folder, 'VENDOR.json');
   if (!existsSync(vendorPath) || !lstatSync(vendorPath).isFile()) return;
   const vendorBytes = readFileSync(vendorPath);
   const release = installedRelease(vendorBytes);
   if (!release) return;
-  const files = localFiles(folder);
-  const inventory = new Map([...files].map(([path, bytes]) => [path, { sha256: sha(bytes), bytes: bytes.length }]));
-  const edits = vendorEdits(inventory, vendorManifest(vendorBytes, LOCKED_VENDOR_ROOT).files);
+  const recorded = vendorManifest(vendorBytes, LOCKED_VENDOR_ROOT).files;
+  const prefix = `${LOCKED_VENDOR_ROOT}/`;
+  const listed = new Set(ctx.git(['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', LOCKED_VENDOR_ROOT],
+    'Listing the AtomicAUI vendor files').split('\0').filter(path => path.startsWith(prefix)).map(path => path.slice(prefix.length))
+    .filter(path => recorded.has(path) || basename(path) !== '.DS_Store'));
+  const inventory = new Map([...localFiles(folder)].filter(([path]) => listed.has(path))
+    .map(([path, bytes]) => [path, { sha256: sha(bytes), bytes: bytes.length }]));
+  const edits = vendorEdits(inventory, recorded);
   if (!edits.length) return;
   const error = lockError(`AtomicAUI ${release.version || ''}`.replace(/ $/, '') + ` in ${LOCKED_VENDOR_ROOT} was edited directly ` +
     `(${edits.join(', ')}), so ${action} was refused. Every AtomicAUI upgrade replaces that folder and would lose these edits. ` +
