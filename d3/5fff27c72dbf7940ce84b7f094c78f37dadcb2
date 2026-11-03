@@ -1,0 +1,85 @@
+src/make-atomicaui.js
+  s_cc1d70af4c3248::t_4fc1cd1e37372e 4,6
+  s_cc1d70af4c3248::t_b23ff485707f17 9,440
+_vaults/figma-cli/wiki/make/index.md
+  s_cc1d70af4c3248::t_dd10437ec2cfcb 11
+_vaults/figma-cli/wiki/make/team.md
+  s_cc1d70af4c3248::t_bb0505df6cfe50 8
+CHANGELOG.md
+  s_cc1d70af4c3248::t_d2c09ee144f95c 7-9,28-30
+_vaults/figma-cli/wiki/make/sync.md
+  s_cc1d70af4c3248::t_dd10437ec2cfcb 9-10,52-66
+  s_cc1d70af4c3248::t_98c3af2e9375a5 67
+src/make-deploy.js
+  s_cc1d70af4c3248::t_de66c8fad3965d 1028
+  s_cc1d70af4c3248::t_0cff316b6c3900 8
+  s_cc1d70af4c3248::t_acd434300e5873 29,680
+_vaults/figma-cli/wiki/make/deploy.md
+  s_cc1d70af4c3248::t_bb0505df6cfe50 19
+src/make-vendor-lock.js
+  s_cc1d70af4c3248::t_b23ff485707f17 1-101
+tests/make-atomicaui.test.js
+  s_cc1d70af4c3248::t_86e77a1e8ca4bb 15-25
+  s_cc1d70af4c3248::t_efcc20182a1210 390,478,537
+  s_cc1d70af4c3248::t_64383e7d56a6c3 10,819-880
+  s_cc1d70af4c3248::t_4c237dbe83f1bc 235,242,257-258,271,276,289,291,343,349,369-370
+src/commands/make-atomicaui.js
+  s_cc1d70af4c3248::t_1c1af52d1e9742 1,169-197,200,204-207,220,333-335,337,341-343,360-362,416-427,429-431,478-480
+  s_cc1d70af4c3248::t_953b4eda25ad71 44-46,49-50,53,64,83-88,90,96
+tests/make-durable.test.js
+  s_cc1d70af4c3248::t_a6d2fb31b00459 905-906
+  s_cc1d70af4c3248::t_9c6b591ff67a9c 868-904,907-991
+src/commands/make.js
+  s_cc1d70af4c3248::t_c0f4edc28ba7e4 348-349
+  s_cc1d70af4c3248::t_dd10437ec2cfcb 408
+  s_cc1d70af4c3248::t_6c6dd2f3905dde 14,371
+  s_cc1d70af4c3248::t_acd434300e5873 17,39,134,144-146,156,163,245-252,258-263
+  s_cc1d70af4c3248::t_ea1cb92b3c4d17 38,244,318,363
+tests/make-sync.test.js
+  s_cc1d70af4c3248::t_7cdc3099bb878c 6,462-606
+tests/make-vendor-lock.test.js
+  s_cc1d70af4c3248::t_882cd47fe99dcc 1-97
+_vaults/figma-cli/wiki/make/atomicaui-release.md
+  s_cc1d70af4c3248::t_dd10437ec2cfcb 9-10,61-83
+skills/figma-make-team/SKILL.md
+  s_cc1d70af4c3248::t_dc7fbc36198a3a 132,172-174
+  s_cc1d70af4c3248::t_3160300de6af45 110
+src/make-client.js
+  s_cc1d70af4c3248::t_c0f4edc28ba7e4 706-708,711,718-738,741-783
+  s_cc1d70af4c3248::t_64751c9752774d 542-544,551-553,594-606,688
+_vaults/figma-cli/wiki/make/persistence.md
+  s_cc1d70af4c3248::t_dd10437ec2cfcb 13,68-91
+src/make-sync.js
+  s_cc1d70af4c3248::t_d7c632dc445a3e 162-164,167,186,251,295
+  s_cc1d70af4c3248::t_6c6dd2f3905dde 400-412
+  s_cc1d70af4c3248::t_fe3a2b22ae5ac4 47-53,58,95,165-166,168-169,187-197,252-255,294,296
+tests/make-team.test.js
+  s_cc1d70af4c3248::t_882cd47fe99dcc 2,889-917
+  s_cc1d70af4c3248::t_3a8031cbad3c11 918
+src/make-team.js
+  s_cc1d70af4c3248::t_acd434300e5873 24,496
+  s_cc1d70af4c3248::t_0cff316b6c3900 6
+REFERENCE.md
+  s_cc1d70af4c3248::t_ee66ce9d73a5ec 160-171,177-191,859-866,890-899
+  s_cc1d70af4c3248::t_3160300de6af45 427-428
+skills/figma-make/SKILL.md
+  s_cc1d70af4c3248::t_ee66ce9d73a5ec 30-32,199-201
+_vaults/figma-cli/wiki/make/vendor-lock.md
+  s_cc1d70af4c3248::t_dd10437ec2cfcb 1-34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d35fff27c72dbf7940ce84b7f094c78f37dadcb2",
+  "prompts": {},
+  "sessions": {
+    "s_cc1d70af4c3248": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2f26323a-528d-4da8-bc65-83dbcf4eefb5",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
