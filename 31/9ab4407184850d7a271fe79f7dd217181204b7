@@ -1,0 +1,26 @@
+_vaults/figma-cli/wiki/make/persistence.md
+  s_05548bb4aabbeb::t_30f61d2af05145 76
+  s_05548bb4aabbeb::t_aa5399d138c90c 74-75,79
+REFERENCE.md
+  s_05548bb4aabbeb::t_30f61d2af05145 170-172,189-190
+CHANGELOG.md
+  s_05548bb4aabbeb::t_38e704cbfbbcc5 7
+_vaults/figma-cli/wiki/make/vendor-lock.md
+  s_05548bb4aabbeb::t_aa5399d138c90c 12,21-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "319ab4407184850d7a271fe79f7dd217181204b7",
+  "prompts": {},
+  "sessions": {
+    "s_05548bb4aabbeb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b095c233-5c52-428b-9989-d44cf0f3a253",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
