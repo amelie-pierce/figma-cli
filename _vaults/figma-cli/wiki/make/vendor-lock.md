@@ -9,7 +9,7 @@ date: 2026-11-03
 An app that installed AtomicAUI with `make atomicaui add`/`upgrade` records the
 release in `src/vendor/atomic-aui/VENDOR.json` as `atomicauiRelease`. Every
 upgrade replaces that folder, so a direct edit there is lost on the next one.
-The lock keys on that record (`installedRelease`, `src/make-vendor-lock.js:23`):
+The lock keys on that record (`installedRelease`, `src/make-vendor-lock.js:22`):
 
 - Make verbs `write`, `delete`, `replace`, `create`, `import`, `remove` read
   Make's own VENDOR.json through the client VFS and refuse any path in the
@@ -18,7 +18,10 @@ The lock keys on that record (`installedRelease`, `src/make-vendor-lock.js:23`):
   `src/commands/make.js:247`).
 - Team commits go through `commitLocal`, so `team save`, `sync`, `pr` and
   `start --save-first` refuse with `TEAM_VENDOR_EDITED` while the clone's files
-  differ from the VENDOR.json file records (`src/make-team.js:496`).
+  differ from the VENDOR.json file records (`src/make-team.js:496`). The
+  inventory is `git ls-files --cached --others --exclude-standard`, so
+  git-ignored files and untracked `.DS_Store` do not count; the check uses the
+  git toplevel from the team context, also for deploy run from a subdirectory.
 - `make deploy` plan and apply refuse with `DEPLOY_VENDOR_EDITED` before reading
   Make (`src/make-deploy.js:680`, `src/make-deploy.js:1028`).
 

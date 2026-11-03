@@ -71,10 +71,12 @@ Tests: `tests/make-session.test.js`, `tests/make-client.test.js`, `tests/make-dr
 `writeDurable` marks an error `uncertainWrite` unless the page refused the
 write. `writeDurableConfirmed`, used by `make write`, then runs one fresh
 read-only operation (`readBackDurable`) over the client VFS and the session
-sandbox: both equal to the target return
+sandbox, unless the last pass positively disagreed (a mounted editor showed
+different bytes, or a new file was absent from the tree), which keeps the
+error without a read-back. Both equal to the target return
 `verification: "vfs-sandbox-matched-after-uncertain-write"` with the original
 `uncertainCause`; anything else keeps the error and attaches `readBack`. Nothing
-is written again (`src/make-client.js:731`, `src/make-client.js:754`). The
+is written again (`src/make-client.js:733`, `src/make-client.js:757`). The
 motivating case: modifying an existing deep vendor file can time out in the
 post-write editor wait although the bytes landed.
 

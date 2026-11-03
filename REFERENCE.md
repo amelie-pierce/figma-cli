@@ -167,8 +167,9 @@ When Make accepted the bytes but the write's read-back outlived the timeout,
 client VFS and the session sandbox. Both equal to the target confirm the write
 (`verification: "vfs-sandbox-matched-after-uncertain-write"`, with the original
 `uncertainCause`); anything else keeps the uncertain error, adds what each view
-held (`readBack`), and nothing is written again. A write the page refused is
-not read back.
+held (`readBack`), and nothing is written again. A write the page refused, or
+one whose last check saw a mounted editor with different bytes or a new file
+missing from the tree, is not read back.
 A new file must sit below an existing top-level folder: the write proves
 absence by listing an existing ancestor folder, never the project root, so a
 root-level write is refused before anything changes. Snapshot-mode files are refused. A pending
@@ -185,8 +186,8 @@ folder through internal writers and are not affected. The kit that authors
 AtomicAUI vendors workspace source, whose VENDOR.json records no release, so its
 direct writes stay allowed; a project without that VENDOR.json is not affected.
 Team commits (`team save`, `sync`, `pr`, `start --save-first`) and `make deploy`
-refuse in the same case when the clone's installed files differ from the
-VENDOR.json file records (`TEAM_VENDOR_EDITED`, `DEPLOY_VENDOR_EDITED`), listing
+refuse in the same case when the clone's installed files (git-ignored files
+and untracked `.DS_Store` excepted) differ from the VENDOR.json file records (`TEAM_VENDOR_EDITED`, `DEPLOY_VENDOR_EDITED`), listing
 each changed, added or missing file (`src/make-vendor-lock.js`).
 
 `make save-version --title TITLE --expected-path PATH ...` calls Make's own
