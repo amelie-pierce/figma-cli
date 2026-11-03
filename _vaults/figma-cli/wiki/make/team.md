@@ -5,6 +5,7 @@ date: 2026-10-14
 ---
 
 Updated 2026-10-15: vendored files in `save`, the short PR body and reviewer reason, force merge, and quiet toolchain notices.
+Updated 2026-11-03: commits refuse edited release-installed AtomicAUI files (`TEAM_VENDOR_EDITED`); see [vendor-lock.md](vendor-lock.md).
 
 # The team git layer for designers
 

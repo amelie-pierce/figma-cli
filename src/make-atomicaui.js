@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { builtinModules } from 'node:module';
 import { parse } from '@babel/parser';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, lstatSync, renameSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { sourcePath, vendorManifest } from './make-drift.js';
+import { localFiles, vendorEdits } from './make-vendor-lock.js';
 
 export const ATOMICAUI_SITE = 'https://sienna-khaki-58053801.figma.site';
 export const ATOMICAUI_ROOT = 'src/vendor/atomic-aui';
@@ -436,34 +437,7 @@ export async function downloadRelease({ site = ATOMICAUI_SITE, version: pinned, 
   return { manifest, manifestSha256: expectedHash, files, site };
 }
 
-function localFiles(root) {
-  const found = new Map();
-  if (existsSync(root) && lstatSync(root).isSymbolicLink()) throw new Error('AtomicAUI vendor root symlink refused.');
-  function walk(dir) {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name), rel = relative(root, path).split(sep).join('/');
-      const stat = lstatSync(path);
-      if (stat.isSymbolicLink()) throw new Error(`AtomicAUI vendor symlink refused: ${rel}`);
-      if (stat.isDirectory()) walk(path);
-      else if (stat.isFile()) found.set(sourcePath(rel), readFileSync(path));
-      else throw new Error(`AtomicAUI vendor entry refused: ${rel}`);
-    }
-  }
-  if (existsSync(root)) walk(root);
-  return found;
-}
-
-// Local edits of a vendor inventory ({ sha256, bytes } by path) against VENDOR.json's file records.
-export function vendorEdits(inventory, vendorFiles) {
-  const edits = [];
-  for (const [path, item] of vendorFiles) {
-    const actual = inventory.get(path);
-    if (!actual) edits.push(`missing ${path}`);
-    else if (actual.bytes !== item.bytes || actual.sha256 !== item.sha256) edits.push(`changed ${path}`);
-  }
-  for (const path of inventory.keys()) if (path !== 'VENDOR.json' && !vendorFiles.has(path)) edits.push(`added ${path}`);
-  return edits.sort();
-}
+export { vendorEdits } from './make-vendor-lock.js';
 
 export function installedStatus(root) {
   const files = localFiles(root);

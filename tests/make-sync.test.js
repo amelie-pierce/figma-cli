@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { applySync, exportDelta, parseRequest, planSync, validatePlanDigest, writeApplyOutputs } from '../src/make-sync.js';
+import { applySync, exportDelta, parsePackage, parseRequest, planSync, syncReceipt, validatePlanDigest, writeApplyOutputs } from '../src/make-sync.js';
 import { compareVendor, digest, vendorManifest, verifyGeneratedManifest } from '../src/make-drift.js';
 import { MakeClient } from '../src/make-client.js';
 
@@ -457,5 +457,150 @@ test('apply verifies every planned byte before the first Make write', async () =
     writeFileSync(join(f.directory, second), invalid);
     plan.actions.find(action => action.path === second).after = info(invalid);
     await assert.rejects(applySync(client, args), /not valid UTF-8/);
+  } finally { f.dispose(); }
+});
+
+// A workspace that has never committed generated.manifest.json packages its
+// generated tree with generationManifest: null.
+function unbound(f) {
+  f.args.packageData = { ...f.args.packageData, manifest: { ...f.args.packageData.manifest, generationManifest: null } };
+  return f;
+}
+// The kit carries no generated.manifest.json either (the usual unbound case).
+function withoutKitManifest(f) {
+  f.args.contents.delete('tokens/generated.manifest.json');
+  f.args.inventory.delete('tokens/generated.manifest.json');
+  const baseline = JSON.parse(f.args.baselineBytes);
+  baseline.files = baseline.files.filter(file => file.path !== 'tokens/generated.manifest.json');
+  f.args.baselineBytes = text(JSON.stringify(baseline));
+  f.args.contents.set('VENDOR.json', f.args.baselineBytes);
+  f.args.inventory.set('VENDOR.json', { path: 'VENDOR.json', ...info(f.args.baselineBytes) });
+  f.args.request.files[0].baselineSha256 = info(f.args.contents.get('lib/Button.tsx'))?.sha256 ?? null;
+  return f;
+}
+
+function packageDir(reference) {
+  const directory = mkdtempSync(join(tmpdir(), 'make-kit-package-'));
+  const destination = `${root}/tokens/generated`;
+  const tokens = new Map([['.generated', text('sentinel\n')], ['splash-bootstrap.js', text('splash\n')]]);
+  for (const [name, bytes] of tokens) {
+    mkdirSync(join(directory, destination), { recursive: true });
+    writeFileSync(join(directory, destination, name), bytes);
+  }
+  const files = [...tokens].map(([name, bytes]) => ({ path: name, ...info(bytes) }))
+    .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const manifest = { schema: 'atomic-cli/make-kit-package@1', destination: { root: destination },
+    source: { root: 'modules/design/atomic-aui/src/tokens/generated', commit },
+    files, tree: { fileCount: files.length, bytes: files.reduce((n, f) => n + f.bytes, 0),
+      digest: digest(files.map(f => `${f.path}\t${f.bytes}\t${f.sha256}\n`).join('')) } };
+  if (reference !== undefined) manifest.generationManifest = reference;
+  writeFileSync(join(directory, 'make-kit.manifest.json'), JSON.stringify(manifest));
+  return { directory, dispose: () => rmSync(directory, { recursive: true, force: true }) };
+}
+
+test('a package admits a bound generation manifest or an explicit null, nothing else', () => {
+  const bound = { path: 'modules/design/atomic-aui/src/tokens/generated.manifest.json', sha256: 'f'.repeat(64) };
+  for (const [reference, expected] of [[bound, true], [null, false]]) {
+    const p = packageDir(reference);
+    try { assert.equal(parsePackage(p.directory).bound, expected); } finally { p.dispose(); }
+  }
+  for (const reference of [undefined, {}, { ...bound, sha256: 'short' }, { ...bound, path: 'elsewhere.json' }, 'none']) {
+    const p = packageDir(reference);
+    try { assert.throws(() => parsePackage(p.directory), /lacks a bound committed generated tree/); } finally { p.dispose(); }
+  }
+});
+
+test('an unbound package plans a component-only sync when the generated tree is byte-equal, recording a null manifest', () => {
+  const f = withoutKitManifest(unbound(fixture()));
+  try {
+    const { plan } = planSync(f.args);
+    assert.equal(plan.generationManifest, null);
+    assert.ok(Object.hasOwn(plan, 'generationManifest'));
+    assert.equal(plan.actions[0].operation, 'write');
+    assert.deepEqual(plan.unresolved, []);
+    assert.deepEqual(plan.outOfScopeDrift, []);
+    validatePlanDigest(plan);
+    assert.throws(() => validatePlanDigest({ ...plan, generationManifest: { sha256: 'f'.repeat(64) } }), /digest mismatch/);
+    const receipt = syncReceipt({ request: f.args.request, plan, fileKey: 'Scratch', version: { versionNumber: 2 }, writes: [] });
+    assert.ok(Object.hasOwn(receipt, 'generationManifest'));
+    assert.equal(receipt.generationManifest, null);
+    assert.equal(receipt.planDigest, plan.digest);
+  } finally { f.dispose(); }
+});
+
+test('an unbound plan applies through the same writes, save and drift as a bound one', async () => {
+  const f = withoutKitManifest(unbound(fixture()));
+  try {
+    const { plan, vendorBytes } = planSync(f.args);
+    const calls = [];
+    const client = {
+      writeDurable: async (target, content, options) => { calls.push(['write', target, options.expectedSha256]); return { backupPath: '/private/b' }; },
+      deleteDurable: async () => { throw new Error('no delete planned'); },
+      saveVersion: async (_title, paths) => { calls.push(['save', paths]); return { versionNumber: 3, gitSha: saved }; },
+      drift: async () => ({ ok: true, reasons: [] }),
+    };
+    const result = await applySync(client, { plan, vendorBytes, packageData: f.args.packageData, candidateDir: f.directory,
+      generationManifestBytes: null, title: 'Sync' });
+    assert.deepEqual(calls.map(call => call[0]), ['write', 'write', 'save']);
+    assert.equal(calls[0][2], digest('base'));
+    assert.deepEqual(calls[2][1], [path, `${root}/VENDOR.json`]);
+    assert.equal(result.version.versionNumber, 3);
+  } finally { f.dispose(); }
+});
+
+test('an unbound package refuses when the generated tree differs in content, length, path set or a hidden file', () => {
+  const mutations = [
+    f => f.args.packageData.files.set('splash-bootstrap.js', text('splash!\n')),
+    f => f.args.packageData.files.set('.generated', text('Sentinel\n')),
+    f => f.args.packageData.files.set('extra.js', text('extra\n')),
+    f => f.args.packageData.files.delete('splash-bootstrap.js'),
+    f => {
+      const bytes = text('other\n');
+      f.args.contents.set('tokens/generated/.generated', bytes);
+      f.args.inventory.set('tokens/generated/.generated', { path: 'tokens/generated/.generated', ...info(bytes) });
+    },
+  ];
+  for (const mutate of mutations) {
+    const f = withoutKitManifest(unbound(fixture()));
+    try {
+      f.args.packageData.files = new Map(f.args.packageData.files);
+      mutate(f);
+      assert.throws(() => planSync(f.args), /Generated token path set differs|Generated tokens differ from Core package/);
+    } finally { f.dispose(); }
+  }
+});
+
+test('an unbound package refuses token scope and a supplied generation manifest', () => {
+  const tokens = withoutKitManifest(unbound(fixture()));
+  try {
+    const target = `${root}/tokens/generated/.generated`;
+    tokens.args.request.files.push({ path: target, baselineSha256: digest('sentinel\n'), workspaceSha256: digest('sentinel\n'), dependencies: [] });
+    assert.throws(() => planSync(tokens.args), /Token sync requires a package bound/);
+  } finally { tokens.dispose(); }
+  const supplied = withoutKitManifest(unbound(fixture()));
+  try {
+    supplied.args.generationManifestBytes = generation(new Map([['.generated', text('sentinel\n')], ['splash-bootstrap.js', text('splash\n')]]));
+    assert.throws(() => planSync(supplied.args), /package records none to bind it to/);
+  } finally { supplied.dispose(); }
+});
+
+test('an unbound package still checks a generated manifest the kit carries against the tree', () => {
+  const ok = unbound(fixture());
+  try { assert.equal(planSync(ok.args).plan.generationManifest, null); } finally { ok.dispose(); }
+  const stale = unbound(fixture());
+  try {
+    const wrong = generation(new Map([['.generated', text('old\n')], ['splash-bootstrap.js', text('splash\n')]]));
+    stale.args.contents.set('tokens/generated.manifest.json', wrong);
+    assert.throws(() => planSync(stale.args), /Generated tree differs from manifest/);
+  } finally { stale.dispose(); }
+});
+
+test('a bound package records its generation manifest binding in the plan and receipt', () => {
+  const f = fixture();
+  try {
+    const { plan } = planSync(f.args);
+    assert.deepEqual(plan.generationManifest, { path: undefined, sha256: f.args.packageData.manifest.generationManifest.sha256 });
+    const receipt = syncReceipt({ request: f.args.request, plan, fileKey: 'Scratch', version: {}, writes: [] });
+    assert.deepEqual(receipt.generationManifest, plan.generationManifest);
   } finally { f.dispose(); }
 });

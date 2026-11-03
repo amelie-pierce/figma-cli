@@ -865,3 +865,145 @@ test('a CDP call gets a timeout scaled to the file it carries, never past the op
   assert.ok(seen[1] > 110000 && seen[1] <= 120000, `read waits up to the deadline: ${seen[1]}`);
   assert.ok(seen[2] <= 30000, `capped by the deadline: ${seen[2]}`);
 });
+
+// A deep existing file whose post-write read-back outlives the operation
+// deadline although Make accepted the bytes.
+function uncertainClient({ sandbox = current => current, refuse = false, observed } = {}) {
+  const fake = fakeClient({ original: 'old' });
+  const { client, calls } = fake;
+  client._durableAgreement = async (path, content) => {
+    calls.push(['agreement', path, content]);
+    if (content === 'new') {
+      throw Object.assign(new Error(`Make read-back for ${path} timed out before every view agreed (vfs matched, editor unavailable)`), { observed });
+    }
+  };
+  if (refuse) {
+    const durable = client._durable;
+    client._durable = async action => action.type === 'write' ? (calls.push(['write', action.path]), { refused: 'Make source changed.' }) : durable(action);
+  }
+  client._fileBridge = async () => ({ dispose: async () => { calls.push(['dispose']); } });
+  client._bridgeRead = async (_bridge, path) => {
+    calls.push(['sandbox', path]);
+    const { content } = await client._durable({ type: 'read', path });
+    return { content: sandbox(content) };
+  };
+  return fake;
+}
+
+test('an uncertain write is read back once and confirmed when VFS and sandbox hold the target bytes', async () => {
+  const path = 'src/vendor/atomic-aui/lib/table/table-row.tsx';
+  const { client, calls } = uncertainClient();
+  await assert.rejects(client.writeDurable(path, 'new', { expectedSha256: hash('old') }), /outcome is uncertain/);
+  const confirmed = uncertainClient();
+  const result = await confirmed.client.writeDurableConfirmed(path, 'new', { expectedSha256: hash('old') });
+  assert.equal(result.verification, 'vfs-sandbox-matched-after-uncertain-write');
+  assert.equal(result.changed, true);
+  assert.equal(result.sha256, hash('new'));
+  assert.equal(result.beforeSha256, hash('old'));
+  assert.equal(result.backupPath, '/private/backup');
+  assert.equal(result.persistence, 'pending-version');
+  assert.match(result.uncertainCause, /timed out before every view agreed/);
+  assert.equal(confirmed.calls.filter(call => call[0] === 'write').length, 1);
+  // The fake sandbox read reads the fake VFS, hence the inner 'read'.
+  assert.deepEqual(confirmed.calls.slice(-4), [['read', path], ['sandbox', path], ['read', path], ['dispose']]);
+  assert.equal(calls.some(call => call[0] === 'sandbox'), false);
+});
+
+test('an uncertain write whose read-back differs keeps the error and reports what was read', async () => {
+  const path = 'src/vendor/atomic-aui/lib/list/list.tsx';
+  const { client, calls } = uncertainClient({ sandbox: () => 'old' });
+  const error = await client.writeDurableConfirmed(path, 'new', { expectedSha256: hash('old') }).catch(cause => cause);
+  assert.match(error.message, /outcome is uncertain: .*Read-back after it: client VFS matched, sandbox different\./);
+  assert.deepEqual({ vfs: error.readBack.vfs, sandbox: error.readBack.sandbox, sandboxSha256: error.readBack.sandboxSha256,
+    targetSha256: error.readBack.targetSha256 }, { vfs: 'matched', sandbox: 'different', sandboxSha256: hash('old'), targetSha256: hash('new') });
+  assert.equal(error.backupPath, '/private/backup');
+  assert.equal(calls.filter(call => call[0] === 'write').length, 1);
+});
+
+test('an uncertain write whose mounted editor or rendered tree disagreed keeps the error without confirming', async () => {
+  for (const observed of [{ vfs: 'matched', sandbox: 'matched', tree: 'present', editor: 'different' },
+    { vfs: 'matched', sandbox: 'matched', tree: 'absent' }]) {
+    const { client, calls } = uncertainClient({ observed });
+    const error = await client.writeDurableConfirmed('src/App.tsx', 'new', { expectedSha256: hash('old') }).catch(cause => cause);
+    assert.ok(error instanceof Error, JSON.stringify(observed));
+    assert.match(error.message, /outcome is uncertain: .*timed out before every view agreed/);
+    assert.deepEqual(error.uncertainWrite.observed, observed);
+    assert.equal(calls.filter(call => call[0] === 'write').length, 1);
+  }
+  const unanswered = uncertainClient({ observed: { vfs: 'matched', sandbox: 'matched', tree: 'present', editor: 'unavailable' } });
+  const result = await unanswered.client.writeDurableConfirmed('src/App.tsx', 'new', { expectedSha256: hash('old') });
+  assert.equal(result.verification, 'vfs-sandbox-matched-after-uncertain-write');
+  assert.equal('observed' in result, false);
+});
+
+test('a write the page refused is not read back as if it might have landed', async () => {
+  const { client, calls } = uncertainClient({ refuse: true });
+  const error = await client.writeDurableConfirmed('src/App.tsx', 'new', { expectedSha256: hash('old') }).catch(cause => cause);
+  assert.match(error.message, /Make source changed/);
+  assert.equal(error.readBack, undefined);
+  assert.equal(calls.some(call => call[0] === 'sandbox'), false);
+});
+
+test('a failed read-back after an uncertain write is reported with the original error', async () => {
+  const { client } = uncertainClient();
+  client._fileBridge = async () => { throw new Error('No Make filesystem connection was observed'); };
+  await assert.rejects(client.writeDurableConfirmed('src/App.tsx', 'new', { expectedSha256: hash('old') }),
+    /outcome is uncertain: .*The read-back after it also failed: No Make filesystem connection/);
+});
+
+test('a new file\'s pre-write absence check reuses the ancestor check\'s tree listing', async () => {
+  const path = 'public/atomicaui/7.0.2/manifest.json';
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 5000 });
+  client.fileKey = 'ScratchKey';
+  client._operation = fn => fn(Date.now() + 5000);
+  client._ensureCode = async () => ({ busy: false, offline: false, readOnly: false });
+  client._driftState = async () => ({ state: state() });
+  let current = null;
+  const listings = [];
+  const entries = () => [{ kind: 'folder', path: 'public' }, { kind: 'folder', path: 'public/atomicaui' },
+    ...(current === null ? [] : [{ kind: 'folder', path: 'public/atomicaui/7.0.2' }, { kind: 'file', path }])];
+  client._sourceTree = async (_deadline, expectedChange, onSnapshot) => {
+    listings.push(current === null ? 'before' : 'after');
+    if (current !== null) assert.equal(expectedChange.beforeEntries.length, 2);
+    const list = entries();
+    onSnapshot?.({ entries: list, rows: list.map(entry => ({ name: entry.path })) });
+    return list;
+  };
+  client._durable = async action => {
+    if (action.type === 'read') return { exists: current !== null, content: current };
+    if (action.type === 'write') { current = action.content; return { accepted: true }; }
+  };
+  client._fileBridge = async () => ({ dispose: async () => {}, invoke: async (_fn, [, data]) => {
+    const names = { code: ['public'], 'code/public': ['atomicaui'], 'code/public/atomicaui': current === null ? [] : ['7.0.2'] }[data.path];
+    if (!names) throw new Error('Make filesystem request timed out; outcome is unknown.');
+    return { success: true, data: { path: data.path, files: names.map(name => ({ name })) } };
+  } });
+  client._bridgeRead = async () => ({ content: current });
+  const result = await client.writeDurable(path, '{}', { releaseAsset: true });
+  assert.equal(result.verification, 'tree-vfs-sandbox-release-matched');
+  assert.deepEqual(listings, ['before', 'after']);
+});
+
+test('several sandbox files are read in one operation without listing the file tree', async () => {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 5000 });
+  client.fileKey = 'ScratchKey';
+  let operations = 0;
+  client._operation = fn => { operations++; return fn(Date.now() + 5000); };
+  client._sourceTree = async () => { throw new Error('the tree must not be listed'); };
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._bridgeRead = async (_bridge, path) => ({ content: `bytes of ${path}` });
+  const files = await client.readRemoteFiles(['package.json', 'public/atomicaui/latest.json']);
+  assert.equal(operations, 1);
+  assert.deepEqual([...files.keys()], ['package.json', 'public/atomicaui/latest.json']);
+  assert.equal(files.get('package.json').sha256, hash('bytes of package.json'));
+  assert.throws(() => client.readRemoteFiles([]), /1–64/);
+  assert.throws(() => client.readRemoteFiles(['../escape']), /path/i);
+});
+
+test('make write offers the vendor tree fallback', () => {
+  const cli = fileURLToPath(new URL('../src/index.js', import.meta.url));
+  const result = spawnSync(process.execPath, [cli, 'make', 'write', '--help'],
+    { env: { ...process.env, FIGMA_CLI_NO_UPDATE_CHECK: '1' }, encoding: 'utf8' });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /--vendor-tree-fallback/);
+});

@@ -44,12 +44,18 @@ export function readArtifact(root, path) {
 export function parsePackage(packageDir) {
   const raw = readArtifact(packageDir, 'make-kit.manifest.json');
   const packageManifest = json(raw, 'Make kit package');
+  // A workspace that has never committed generated.manifest.json packages its
+  // tree with an explicit null reference. Such a package is unbound: it can
+  // only prove an unchanged token tree for component-only sync (planSync).
+  const reference = packageManifest?.generationManifest;
+  const bound = reference?.path === 'modules/design/atomic-aui/src/tokens/generated.manifest.json' &&
+    HASH.test(reference?.sha256 || '');
+  const unbound = reference === null;
   if (packageManifest?.schema !== 'atomic-cli/make-kit-package@1' ||
       packageManifest.destination?.root !== `${VENDOR_ROOT}/tokens/generated` ||
       packageManifest.source?.root !== 'modules/design/atomic-aui/src/tokens/generated' ||
       !COMMIT.test(packageManifest.source?.commit || '') ||
-      packageManifest.generationManifest?.path !== 'modules/design/atomic-aui/src/tokens/generated.manifest.json' ||
-      !HASH.test(packageManifest.generationManifest?.sha256 || '') ||
+      !(bound || unbound) ||
       !Array.isArray(packageManifest.files) || !packageManifest.files.length) {
     throw new Error('Make kit package lacks a bound committed generated tree.');
   }
@@ -86,7 +92,7 @@ export function parsePackage(packageDir) {
   };
   visit(resolve(packageDir));
   if (expected.size) throw new Error(`Package files are missing: ${[...expected].join(', ')}`);
-  return { manifest: packageManifest, files, sha256: digest(raw) };
+  return { manifest: packageManifest, files, sha256: digest(raw), bound };
 }
 
 export function parseRequest(bytes, fileKey) {
@@ -153,6 +159,14 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
     .filter(path => path !== 'VENDOR.json' && !scope.has(path) && !same(baseline.files.get(path), inventory.get(path)))
     .sort();
   const tokenScope = [...scope].some(path => path.startsWith(GENERATED) || path === GENERATION_MANIFEST);
+  // parsePackage admits only a bound reference or an explicit null.
+  const bound = packageData.manifest.generationManifest !== null;
+  if (!bound && tokenScope) {
+    throw new Error('Token sync requires a package bound to a committed generation manifest; this package records none.');
+  }
+  if (!bound && generationManifestBytes) {
+    throw new Error('A generation manifest was supplied, but the package records none to bind it to.');
+  }
   if (tokenScope) {
     for (const path of new Set([...packaged.keys(), GENERATION_MANIFEST])) {
       if (!scope.has(path)) throw new Error(`Token sync scope must include ${fullPath(path)}.`);
@@ -169,13 +183,19 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
     for (const [path, expected] of packaged) if (!same(currentTokens.get(path), expected)) {
       throw new Error(`Generated tokens differ from Core package: ${path}`);
     }
-    // Older kits carry the generated tree but not its manifest file. The
-    // committed package may supply that exact manifest for read-only proof.
-    const manifest = contents.get(GENERATION_MANIFEST) || generationManifestBytes;
-    if (!manifest || digest(manifest) !== packageData.manifest.generationManifest.sha256) {
-      throw new Error('Make generated.manifest.json differs from Core package.');
+    if (bound) {
+      // Older kits carry the generated tree but not its manifest file. The
+      // committed package may supply that exact manifest for read-only proof.
+      const manifest = contents.get(GENERATION_MANIFEST) || generationManifestBytes;
+      if (!manifest || digest(manifest) !== packageData.manifest.generationManifest.sha256) {
+        throw new Error('Make generated.manifest.json differs from Core package.');
+      }
+      verifyGeneratedManifest(manifest, inventory);
+    } else if (contents.has(GENERATION_MANIFEST)) {
+      // An unbound package proves the tree byte for byte (above); a manifest
+      // the kit carries must still describe that same tree.
+      verifyGeneratedManifest(contents.get(GENERATION_MANIFEST), inventory);
     }
-    verifyGeneratedManifest(manifest, inventory);
   }
   const actions = [];
   const unresolved = [];
@@ -228,7 +248,11 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
   const finalTokens = new Map([...expected].filter(([path]) => path.startsWith(GENERATED)));
   const manifestBytes = scope.has(GENERATION_MANIFEST) ? generationManifestBytes :
     (contents.get(GENERATION_MANIFEST) || generationManifestBytes);
-  if (!unresolved.length) verifyGeneratedManifest(manifestBytes, finalTokens);
+  if (!bound) {
+    if (finalTokens.size !== packaged.size || [...packaged].some(([path, file]) => !same(finalTokens.get(path), file))) {
+      throw new Error('Unbound package sync would change the generated token tree.');
+    }
+  } else if (!unresolved.length) verifyGeneratedManifest(manifestBytes, finalTokens);
   const sameBaseline = expected.size === baseline.files.size && [...expected]
     .every(([path, entry]) => same(entry, baseline.files.get(path)));
   let vendorBytes = sameBaseline ? baselineBytes : Buffer.from(`${JSON.stringify({ ...JSON.parse(baselineBytes.toString('utf8')),
@@ -267,7 +291,9 @@ export function planSync({ request, requestSha256, packageData, baselineBytes, c
     baselineManifestSha256: digest(baselineBytes), beforeInventory: [...inventory.values()]
       .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
     candidateDir: resolve(candidateDir), scope: request.files.map(file => ({ ...file })), actions, unresolved, outOfScopeDrift,
-    vendorBefore: inventory.get('VENDOR.json'), vendorAfter, generatedTreeDigest: packageData.manifest.tree.digest };
+    vendorBefore: inventory.get('VENDOR.json'), vendorAfter, generatedTreeDigest: packageData.manifest.tree.digest,
+    generationManifest: bound ? { path: packageData.manifest.generationManifest.path,
+      sha256: packageData.manifest.generationManifest.sha256 } : null };
   plan.digest = digest(JSON.stringify(plan));
   return { plan, vendorBytes };
 }
@@ -369,6 +395,19 @@ export async function applySync(client, { plan, vendorBytes, packageData, candid
     error.completedWrites = writes;
     throw error;
   }
+}
+
+// The applied receipt. generationManifest repeats the plan's binding, null
+// when the package was unbound (component-only scope).
+export function syncReceipt({ request, plan, fileKey, version, writes }) {
+  return { schema: 'figma-cli/make-sync-receipt@1', requestId: request.requestId, who: request.who,
+    direction: request.direction, fileKey, scope: plan.scope, choices: request.choices,
+    planDigest: plan.digest, baselineManifestSha256: plan.baselineManifestSha256,
+    beforeManifestSha256: plan.vendorBefore.sha256,
+    workspaceCommit: plan.workspaceCommit, previousMakeVersion: plan.makeVersion,
+    makeVersion: version, files: writes, generatedTreeDigest: plan.generatedTreeDigest,
+    generationManifest: plan.generationManifest,
+    verification: 'saved-clean-drift-matched; fresh-sandbox-reload-pending' };
 }
 
 export function afterManifestPath(receiptPath) {

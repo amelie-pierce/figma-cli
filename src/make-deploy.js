@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { isIgnored, parseIgnore } from './git-tree.js';
 import { requireGitMode, TREE_HIDDEN_ROOT_FILES } from './make-durable.js';
+import { requireLocalVendorUnedited } from './make-vendor-lock.js';
 import { install as installProject } from './make-local.js';
 import { readRepoAccess } from './make-mode.js';
 import { detectMode, ghRunner, isRepoOnly, lfsMatcher, MAKE_MANAGED, parseMarker, PROJECT_EXCLUDES, PROJECT_MARKER, repoName } from './make-project.js';
@@ -25,7 +26,7 @@ export const RECEIPT_SCHEMA = 'figma-cli/make-deploy-receipt@1';
 export const TAG_PREFIX = 'make-deploy/';
 export const MAX_FILE_BYTES = 2 * 1024 * 1024;
 export const DEPLOY_CODES = Object.freeze(['DEPLOY_SOLO', 'DEPLOY_NOT_TEAM', 'DEPLOY_REPO_MISMATCH', 'DEPLOY_NOT_ADMIN', 'DEPLOY_GH_FAILED',
-  'DEPLOY_NOT_MAIN', 'DEPLOY_DIRTY', 'DEPLOY_NOT_CURRENT', 'DEPLOY_UNREVIEWED', 'DEPLOY_INSTALL_FAILED', 'DEPLOY_BUILD_FAILED',
+  'DEPLOY_NOT_MAIN', 'DEPLOY_DIRTY', 'DEPLOY_VENDOR_EDITED', 'DEPLOY_NOT_CURRENT', 'DEPLOY_UNREVIEWED', 'DEPLOY_INSTALL_FAILED', 'DEPLOY_BUILD_FAILED',
   'DEPLOY_MAKE_BUSY', 'DEPLOY_MAKE_STATE', 'DEPLOY_MAKE_AHEAD', 'DEPLOY_UNFINISHED', 'DEPLOY_BINARY', 'DEPLOY_LFS',
   'DEPLOY_UNSUPPORTED_PATH', 'DEPLOY_IGNORE', 'DEPLOY_MARKER', 'DEPLOY_NOTHING', 'DEPLOY_STALE_PLAN', 'DEPLOY_MAIN_MOVED', 'DEPLOY_TAG_CLASH',
   'DEPLOY_WRITE_FAILED', 'DEPLOY_SAVE_UNCERTAIN', 'DEPLOY_DRIFT', 'DEPLOY_TAG_FAILED', 'DEPLOY_RECEIPT', 'DEPLOY_VERIFY_FAILED']);
@@ -676,6 +677,7 @@ const excludedText = plan => (plan.excluded.length ? ` ${plan.excluded.length} e
 
 export async function deployPlan(client, { dir, overrideMake = false, deleteMakeOnly = false } = {}, deps = {}) {
   deps = defaults(deps);
+  requireLocalVendorUnedited(teamContext({ dir: resolve(dir || '.'), run: deps.run, warn: deps.warn }), 'DEPLOY_VENDOR_EDITED', 'the deploy');
   if (deleteMakeOnly && !overrideMake) fail('--delete-make-only requires --override-make.', 'DEPLOY_STALE_PLAN');
   const { plan, access, pr, built } = await prepare(client, { dir, overrideMake, deleteMakeOnly }, deps);
   const c = counts(plan.files);
@@ -1023,6 +1025,7 @@ export function driftProblems(status, receipt, mainFlat) {
 
 export async function deployApply(client, { dir, planPath, confirmOverride, overrideMake = false, deleteMakeOnly = false } = {}, deps = {}) {
   deps = defaults(deps);
+  requireLocalVendorUnedited(teamContext({ dir: resolve(dir || '.'), run: deps.run, warn: deps.warn }), 'DEPLOY_VENDOR_EDITED', 'the deploy');
   const reviewed = readPlan(planPath);
   if (hasRefusals(reviewed)) fail('The reviewed plan has refused paths; resolve them and run a new dry run. Nothing was deployed.', 'DEPLOY_UNSUPPORTED_PATH');
   if (reviewed.mode === 'override-make') {

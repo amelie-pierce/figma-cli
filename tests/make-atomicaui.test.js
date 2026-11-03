@@ -7,11 +7,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRelease, DEFAULT_PART_BASE64_BYTES, downloadRelease, getBytes, installRelease, installedStatus, nextPatch, vendorEdits,
   planBreakingFixes, releaseDependencies } from '../src/make-atomicaui.js';
-import { installSoloRelease, installTeamRelease, prepareTeamBranch, releaseAtomicaui, teamChangeReport,
+import { findProvider, installSoloRelease, installTeamRelease, providerCandidates, prepareTeamBranch, releaseAtomicaui, teamChangeReport,
   verifyAtomicauiRelease } from '../src/commands/make-atomicaui.js';
 import { defaultRun, teamContext } from '../src/make-team.js';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+// Release pre-write reads go through readRemoteFiles; read() would list the
+// whole file tree again, so the fakes refuse it.
+function remoteReader(files, batches) {
+  return {
+    read: async () => { throw new Error('release pre-write reads must not list the file tree again'); },
+    readRemoteFiles: async paths => {
+      batches.push(paths);
+      return new Map(paths.map(path => [path, { content: files.get(path).toString(), sha256: hash(files.get(path)) }]));
+    },
+  };
+}
 const KIT_PACKAGE = Buffer.from(JSON.stringify({ dependencies: { '@base-ui/react': '^1.2.0', react: '^19.1.0' } }));
 function fixture(version = '7.0.0') {
   const source = new Map([
@@ -221,14 +232,14 @@ test('local install stages files and refuses edited vendor files', async () => {
 test('fake Make client receives an immutable release folder and one exact save', async () => {
   const { inventory, contents } = fixture();
   const files = new Map([['public/favicon.svg', Buffer.from('<svg/>')], ['package.json', KIT_PACKAGE]]);
-  const saved = [];
+  const saved = [], remoteBatches = [];
   const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40), pendingPaths: [], isLoading: false, error: false, pendingCount: 0 };
   const client = {
     fileKey: 'atomicaui-test-fixture',
     projectMarker: async () => null,
     _driftState: async () => ({ state }),
     files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
-    read: async path => ({ content: files.get(path).toString(), sha256: hash(files.get(path)) }),
+    ...remoteReader(files, remoteBatches),
     inventoryVendor: async () => ({ inventory, contents, state }),
     writeDurable: async (path, content, { expectedSha256 } = {}) => {
       assert.ok(expectedSha256 == null);
@@ -243,6 +254,8 @@ test('fake Make client receives an immutable release folder and one exact save',
     },
   };
   const result = await releaseAtomicaui(client, { requestedVersion: '7.0.0' });
+  // The tree is listed once; the pre-write file reads are one sandbox batch.
+  assert.deepEqual(remoteBatches, [['package.json']]);
   assert.equal(saved.length, 1);
   assert.deepEqual(saved[0], [...files.keys()].filter(path => path.startsWith('public/atomicaui/')).sort());
   assert.equal(result.savedVersion, 18);
@@ -255,12 +268,12 @@ test('an older release keeps its folder but leaves latest.json at the newest rel
   const { inventory, contents } = fixture();
   const files = new Map([['package.json', KIT_PACKAGE]]);
   const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40), pendingPaths: [], isLoading: false, error: false, pendingCount: 0 };
-  const written = [];
+  const written = [], remoteBatches = [];
   const client = {
     fileKey: 'atomicaui-latest-fixture', projectMarker: async () => null,
     _driftState: async () => ({ state }),
     files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
-    read: async path => ({ content: files.get(path).toString(), sha256: hash(files.get(path)) }),
+    ...remoteReader(files, remoteBatches),
     inventoryVendor: async () => ({ inventory, contents, state }),
     writeDurable: async (path, content, { expectedSha256 } = {}) => {
       assert.equal(expectedSha256 || null, files.has(path) ? hash(files.get(path)) : null);
@@ -273,7 +286,9 @@ test('an older release keeps its folder but leaves latest.json at the newest rel
   await releaseAtomicaui(client, { requestedVersion: '7.1.0' });
   assert.equal(latest(), '7.1.0');
   written.length = 0;
+  remoteBatches.length = 0;
   const backport = await releaseAtomicaui(client, { requestedVersion: '7.0.6' });
+  assert.deepEqual(remoteBatches, [['package.json', 'public/atomicaui/latest.json']]);
   assert.equal(latest(), '7.1.0');
   assert.equal(written.includes('public/atomicaui/latest.json'), false);
   assert.ok(written.includes('public/atomicaui/7.0.6/manifest.json'));
@@ -325,13 +340,13 @@ test('interrupted release keeps a matching part, rewrites a mismatched part and 
   const files = new Map([[firstPath, release.output.get(firstPath)], [manifestPath, Buffer.from('corrupted')], ['package.json', KIT_PACKAGE]]);
   const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40),
     pendingPaths: [firstPath, manifestPath], isLoading: false, error: false, pendingCount: 2 };
-  const writes = [], saves = [];
+  const writes = [], saves = [], remoteBatches = [];
   const client = {
     fileKey: 'atomicaui-resume-fixture',
     projectMarker: async () => null,
     _driftState: async () => ({ state }),
     files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
-    read: async path => ({ content: files.get(path).toString(), sha256: hash(files.get(path)) }),
+    ...remoteReader(files, remoteBatches),
     inventoryVendor: async () => ({ inventory, contents, state }),
     writeDurable: async (path, content, { expectedSha256 } = {}) => {
       assert.equal(expectedSha256 || null, files.has(path) ? hash(files.get(path)) : null);
@@ -351,6 +366,8 @@ test('interrupted release keeps a matching part, rewrites a mismatched part and 
   assert.equal(result.releasePaths, expected.length);
   assert.ok(!writes.includes(firstPath));
   assert.ok(writes.includes(manifestPath));
+  assert.ok(remoteBatches.every(batch => batch.length <= 4));
+  assert.ok(remoteBatches.flat().includes(firstPath) && remoteBatches.flat().includes(manifestPath));
   assert.deepEqual(saves, [expected]);
   state.pendingPaths = [firstPath]; state.pendingCount = 1;
   await assert.rejects(releaseAtomicaui(client, { requestedVersion: '7.0.0', resume: true }), /immutable release/);
@@ -370,6 +387,7 @@ test('fake solo Make client writes provider, stylesheet, sass, dependencies and 
     _driftState: async () => ({ state }),
     files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
     read: async path => ({ content: files.get(path).toString(), sha256: hash(files.get(path)) }),
+    readRemoteFiles: async paths => new Map(paths.map(path => [path, { content: files.get(path).toString(), sha256: hash(files.get(path)) }])),
     writeDurable: async (path, content, { expectedSha256, vendorTreeFallback } = {}) => {
       assert.equal(expectedSha256 || null, files.has(path) ? hash(files.get(path)) : null);
       assert.equal(vendorTreeFallback, path.startsWith('src/vendor/atomic-aui/'));
@@ -457,6 +475,7 @@ test('solo add resumes only exact pending release files and saves them once', as
     _driftState: async () => ({ state }),
     files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
     read: async path => ({ content: files.get(path).toString(), sha256: hash(files.get(path)) }),
+    readRemoteFiles: async paths => new Map(paths.map(path => [path, { content: files.get(path).toString(), sha256: hash(files.get(path)) }])),
     readSaved: async paths => new Map(paths.map(path => [path, path === first || !files.has(path) ? null : files.get(path).toString()])),
     inventoryVendor: async () => {
       const contents = new Map([...files].filter(([path]) => path.startsWith('src/vendor/atomic-aui/'))
@@ -515,6 +534,7 @@ function soloMake(files, pendingPaths = [], saved = new Map(files)) {
     _driftState: async () => ({ state }),
     files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
     read: async path => ({ content: files.get(path).toString(), sha256: hash(files.get(path)) }),
+    readRemoteFiles: async paths => new Map(paths.map(path => [path, { content: files.get(path).toString(), sha256: hash(files.get(path)) }])),
     inventoryVendor: async () => vendorScan(),
     readSaved: async paths => new Map(paths.map(path => [path, saved.has(path) ? saved.get(path).toString() : null])),
     writeDurable: async (path, content, { expectedSha256 } = {}) => {
@@ -795,4 +815,66 @@ test('vendor edits report missing, changed and added files against VENDOR.json r
   const inventory = new Map([['VENDOR.json', record('{}')], ['a.ts', record('a')], ['b.ts', record('B')], ['d.ts', record('d')]]);
   assert.deepEqual(vendorEdits(inventory, vendorFiles), ['added d.ts', 'changed b.ts', 'missing c.ts']);
   assert.deepEqual(vendorEdits(new Map([['a.ts', record('a')]]), new Map([['a.ts', record('a')]])), []);
+});
+
+test('the provider check looks at app scripts only, outside the vendor folder and src/main.tsx', () => {
+  assert.deepEqual(providerCandidates(['src/App.tsx', 'src/main.tsx', 'src/vendor/atomic-aui/provider.tsx', 'src/theme/Shell.jsx',
+    'src/styles.css', 'public/index.tsx', 'src/lib/util.mts']), ['src/App.tsx', 'src/lib/util.mts', 'src/theme/Shell.jsx']);
+  assert.equal(findProvider(new Map([['src/App.tsx', 'return <AuiIdentityProvider brand="atomic" theme={theme}>{children}</AuiIdentityProvider>']])),
+    'src/App.tsx');
+  assert.equal(findProvider(new Map([['src/Self.tsx', 'const p = <AuiIdentityProvider/>']])), 'src/Self.tsx');
+  assert.equal(findProvider(new Map([['src/App.tsx', "import { AuiIdentityProvider } from './vendor/atomic-aui'\n// <AuiIdentityProviderX>"]])), null);
+});
+
+function soloProviderClient(files) {
+  const saves = [];
+  const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40), pendingPaths: [], isLoading: false, error: false, pendingCount: 0 };
+  const client = {
+    fileKey: 'atomicaui-provider-fixture', projectMarker: async () => null,
+    _driftState: async () => ({ state }),
+    files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
+    read: async path => ({ content: files.get(path).toString(), sha256: hash(files.get(path)) }),
+    readRemoteFiles: async paths => new Map(paths.map(path => [path, { content: files.get(path).toString(), sha256: hash(files.get(path)) }])),
+    writeDurable: async (path, content) => { files.set(path, Buffer.from(content)); return { changed: true }; },
+    saveVersion: async (_title, paths) => { saves.push(paths); return { versionNumber: 4, gitSha: 'b'.repeat(40) }; },
+    inventoryVendor: async () => {
+      const contents = new Map([...files].filter(([path]) => path.startsWith('src/vendor/atomic-aui/'))
+        .map(([path, bytes]) => [path.slice('src/vendor/atomic-aui/'.length), bytes]));
+      return { contents, inventory: new Map([...contents].map(([path, bytes]) => [path, { bytes: bytes.length, sha256: hash(bytes) }])), state };
+    },
+  };
+  return { client, saves };
+}
+
+test('solo add keeps an app\'s own provider and never wraps src/main.tsx in a second one', async () => {
+  const { payload } = fixture();
+  const main = "import App from './App'\n<App />\n";
+  const files = new Map([
+    ['src/main.tsx', Buffer.from(main)],
+    ['src/App.tsx', Buffer.from("import { AuiIdentityProvider } from './vendor/atomic-aui'\nexport default () => <AuiIdentityProvider brand=\"atomic\" theme={mode}><Page /></AuiIdentityProvider>\n")],
+    ['package.json', Buffer.from(JSON.stringify({ dependencies: { react: '^19' }, devDependencies: {} }))],
+  ]);
+  const { client } = soloProviderClient(files);
+  const result = await installSoloRelease(client, payload, { mode: 'add' });
+  const wired = files.get('src/main.tsx').toString();
+  assert.doesNotMatch(wired, /AuiIdentityProvider/);
+  assert.match(wired, /tokens\/index.scss/);
+  assert.deepEqual(result.notes, ["AtomicAUI's provider is already rendered in src/App.tsx, so src/main.tsx was not wrapped in a second one."]);
+  assert.match(result.summary, /already rendered in src\/App\.tsx/);
+  const plain = new Map([['src/main.tsx', Buffer.from(main)], ['src/App.tsx', Buffer.from('export default () => <Page />\n')],
+    ['package.json', Buffer.from(JSON.stringify({ dependencies: { react: '^19' }, devDependencies: {} }))]]);
+  const second = await installSoloRelease(soloProviderClient(plain).client, payload, { mode: 'add' });
+  assert.match(plain.get('src/main.tsx').toString(), /<AuiIdentityProvider brand="atomic" theme="light"><App \/><\/AuiIdentityProvider>/);
+  assert.equal(second.notes, undefined);
+});
+
+test('team add keeps a provider the app renders outside src/main.tsx', async t => {
+  const { payload } = fixture();
+  const team = teamApp(t, { react: '^19.0.0' });
+  team.commitAs({ 'src/App.tsx': "export default () => <AuiIdentityProvider brand=\"atomic\" theme={mode}><Page /></AuiIdentityProvider>\n" });
+  team.git(team.clone, 'push', '-q', 'origin', 'main');
+  await assert.rejects(installTeamRelease(team.clone, payload, { mode: 'add', run: team.run }), /Opening the pull request failed/);
+  const main = team.git(team.clone, 'show', `${BRANCH}:src/main.tsx`);
+  assert.doesNotMatch(main, /AuiIdentityProvider/);
+  assert.match(main, /tokens\/index.scss/);
 });

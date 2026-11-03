@@ -6,6 +6,8 @@ date: 2026-10-16
 
 # AtomicAUI kit-hosted releases
 
+Updated 2026-11-03: batched release pre-write reads and the provider guard; see the last two sections.
+
 `make atomicaui release` builds a versioned payload under
 `public/atomicaui/<version>/` and moves `public/atomicaui/latest.json` after
 writing the full payload, unless the version is older than the current latest
@@ -56,3 +58,26 @@ generated tree against the supplied committed package manifest during a
 read-only component sync plan (`src/make-sync.js:175`). Tests for the release
 transport, interrupted resume, and sync boundary are in
 `tests/make-atomicaui.test.js` and `tests/make-sync.test.js`.
+
+## Release pre-write reads
+
+`release` lists the kit file tree once, then reads `package.json` and
+`latest.json` in one sandbox batch (`readRemoteFiles`, no further tree listing),
+and an interrupted folder's files in batches of four
+(`src/commands/make-atomicaui.js:50`, `src/commands/make-atomicaui.js:87`).
+Earlier each `read --remote` listed the whole tree again. A release attempt
+that timed out reported `completedWrites: []`, which is raised inside the
+write loop, so the first write's own pre-write tree listings were also in the
+budget; see "Uncertain writes" in [persistence.md](persistence.md). Any failed
+read still stops before writing.
+
+## Provider guard
+
+`add`/`upgrade` wrap `<App />` in `src/main.tsx` only when no app script under
+`src/` outside the vendor folder renders `<AuiIdentityProvider`
+(`providerCandidates`, `findProvider`, `src/commands/make-atomicaui.js:177`).
+Otherwise only the stylesheet import is added and the result carries a
+`notes` line. Solo reads the scripts in batches of 16, from the saved version
+when resuming; team reads `main` and then the working tree. Tests: the provider
+tests at the end of `tests/make-atomicaui.test.js`.
+

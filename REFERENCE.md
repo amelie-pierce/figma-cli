@@ -157,10 +157,38 @@ client VFS, sandbox and tree must agree instead
 tree takes the same fallback only while no editor, or another file's editor, is
 mounted. A mounted editor of the file must still match.
 If the views still disagree at the timeout, the error names each view's state.
+`--vendor-tree-fallback` (only for `src/vendor/atomic-aui/` paths, as `make sync`
+and solo AtomicAUI installs use internally) also accepts client VFS, sandbox and
+tree agreement when a deep path cannot be selected and the mounted editor reports
+no path (`verification: "tree-vfs-sandbox-vendor-matched"`); an editor showing
+the same path must still match.
+When Make accepted the bytes but the write's read-back outlived the timeout,
+`make write` reads the path once more, in a fresh read-only operation, from the
+client VFS and the session sandbox. Both equal to the target confirm the write
+(`verification: "vfs-sandbox-matched-after-uncertain-write"`, with the original
+`uncertainCause`); anything else keeps the uncertain error, adds what each view
+held (`readBack`), and nothing is written again. A write the page refused, or
+one whose last check saw a mounted editor with different bytes or a new file
+missing from the tree, is not read back.
 A new file must sit below an existing top-level folder: the write proves
 absence by listing an existing ancestor folder, never the project root, so a
 root-level write is refused before anything changes. Snapshot-mode files are refused. A pending
 write is not saved.
+
+**Release-installed AtomicAUI is read-only to direct edits.** When
+`src/vendor/atomic-aui/VENDOR.json` records `atomicauiRelease` (the app installed
+AtomicAUI with `make atomicaui add`/`upgrade`), `make write`, `delete`,
+`replace`, `create`, `import` and `remove` refuse every path in that folder
+(`code: "MAKE_VENDOR_LOCKED"`) before writing, because each upgrade replaces the
+folder. Change the app outside it, or update the library with `make atomicaui
+upgrade`. The AtomicAUI `release`, `add`/`upgrade` and `sync` commands write the
+folder through internal writers and are not affected. The kit that authors
+AtomicAUI vendors workspace source, whose VENDOR.json records no release, so its
+direct writes stay allowed; a project without that VENDOR.json is not affected.
+Team commits (`team save`, `sync`, `pr`, `start --save-first`) and `make deploy`
+refuse in the same case when the clone's installed files (git-ignored files
+and untracked `.DS_Store` excepted) differ from the VENDOR.json file records (`TEAM_VENDOR_EDITED`, `DEPLOY_VENDOR_EDITED`), listing
+each changed, added or missing file (`src/make-vendor-lock.js`).
 
 `make save-version --title TITLE --expected-path PATH ...` calls Make's own
 in-page `createVersion` only when the complete pending path set matches the
@@ -397,6 +425,8 @@ figma-cli make deploy --file KEY --apply PLAN --confirm-override DIGEST12
 ```
 
 Normal deploy guards, each refusing with nothing written:
+- a release-installed AtomicAUI folder in the clone equals its VENDOR.json file
+  records (`DEPLOY_VENDOR_EDITED`, checked first, also on `--apply`);
 - the Make file is in team mode (`DEPLOY_SOLO`: a solo file has nothing to deploy
   from; `DEPLOY_NOT_TEAM`: ambiguous or invalid marker) and the clone's origin is
   the marker's repo (`DEPLOY_REPO_MISMATCH`);
@@ -827,6 +857,14 @@ changed and the breaking notes.
 so vendor drift, sync plans and export deltas never read it. An older kit without `tokens/generated.manifest.json`
 can use the matching committed package manifest through `make sync
 --generation-manifest` for a read-only component sync plan.
+`add` and `upgrade` wrap `<App />` in `src/main.tsx` with `AuiIdentityProvider`
+only when no app script under `src/` (outside the vendor folder) already
+renders `<AuiIdentityProvider`; otherwise they keep the app's provider, add
+only the stylesheet import, and report a `notes` line naming the file.
+`release` lists the kit's file tree once and reads `package.json` and the
+current `latest.json` in one sandbox batch (interrupted release files in small
+batches), so its pre-write reads stay inside the per-operation timeout; any
+failed read stops the release before it writes.
 
 ### Make delta and sync
 
@@ -850,6 +888,16 @@ committed file with `--generation-manifest` for a token update. Its SHA-256 must
 match the package's `generationManifest.sha256`. A component-only sync requires
 the existing Make generated manifest and complete token tree to match the
 package. The trusted VENDOR.json bytes must match Make's copy.
+A workspace that has never committed `generated.manifest.json` packages its tree
+with `generationManifest: null` (an unbound package). `make sync` accepts that
+package only for a component-only scope, and only when Make's generated token
+tree equals the package tree byte for byte: the same path set (hidden files
+included), byte counts and SHA-256. A generated manifest the kit already carries
+must still describe that tree. Token scope, or a `--generation-manifest` file,
+with an unbound package is refused. The plan and the receipt record
+`generationManifest` explicitly: the bound `{path, sha256}`, or `null`. Dry run,
+plan digest, expected-hash checks, conflict refusal, backups and receipt are
+otherwise unchanged.
 
 The request is JSON with schema `figma-cli/make-sync-request@1`, `fileKey`,
 `requestId`, `requestedAt`, `who`, `direction` (`workspace-to-make`; Make

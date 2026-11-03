@@ -6,6 +6,8 @@ date: 2026-10-13
 
 # Explicit Make library sync
 
+Updated 2026-11-03: unbound packages for component-only scope; see "Unbound packages" below.
+
 `make export-delta` exports additions, edits and deletions from a clean saved
 Make version relative to an external VENDOR.json baseline. Its full vendor
 paths are accepted by workspace `atomic-cli intake-make-delta --from`; generated
@@ -46,6 +48,22 @@ working-copy proof; fresh-sandbox reload is still required for persisted-state
 proof (`src/commands/make.js:224`, `src/make-client.js:735`).
 
 Tests: `tests/make-sync.test.js` and `tests/make-drift.test.js`.
+
+## Unbound packages
+
+A workspace that has never committed `generated.manifest.json` packages its
+tree with `generationManifest: null`. `parsePackage` admits a bound reference or
+that explicit null, nothing else (`src/make-sync.js:53`). `planSync` refuses an
+unbound package for token scope or with a supplied `--generation-manifest`
+(`src/make-sync.js:165`). For component-only scope the existing byte-equality
+check of Make's generated tree against the package (path set including hidden
+files, byte counts, SHA-256) is the proof; a manifest the kit carries must
+still describe the tree, and the final token set must equal the package
+(`src/make-sync.js:253`). The plan records `generationManifest` as the bound
+`{path, sha256}` or `null`, so it is part of the digest (`src/make-sync.js:295`),
+and `syncReceipt` repeats it (`src/make-sync.js:402`). A candidate VENDOR.json is
+still adopted only when its metadata differs solely in `source.commit` and
+`commitDate`, so guidance hash changes need their own write and save.
 
 ## Live validation, 2026-10-13
 
