@@ -1,0 +1,44 @@
+tests/make-project-client.test.js
+  s_691eb76a3a7c5d::t_cc74eeb8b5f401 82-83
+src/make-size.js
+  s_691eb76a3a7c5d::t_45cd279c125caf 1-74
+src/make-client.js
+  s_691eb76a3a7c5d::t_d476e7990ccfaa 50-63,1315,1371
+tests/make-size.test.js
+  s_691eb76a3a7c5d::t_02464b4085e5a1 1-57
+skills/figma-make-team/SKILL.md
+  s_691eb76a3a7c5d::t_3905464c246df3 116-134
+_vaults/figma-cli/wiki/make/index.md
+  s_691eb76a3a7c5d::t_e7a58fed56958b 19
+tests/make-deploy.test.js
+  s_691eb76a3a7c5d::t_7476c34b1e343c 1987-1988
+  s_691eb76a3a7c5d::t_9cc67382f83bce 1984-1986,1989-2012
+REFERENCE.md
+  s_691eb76a3a7c5d::t_3905464c246df3 306-321
+src/make-deploy.js
+  s_691eb76a3a7c5d::t_441d84a1a76f56 9,619-622,672,687,694
+src/commands/make.js
+  s_691eb76a3a7c5d::t_50d619ac9ad8cd 243
+  s_691eb76a3a7c5d::t_50304a79a8a2c4 5-6,74-75,88,219-221,241
+  s_691eb76a3a7c5d::t_c14da9263ff76b 127
+_vaults/figma-cli/wiki/make/size-and-timeouts.md
+  s_691eb76a3a7c5d::t_e7a58fed56958b 1-23
+tests/make-client.test.js
+  s_691eb76a3a7c5d::t_d31219e059c05c 9,967-991
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c0b8928d051659fa470a29a07a1a332ce5786dd8",
+  "prompts": {},
+  "sessions": {
+    "s_691eb76a3a7c5d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "925b5559-0122-43c0-8936-1a334f1c86f4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
