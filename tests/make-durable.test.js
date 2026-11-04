@@ -261,6 +261,27 @@ test('absence read-back lists the nearest existing ancestor of a new directory',
   assert.deepEqual(listed, ['code/src/components/new', 'code/src/components', 'code/src']);
 });
 
+test('a missing-folder listing that Make never answers costs at most 5 s per level, not the whole budget', async () => {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 120000 });
+  client.fileKey = 'ScratchKey';
+  client._durable = async () => ({ exists: false, content: null });
+  const requestTimeouts = [];
+  client._fileBridge = async (deadline, { requestTimeoutMs = deadline - Date.now() - 1000 } = {}) => {
+    requestTimeouts.push(requestTimeoutMs);
+    return { dispose: async () => {}, invoke: async (_fn, [, data]) => {
+      if (data.path === 'code/src') return { success: true, data: { path: 'code/src', files: [{ name: 'App.tsx' }] } };
+      // Make never answers; the in-page timer rejects after requestTimeoutMs (scaled 1:1000 here).
+      await new Promise(resolve => setTimeout(resolve, requestTimeoutMs / 1000));
+      throw new Error('Make filesystem request timed out; outcome is unknown.');
+    } };
+  };
+  client._sourceTree = async () => [];
+  assert.equal(await client._durableAgreement('src/features/new/Panel.tsx', null, Date.now() + 120000),
+    'tree-vfs-sandbox-delete-matched');
+  assert.equal(requestTimeouts.length, 1);
+  assert.ok(requestTimeouts[0] <= 5000, `absence probe request timeout ${requestTimeouts[0]} must stay short`);
+});
+
 test('absence read-back keeps waiting when an existing ancestor cannot be listed deeper', async () => {
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
   client.fileKey = 'ScratchKey';

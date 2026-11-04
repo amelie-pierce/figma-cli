@@ -979,6 +979,8 @@ test('a filesystem request may wait for the operation\'s remaining time, not a f
   await assert.rejects(client._fileBridge(Date.now() + 120000), /Could not observe Make filesystem connection/);
   const [, requestMs] = expressions[0].match(/\)\("ExactKey", null, (\d+), \d+\)$/);
   assert.ok(Number(requestMs) > 100000, `request timeout ${requestMs} follows the 120 s budget`);
+  await assert.rejects(client._fileBridge(Date.now() + 120000, { requestTimeoutMs: 5000 }), /Could not observe Make filesystem connection/);
+  assert.match(expressions[1], /\)\("ExactKey", null, 5000, \d+\)$/);
 });
 
 test('a read-only timeout names --timeout 120000, or says what to do at the maximum', () => {

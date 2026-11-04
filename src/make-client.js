@@ -585,7 +585,8 @@ export class MakeClient {
     try {
       for (;;) {
         const vfs = await this._durable({ type: 'read', path }, deadline);
-        const bridge = await this._fileBridge(deadline);
+        const bridge = await this._fileBridge(deadline, expectedContent === null
+          ? { requestTimeoutMs: Math.min(5000, this._remaining(deadline)) } : undefined);
         let sandbox;
         let absentInSandbox = false;
         try {
@@ -1366,9 +1367,9 @@ export class MakeClient {
     return { fileKey: this.fileKey, ...result, batches, scanTruncation: { arrayItems: 0, depth: 0 } };
   }
 
-  async _fileBridge(deadline) {
+  async _fileBridge(deadline, { requestTimeoutMs = bridgeRequestTimeout(this._remaining(deadline)) } = {}) {
     const response = await this.transport.send('Runtime.evaluate', {
-      expression: `(${captureMakeFileSocket.toString()})(${JSON.stringify(this.fileKey)}, null, ${bridgeRequestTimeout(this._remaining(deadline))}, ${this._remaining(deadline)})`,
+      expression: `(${captureMakeFileSocket.toString()})(${JSON.stringify(this.fileKey)}, null, ${requestTimeoutMs}, ${this._remaining(deadline)})`,
       returnByValue: false,
     }, { timeoutMs: this._remaining(deadline) });
     if (response.exceptionDetails || !response.result?.objectId) throw new Error('Could not observe Make filesystem connection.');
