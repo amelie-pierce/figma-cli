@@ -1,0 +1,4 @@
+interface:
+  display_name: "AtomicAUI Release"
+  short_description: "Bring the latest AtomicAUI into the Make kit and cut a hosted release, with every check and stop"
+  default_prompt: "Use $atomicaui-release to release a new AtomicAUI from the workspace's main and tell me in plain words what changed and what you need from me."

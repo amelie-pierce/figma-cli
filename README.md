@@ -37,6 +37,14 @@ same address. The address can return 404 for about a minute while it rebuilds.
 **Update kit** and **Publish kit** do not rebuild the site. See
 [AtomicAUI site releases and installs](REFERENCE.md#atomicaui-site-releases-and-installs).
 
+Two bundled skills run the whole flow with an agent. `atomicaui-release` takes
+the components and guides from the workspace's `main` into the kit as one checked,
+saved update, then cuts and verifies the hosted release; it stops for every
+decision and for the site's Unpublish/Publish click. `atomicaui-upgrade-prototype`
+upgrades a team-mode prototype through a pull request and, after people merge it,
+deploys `main` with `make deploy`. Neither merges a pull request. The agent asks
+for the Make link and keeps such identifiers on your computer only.
+
 ### Copy-and-paste installation prompt
 
 Copy this prompt into Claude Code, Codex, or GitHub Copilot running on the same
@@ -100,8 +108,8 @@ When npm lifecycle scripts are disabled, run `skills install` explicitly.
 Set `FIGMA_CLI_SKIP_SKILLS=1` during installation to opt out of user skill writes.
 The CLI remains installed if skill registration encounters a permission conflict;
 the status command identifies any incomplete registration. Uninstalling the npm
-package leaves the skill copies in place; remove its two skill directories from
-the table above if you no longer want them.
+package leaves the skill copies in place; remove its skill directories (one per
+bundled skill under `skills/`) from the table above if you no longer want them.
 
 This release is distributed from GitHub, not the public npm registry. To update,
 install a newer tag from **this fork** and run `skills status` again. The upstream
