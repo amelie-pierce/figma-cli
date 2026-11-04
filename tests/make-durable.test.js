@@ -790,6 +790,38 @@ test('override save binds sandbox head and exact working-copy diff before create
   assert.equal(wrong.calls.some(call => call[0] === 'action'), false);
 });
 
+// The working-copy inventory never reads .npmrc, and listing exposes no file
+// mode: neither a tracked .npmrc nor an executable bit is an override change.
+test('override save ignores an uninventoried .npmrc and a mode-only difference from the sandbox head', async () => {
+  const broken = { ...state(), hasBaseline: false, error: true };
+  const advancedHead = '9'.repeat(40);
+  const headFlat = new Map([...sinceFlat, ['.npmrc', { mode: '100644', blob: '6'.repeat(40) }],
+    ['scripts/run.sh', { mode: '100755', blob: '7'.repeat(40) }]]);
+  const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }],
+    ['scripts/run.sh', { mode: '100644', blob: '7'.repeat(40) }]]);
+  const savedAfter = new Map([...headFlat, ...edited, ['scripts/run.sh', { mode: '100755', blob: '7'.repeat(40) }]]);
+  const before = savedStatus({ persistence: broken, head: advancedHead, treeSource: 'sandbox-head', workingFlat: edited });
+  const { client, calls } = checkedClient({ before, drift: [broken, { ...state(), savedVersion: next }] });
+  client._sandboxGit = () => ({ head: async () => advancedHead,
+    reaches: async (from, to) => from === advancedHead && to === head,
+    commitTree: async () => 'recorded-tree', flatten: async () => headFlat });
+  const queue = [before, { ...afterStatus(), makeFlat: savedAfter, workingFlat: edited }];
+  client.projectStatus = async () => (queue.length > 1 ? queue.shift() : queue[0]);
+  const pin = { savedVersion: base, head, expectedDiff: ['.figma-cli/project.json', 'src/App.tsx'],
+    allowedPaths: ['.figma-cli/project.json', 'src/App.tsx'] };
+  const result = await client.saveCheckedVersion('Override', pin.allowedPaths, { listed: true, overrideMake: pin });
+  assert.equal(result.gitSha, next);
+  assert.deepEqual(result.changedFiles, ['.figma-cli/project.json', 'src/App.tsx']);
+  assert.ok(calls.some(call => call[0] === 'action'));
+  // A real content change outside the reviewed diff still refuses.
+  const changed = new Map([...edited, ['scripts/run.sh', { mode: '100644', blob: '8'.repeat(40) }]]);
+  const other = checkedClient({ before: { ...before, workingFlat: changed }, drift: [broken] });
+  other.client._sandboxGit = client._sandboxGit;
+  await assert.rejects(other.client.saveCheckedVersion('Override', pin.allowedPaths,
+    { listed: true, overrideMake: pin }), /unrelated or missing.*scripts\/run\.sh/);
+  assert.equal(other.calls.some(call => call[0] === 'action'), false);
+});
+
 test('project status exposes the sandbox head inventory when it differs from the saved pointer', async () => {
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 5000 });
   client.fileKey = 'ScratchKey';
