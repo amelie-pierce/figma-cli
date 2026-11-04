@@ -1,0 +1,23 @@
+src/make-client.js
+  s_298f2beedc287a::t_19ccbc7d2295f4 588-589,1370,1372
+tests/make-durable.test.js
+  s_298f2beedc287a::t_938e6235626094 264-284
+tests/make-client.test.js
+  s_298f2beedc287a::t_938e6235626094 982-983
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d74275b316ecd2ba58aa26b7cae77ff38f2aa2c5",
+  "prompts": {},
+  "sessions": {
+    "s_298f2beedc287a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c4d2d155-b22c-4ea0-841b-b70672c15883",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
