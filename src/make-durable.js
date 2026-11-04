@@ -130,8 +130,13 @@ export function requireGitMode(state, { firstVersion = false, overrideMake } = {
 // every write, so HEAD is no base either. The pending set is the difference
 // between a caller-named earlier sandbox commit and the working copy. It must
 // equal the expected paths exactly; unlisted root paths get no exception here.
-export function requireFirstVersionPending(sinceFlat, working, expectedPaths) {
-  const actual = differingPaths(sinceFlat, working);
+// A deploy compares content only (contentOnly): listing exposes no file mode,
+// and the plan's expected set ignores modes too. skip drops paths the working
+// copy cannot show (see make-unread.js).
+export function requireFirstVersionPending(sinceFlat, working, expectedPaths, { contentOnly = false, skip = () => false } = {}) {
+  const actual = (contentOnly
+    ? [...new Set([...sinceFlat.keys(), ...working.keys()])].filter(path => sinceFlat.get(path)?.blob !== working.get(path)?.blob).sort()
+    : differingPaths(sinceFlat, working)).filter(path => !skip(path));
   const expected = [...new Set(expectedPaths)].sort();
   if (expected.length !== expectedPaths.length || JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(`Make working copy differs from the --since commit in unrelated or missing paths; expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual)}.`);

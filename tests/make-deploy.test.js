@@ -11,6 +11,7 @@ import { markerContent } from '../src/make-mode.js';
 import { PROJECT_MARKER } from '../src/make-project.js';
 import { defaultRun } from '../src/make-team.js';
 import { listMakeFiles } from '../src/make-tree.js';
+import { isUninventoried } from '../src/make-unread.js';
 
 // Local git only: a bare "origin" stands in for GitHub, while gh, pnpm and the
 // Make client are faked. Nothing here reaches Figma, GitHub or a registry.
@@ -90,8 +91,10 @@ const lockFor = pkg => `lockfileVersion: 9.0\n# resolved for ${sha256(Buffer.isB
 // commits a root lockfile only when the client wrote it, not when Make's
 // install did.
 class FakeMake {
-  constructor(files, { marker = true } = {}) {
+  constructor(files, { marker = true, uninventoried = false } = {}) {
     this.fileKey = KEY;
+    // As live, the project inventory never reads .npmrc or design context.
+    this.uninventoried = uninventoried;
     this.saved = new Map(Object.entries({ ...files, ...(marker ? { [PROJECT_MARKER]: MARKER } : {}) }).map(([p, c]) => [p, Buffer.isBuffer(c) ? c : Buffer.from(text(c))]));
     this.working = new Map(this.saved);
     this.version = 3;
@@ -150,19 +153,20 @@ class FakeMake {
     const pendingPaths = this.pending();
     const missing = this.savedCommitMissing === true;
     const base = this.hasBaseline && !missing ? this.saved : this.sandbox;
+    const served = this.uninventoried ? new Map([...this.working].filter(([path]) => !isUninventoried(path))) : this.working;
     return {
       persistence: { mode: 'git', hasBaseline: this.hasBaseline, savedVersion: this.hasBaseline || this.trackerError ? this.savedVersion : null,
         pendingCount: pendingPaths.length, pendingPaths, isLoading: false, error: this.trackerError },
       history: { generationInProgress: this.generating, latest: { versionNumber: this.version, gitSha: this.savedVersion } },
       head: this.head, treeSource: this.hasBaseline && !missing ? 'saved-version' : 'sandbox-head', savedMissing: missing,
-      makeFlat: this.flat(base), headFlat: this.flat(this.sandbox), workingFlat: this.flat(this.working),
-      makeTree: this.tree(base), workingTree: this.tree(this.working),
-      workingSha256: new Map([...this.working].map(([path, bytes]) => [path, sha256(bytes)])),
+      makeFlat: this.flat(base), headFlat: this.flat(this.sandbox), workingFlat: this.flat(served),
+      makeTree: this.tree(base), workingTree: this.tree(served),
+      workingSha256: new Map([...served].map(([path, bytes]) => [path, sha256(bytes)])),
       ...(savedInventory ? {
         savedSha256: new Map(missing ? [] : [...this.saved].filter(([path]) => !savedProtected(path)).map(([path, bytes]) => [path, sha256(bytes)])),
         savedBlobs: new Map(missing ? [] : [...this.saved].filter(([path]) => savedProtected(path)).map(([path, bytes]) => [path, gitBlobSha(bytes)])),
       } : {}),
-      ...(classifyText ? { workingText: new Map([...this.working].map(([path, bytes]) => {
+      ...(classifyText ? { workingText: new Map([...served].map(([path, bytes]) => {
         let text = true;
         try { text = bytes.length <= 2 * 1024 * 1024 && !new TextDecoder('utf-8', { fatal: true }).decode(bytes).includes('\0'); }
         catch { text = false; }
@@ -799,6 +803,50 @@ describe('guarded Make override (fake Make and local git only)', () => {
     await refuses(deployApply(s.make, { ...s.opts, planPath: clean.planPath,
       confirmOverride: clean.digest.slice(0, 12) }, s.deps), 'DEPLOY_STALE_PLAN');
     assert.deepEqual(s.make.writes, []);
+  });
+
+  it('does not withhold the plan for an unchanged tracked .npmrc the inventory never reads', async t => {
+    const makeFiles = { ...BASE, '.npmrc': 'registry=fixture\n' };
+    const s = setup(t, { makeFiles, make: { uninventoried: true } });
+    target(s);
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.deepEqual(plan.refused.pendingExcluded, []);
+    assert.ok(plan.planPath, 'the override plan is written');
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
+      confirmOverride: plan.digest.slice(0, 12) }, s.deps);
+    assert.equal(applied.stage, 'saved-unverified');
+    const verified = await deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps);
+    assert.equal(verified.stage, 'deployed');
+    assert.equal(s.make.saved.get('.npmrc').toString(), 'registry=fixture\n');
+    // A normal deploy with the same tracked .npmrc is not refused as unsaved either.
+    const normal = setup(t, { makeFiles, make: { uninventoried: true } });
+    landChange(normal);
+    const normalPlan = await deployPlan(normal.make, normal.opts, normal.deps);
+    const deployed = await deployApply(normal.make, { ...normal.opts, planPath: normalPlan.planPath }, normal.deps);
+    assert.equal(deployed.stage, 'deployed');
+    assert.equal((await deployVerify(normal.make, { ...normal.opts, receiptPath: deployed.receiptPath }, normal.deps)).stage, 'deployed');
+  });
+
+  it('restores a kept Make-only file a reload put back to its saved copy when aborting a refused save', async t => {
+    const s = setup(t, { makeFiles: { ...BASE, 'src/make-only.ts': 'served edit\n' } });
+    s.make.saved.set('src/make-only.ts', Buffer.from('saved copy\n'));
+    target(s);
+    const original = new Map(s.make.working);
+    s.make.hooks.save = 'refused';
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.ok(plan.keepMakeOnly.includes('src/make-only.ts'));
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
+      confirmOverride: plan.digest.slice(0, 12) }, s.deps).catch(cause => cause);
+    assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+    const backup = readReceipt(error.receiptPath).reloadBackups.find(item => item.path === 'src/make-only.ts');
+    assert.equal(readFileSync(backup.backupPath, 'utf8'), 'served edit\n');
+    await s.make.reloadPage();
+    assert.equal(s.make.working.get('src/make-only.ts').toString(), 'saved copy\n');
+    const aborted = await deployAbort(s.make, { receiptPath: error.receiptPath }, s.deps);
+    assert.equal(aborted.outcome, 'aborted');
+    assert.deepEqual([...s.make.working].map(([path, bytes]) => [path, bytes.toString()]).sort(),
+      [...original].map(([path, bytes]) => [path, bytes.toString()]).sort());
+    assert.deepEqual(s.p.tags(), []);
   });
 
   it('allows one reload-and-resume after save refusal, then stops', async t => {

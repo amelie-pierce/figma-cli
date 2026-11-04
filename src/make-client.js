@@ -15,6 +15,7 @@ import { compareVendor, digest, externalReceipt, sourcePath, vendorManifest, ver
 import { makeDurablePageAction, requireFirstVersionPending, requireGitMode, requireExactPending, TREE_HIDDEN_ROOT_FILES } from './make-durable.js';
 import { gitBlobSha, isIgnored, parseIgnore } from './git-tree.js';
 import { lfsMatcher, PROJECT_EXCLUDES, PROJECT_MARKER, treeOf, workingFlat } from './make-project.js';
+import { notInventoried } from './make-unread.js';
 import { SandboxGit } from './sandbox-git.js';
 
 const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
@@ -957,7 +958,12 @@ export class MakeClient {
         return await reader.flatten(await reader.commitTree(base));
       } finally { await bridge.dispose(); }
     });
-    const changedFiles = requireFirstVersionPending(baseFlat, before.workingFlat, overrideMake?.expectedDiff || expectedPaths);
+    // A deploy save (listed or override) compares content, and skips paths the
+    // working-copy inventory never reads (a tracked .npmrc).
+    const deploySave = listed || !!overrideMake;
+    const unread = deploySave ? notInventoried(before.workingFlat) : () => false;
+    const changedFiles = requireFirstVersionPending(baseFlat, before.workingFlat, overrideMake?.expectedDiff || expectedPaths,
+      { contentOnly: deploySave, skip: unread });
     if (overrideMake && expectedPaths.some(path => !overrideMake.allowedPaths.includes(path))) {
       throw new Error('Override save paths differ from the reviewed receipt.');
     }
@@ -1004,8 +1010,8 @@ export class MakeClient {
       // A deploy compares content: listing exposes no file mode, so a file
       // Make rewrote itself (its own reinstall of pnpm-lock.yaml) can keep
       // 100755 where the working tree guessed 100644 (scratch, 2026-10-15).
-      const contentDiffers = (a, b) => [...new Set([...a.keys(), ...b.keys()])].filter(path => a.get(path)?.blob !== b.get(path)?.blob);
-      const differs = (listed || overrideMake)
+      const contentDiffers = (a, b) => [...new Set([...a.keys(), ...b.keys()])].filter(path => !unread(path) && a.get(path)?.blob !== b.get(path)?.blob);
+      const differs = deploySave
         ? contentDiffers(after.makeFlat, before.workingFlat).length || contentDiffers(after.workingFlat, after.makeFlat).length
         : after.makeTree !== before.workingTree || after.workingTree !== after.makeTree;
       if (differs) throw new Error(`saved tree ${after.makeTree} differs from the checked working tree ${before.workingTree}`);
