@@ -16,6 +16,7 @@ import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, 
   writeApplyOutputs } from '../make-sync.js';
 import { registerAtomicaui } from './make-atomicaui.js';
 import { requireMakeVendorWritable } from '../make-vendor-lock.js';
+import { runStatusBudget, STATUS_DEFAULT_WALL_MS } from '../make-status-budget.js';
 
 const make = program.command('make')
   .description('Experimental direct source-file editing in Figma Make Desktop')
@@ -57,9 +58,9 @@ function timeout(value) {
   if (!Number.isInteger(n) || n < 500 || n > 120000) throw new Error('Timeout must be 500–120000 milliseconds');
   return n;
 }
-function target(command, timeoutDefault = 15000) {
+function target(command, timeoutDefault = 15000, timeoutDescription = 'Maximum operation time') {
   return command.requiredOption('--file <key-or-url>', 'Exact open Make file key or URL')
-    .option('--timeout <ms>', 'Maximum operation time', timeout, timeoutDefault);
+    .option('--timeout <ms>', timeoutDescription, timeout, timeoutDefault);
 }
 // Every Make write honours solo/team mode.
 function modeGated(command) {
@@ -72,20 +73,30 @@ function sessionWrite(command) {
   return modeGated(target(command).option('--session-only', 'Accept that the write is lost when the file is reopened unless saved in Make'));
 }
 // `readOnly` commands add a --timeout hint to a timeout error.
-async function withClient(options, fn, write, paths = [], { readOnly = false } = {}) {
+async function withClient(options, fn, write, paths = [], { readOnly = false, wallBudget = false } = {}) {
   let client;
   try {
     refuseMarkerPaths(paths);
     if (write && write !== 'mode') requireSessionOnly(write, options);
-    client = new MakeClient({ timeoutMs: options.timeout });
-    await client.connect(options.file);
-    if (write) {
-      const { warning, note } = await checkWriteMode(client, options);
-      if (warning) console.error(`warning: ${warning}`);
-      if (note) console.error(`note: ${note}`);
-    }
-    await fn(client);
-  } catch (error) { failure(readOnly ? timeoutHint(error, options.timeout) : error); }
+    client = new MakeClient({ timeoutMs: Math.min(120000, options.timeout) });
+    const run = async () => {
+      if (write) {
+        const { warning, note } = await checkWriteMode(client, options);
+        if (warning) console.error(`warning: ${warning}`);
+        if (note) console.error(`note: ${note}`);
+      }
+      await fn(client);
+    };
+    if (wallBudget) await runStatusBudget(client, options.file, run, options.timeout);
+    else { await client.connect(options.file); await run(); }
+  } catch (error) {
+    if (wallBudget && /timed out/i.test(error.message)) {
+      error.message += options.timeout === STATUS_DEFAULT_WALL_MS
+        ? ' The 300000 ms default status budget includes connection; Make may be busy, so wait a minute and try once more.'
+        : ' Large projects can need longer: run it again without --timeout for the 300000 ms default status budget.';
+    } else if (readOnly) timeoutHint(error, options.timeout);
+    failure(error);
+  }
   finally { client?.close(); }
 }
 
@@ -198,10 +209,12 @@ target(make.command('drift').description('Read-only vendor inventory, manifest c
     process.exitCode = driftExitCode(result);
   }));
 
-target(make.command('status').description('Read-only project status: Make saved and working tree SHAs, solo/team mode and, with --repo, GitHub main'), 120000)
+target(make.command('status').description('Read-only project status: Make saved and working tree SHAs, solo/team mode and, with --repo, GitHub main'), STATUS_DEFAULT_WALL_MS, 'Maximum connection plus Make operation time')
   .option('--repo <owner/repo>', 'Compare with this GitHub repo through your gh login (GET requests only); records the link in ~/.figma-cli for the write gate', repoName)
   .option('--json', 'Print the complete machine-readable result')
-  .addHelpText('after', '\nExit codes: 0 all read and nothing needs attention; 1 the status could not be read' +
+  .addHelpText('after', '\nDefault wall budget: 300000 ms (connection, then up to 120000 ms for the Make operation).' +
+    '\nAn explicit --timeout (500–120000 ms) bounds connection and the Make operation together.' +
+    '\nExit codes: 0 all read and nothing needs attention; 1 the status could not be read' +
     '\n(Make or GitHub error); 2 read completely, with attention items listed.')
   .action(options => withClient(options, async client => {
     const make = await client.projectStatus();
@@ -240,7 +253,7 @@ target(make.command('status').description('Read-only project status: Make saved 
     }
     for (const warning of sized) console.error(`warning: ${warning}`);
     process.exitCode = statusExitCode(result);
-  }, undefined, [], { readOnly: true }));
+  }, undefined, [], { readOnly: true, wallBudget: true }));
 
 modeGated(target(make.command('write <path>').description('Write one git-mode Make file through Make client VFS; save-version is required to persist it'), 120000)
   .requiredOption('--from <source>', 'Existing UTF-8 file, or - for stdin')

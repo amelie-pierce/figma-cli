@@ -236,6 +236,8 @@ export class MakeClient {
     this.maxEntries = maxEntries;
     this.fileKey = null;
     this._running = false;
+    // Optional absolute deadline shared by every operation (status budget).
+    this.deadline = Infinity;
   }
 
   async connect(fileKeyOrURL) {
@@ -285,11 +287,11 @@ export class MakeClient {
     if (!this.fileKey) throw new Error('Make client is not connected.');
     if (this._running) throw new Error('A Make operation is already running on this client.');
     this._running = true;
-    const deadline = Date.now() + this.timeoutMs;
+    const deadline = Math.min(Date.now() + this.timeoutMs, this.deadline);
     // Hidden Desktop tabs do not update their virtualized tree. Temporarily
     // emulate focus in this renderer and reserve time to restore it, without
     // moving OS focus or extending the operation's total timeout.
-    const cleanupBudget = Math.min(1000, Math.max(1, Math.floor(this.timeoutMs / 10)));
+    const cleanupBudget = Math.min(1000, Math.max(1, Math.floor((deadline - Date.now()) / 10)));
     const workDeadline = deadline - cleanupBudget;
     let result;
     let operationError;
