@@ -35,7 +35,7 @@ The saved-inventory fallback is implemented by `inventoryFromCommit`, `savedInve
 - The project inventory never reads `PROJECT_EXCLUDES` paths (`src/make-client.js:1141`), so a tracked `.npmrc` is absent from `workingFlat` while the saved and head trees hold it. `notInventoried` (`src/make-unread.js:12`) skips such a path in the override pending set and expected diff (`src/make-deploy.js:451`), the normal unsaved check, verify's `driftProblems`, and the client's deploy-save checks (`src/make-client.js:946`). The saved-versus-head blob check for protected paths still runs.
 - Deploy saves (`listed` or override) compare the working copy with the base by content only (`requireFirstVersionPending(..., { contentOnly })`, `src/make-durable.js`), as the plan does; a pure executable-bit difference no longer refuses.
 - Override apply backs up each unplanned served path whose content differs from the saved inventory (`reloadable`, `src/make-deploy.js:883`) into `receipt.reloadBackups`; abort restores those a reload put back to the saved copy (`reverted`, `src/make-deploy.js:912`). A non-text one is not backed up and abort reports the remaining difference. A saved-only path a reload brings back is not deleted by abort (unchanged).
-- Tests: `tests/make-deploy.test.js:921`, `tests/make-deploy.test.js:943`, `tests/make-durable.test.js:795`. FakeMake's `uninventoried` option mirrors the inventory skip.
+- Tests: `tests/make-deploy.test.js:937`, `tests/make-deploy.test.js:959`, `tests/make-durable.test.js:795`. FakeMake's `uninventoried` option mirrors the inventory skip.
 - The verify reload-readiness wait (`waitForReloadFilesystem`) still has fake coverage only; a live supervised `--verify` is the proof. **UNVERIFIED** live.
 
 ## Deploy reminders (warn only)
