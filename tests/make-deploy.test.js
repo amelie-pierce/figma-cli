@@ -12,6 +12,7 @@ import { PROJECT_MARKER } from '../src/make-project.js';
 import { defaultRun } from '../src/make-team.js';
 import { listMakeFiles } from '../src/make-tree.js';
 import { isUninventoried } from '../src/make-unread.js';
+import { tagCommits, untaggedDeployNotice } from '../src/make-deploy-notices.js';
 
 // Local git only: a bare "origin" stands in for GitHub, while gh, pnpm and the
 // Make client are faked. Nothing here reaches Figma, GitHub or a registry.
@@ -434,6 +435,118 @@ describe('make deploy unopened deep-file read-back', () => {
     assert.equal(s.make.deepReadback, 'tree-vfs-sandbox-matched');
     assert.equal(resumed.stage, 'deployed');
     assert.equal(s.make.saved.get(DEEP_PATH).toString(), 'new\n');
+  });
+});
+
+// Warn-only reminders: each test checks the warning and that the outcome
+// (result, refusal code, what Make holds) is the same as without it.
+describe('make deploy reminders (warn only)', () => {
+  const capture = s => {
+    const warnings = [];
+    s.deps.warn = message => warnings.push(message);
+    return warnings;
+  };
+  const staleOverride = s => {
+    landChange(s);
+    s.make.hasBaseline = false;
+    s.make.trackerError = true;
+    s.make.head = 'b'.repeat(40);
+    s.make.sandbox = new Map(s.make.working);
+  };
+
+  it('reminds everyone to reload after a successful save, and only then', async t => {
+    const s = setup(t);
+    const warnings = capture(s);
+    landChange(s);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    assert.deepEqual(warnings, []);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.stage, 'deployed');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], new RegExp(`Make saved version ${applied.makeAfter.versionNumber}\\. Everyone who has this Make file open should reload it now`));
+    const override = setup(t);
+    const overrideWarnings = capture(override);
+    staleOverride(override);
+    const overridePlan = await deployPlan(override.make, { ...override.opts, overrideMake: true }, override.deps);
+    overrideWarnings.length = 0;
+    override.make.hooks.save = 'refused';
+    await refuses(deployApply(override.make, { ...override.opts, planPath: overridePlan.planPath,
+      confirmOverride: overridePlan.digest.slice(0, 12) }, override.deps), 'DEPLOY_WRITE_FAILED');
+    assert.equal(overrideWarnings.some(message => /should reload it now/.test(message)), false, 'no reminder without a saved version');
+  });
+
+  it('says the open tab is behind Make when the tracker fails, without changing the refusal', async t => {
+    const s = setup(t);
+    const warnings = capture(s);
+    staleOverride(s);
+    await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_MAKE_STATE');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /change tracker in this tab reports an error\. The open Make tab is behind Make: its saved baseline is stale\. Close the Make file and open it again, then run this command again\./);
+    warnings.length = 0;
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.ok(plan.planPath, 'an override still plans with the tracker in error');
+    assert.equal(warnings.filter(message => /behind Make/.test(message)).length, 1);
+    const clean = setup(t);
+    const cleanWarnings = capture(clean);
+    landChange(clean);
+    await deployPlan(clean.make, clean.opts, clean.deps);
+    assert.deepEqual(cleanWarnings, []);
+  });
+
+  it('says the open tab is behind Make when a save is refused from a stale baseline, and not otherwise', async t => {
+    const s = setup(t);
+    const warnings = capture(s);
+    staleOverride(s);
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    warnings.length = 0;
+    s.make.hooks.save = 'refused';
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
+      confirmOverride: plan.digest.slice(0, 12) }, s.deps).catch(cause => cause);
+    assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+    assert.equal(readReceipt(error.receiptPath).stage, 'written');
+    assert.ok(warnings.some(message => message === `Make refused the save from a stale baseline. The open Make tab is behind Make: its saved baseline is stale. ` +
+      `Close the Make file and open it again before you run --resume or --abort ${error.receiptPath}.`), JSON.stringify(warnings));
+    const normal = setup(t);
+    const normalWarnings = capture(normal);
+    landChange(normal);
+    const normalPlan = await deployPlan(normal.make, normal.opts, normal.deps);
+    normal.make.hooks.save = 'refused';
+    await refuses(deployApply(normal.make, { ...normal.opts, planPath: normalPlan.planPath }, normal.deps), 'DEPLOY_WRITE_FAILED');
+    assert.deepEqual(normalWarnings, [], 'a refusal with a healthy tracker and an unmoved pointer says nothing');
+  });
+
+  it('warns when the newest Make version is a deploy with no make-deploy tag on GitHub', async t => {
+    const s = setup(t);
+    landChange(s);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    const warnings = capture(s);
+    const tagged = await deployPlan(s.make, s.opts, s.deps);
+    assert.deepEqual(warnings, []);
+    sh(s.p.origin, 'tag', '-d', 'make-deploy/0');
+    const untagged = await deployPlan(s.make, s.opts, s.deps);
+    assert.equal(untagged.summary, tagged.summary);
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0], `Make's newest version "deploy ${applied.mainCommit.slice(0, 7)}" has no make-deploy tag on GitHub for main ` +
+      `${applied.mainCommit.slice(0, 7)}, so make status and the next deploy compare against an older tag. Its receipt is ${applied.receiptPath} (stage deployed).`);
+    // Another machine has no receipt naming the version: nothing is guessed.
+    warnings.length = 0;
+    await deployPlan(s.make, s.opts, { ...s.deps, home: join(s.p.root, 'other-home') });
+    assert.deepEqual(warnings, []);
+  });
+
+  it('reads tag commits from ls-remote and says nothing when GitHub cannot be read', t => {
+    const c = 'c'.repeat(40);
+    assert.deepEqual([...tagCommits(`${'a'.repeat(40)}\trefs/tags/make-deploy/0\n${c}\trefs/tags/make-deploy/0^{}\n${'d'.repeat(40)}\trefs/tags/make-deploy/1\n`)].sort(),
+      [c, 'd'.repeat(40)]);
+    const home = temp(t);
+    mkdirSync(join(home, 'deploys'), { recursive: true });
+    writeFileSync(join(home, 'deploys', 'r.json'), JSON.stringify({ fileKey: KEY, mainCommit: c, stage: 'deployed', makeAfter: { versionGitSha: 'e'.repeat(40) } }));
+    const warnings = [];
+    const status = { persistence: { savedVersion: 'e'.repeat(40) } };
+    untaggedDeployNotice(message => warnings.push(message), { dir: join(home, 'deploys'), fileKey: KEY, status,
+      ctx: { tryGit: () => ({ status: 128, stdout: '' }) } });
+    assert.deepEqual(warnings, []);
   });
 });
 
