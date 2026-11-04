@@ -303,11 +303,16 @@ Make or GitHub could not be read, `2` when the read completed with `attention`
 items (pending changes, no baseline, ambiguous mode, any relation other than
 `in-sync`, unreviewed commits, an unsafe mirror, and so on).
 
-The default `--timeout` is 120000 (also the maximum); each Make filesystem
-read or write may use the operation's remaining time, so one large file is not cut
-off at a fixed few seconds. A read that still times out says so: below the
-maximum it names `--timeout 120000`; at the maximum it suggests waiting a
-minute and running it once more (`make read` adds the same hint).
+For `make status`, the default wall budget is 150000 ms: up to 30000 ms for
+CDP discovery and connection, then up to 120000 ms for the Make operation.
+An explicit `--timeout` (500–120000 ms) instead bounds the entire status
+command, including connection and optional GitHub reads. A roughly 140 s status
+run with about 20 s of startup and connection time fits the default budget.
+Other Make operations still use the 120000 ms maximum; each filesystem read or
+write may use the operation's remaining time, so one large file is not cut off
+at a fixed few seconds. A read that still times out says so: below the maximum
+it names `--timeout 120000`; at the maximum it suggests waiting a minute and
+running it once more (`make read` adds the same hint).
 
 **Source size warnings.** `make status` (byte sizes only) and `make deploy`
 dry run and apply (sizes, lines and content of `main`) print a `warning:` line,

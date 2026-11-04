@@ -128,9 +128,11 @@ can time out. Suggest, as its own small pull request:
   instead of inline base64.
 
 Vendored AtomicAUI, `public/` themes, docs and generated asset modules are
-not checked. If `make status` times out, say Make was slow to answer, not that
-something broke; follow the hint in the error: run it once more with
-`--timeout 120000`, or at that maximum wait a minute and try once more.
+not checked. `make status` defaults to a 150000 ms wall budget (up to 30000 ms
+for CDP connection plus up to 120000 ms for the Make operation). An explicit
+`--timeout` (500–120000 ms) bounds the entire command. If status times out,
+say Make was slow to answer, not that something broke; wait a minute and try
+once more. For a shorter explicit timeout, the error may suggest 120000 ms.
 
 Write a short, specific commit message from what you changed for them when you
 know it (`-m "Tighten card padding"`); otherwise let `save` generate one.
