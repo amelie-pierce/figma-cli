@@ -602,6 +602,28 @@ pointer and sandbox head, and main-equal content apart from explicitly kept
 Make-only files before pushing the tag. A mismatch records `saved-drift` with
 no tag and no save retry.
 
+The project inventory never reads `.npmrc` or `.figma/design-context/`, even
+when Make's saved tree tracks them, so deploy comparisons of the working copy
+with a git tree skip those paths when the working copy does not show them; a
+tracked, unchanged `.npmrc` no longer withholds an override plan or fails a
+save check. Deploy saves compare content, not file modes. Before the first
+write, an override also backs up every unplanned path whose served content
+differs from Make's saved copy (a kept Make-only file, for example), so
+`--abort` can put it back after a reload served the saved copy again.
+
+**Reminders (warnings only).** These print to stderr as `warning:` lines and
+never change the result, the exit code or what is written to Make:
+- after a deploy saves a version: everyone with the Make file open should
+  reload it now;
+- when Make's change tracker in the open tab reports an error, or a save is
+  refused while the tracker is newly in error or the saved pointer has moved: the
+  open tab is behind Make, so close the Make file and open it again (if the
+  command stops, before running it again);
+- when a receipt on this machine shows that Make's newest saved version is a
+  deploy (`deploy <sha7>`) and GitHub has no `make-deploy/<n>` tag on that
+  commit. Make's version history lists AI turns only, so without such a
+  receipt, or when GitHub cannot be read, nothing is printed.
+
 ### Team git workflow (`team`)
 
 `figma-cli team <verb>` is the plain-language git layer for designers working in

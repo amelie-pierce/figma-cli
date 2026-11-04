@@ -14,6 +14,7 @@ Updated 2026-10-24: deletes run after the other writes, and a create may re-ente
 Updated 2026-10-29: current-main override is documented in the command reference; live save behavior remains unverified.
 Updated 2026-10-29: saved-inventory fallback implementation and fake coverage.
 Updated 2026-10-29: status marks a missing saved commit even when Make claims a baseline; verify waits for the reloaded code panel and sandbox filesystem before reading.
+Updated 2026-11-04: tracked `.npmrc`, mode-only and reloaded Make-only override follow-ups; warn-only deploy reminders.
 
 # make deploy
 Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI files first (`DEPLOY_VENDOR_EDITED`); see [vendor-lock.md](vendor-lock.md).
@@ -28,6 +29,18 @@ The saved-inventory fallback is implemented by `inventoryFromCommit`, `savedInve
 `projectStatus` reports `savedMissing` and uses the sandbox head if the claimed saved commit is absent (`src/make-client.js:1165`); override planning, apply and verify then use the recorded inventory fallback (`src/make-deploy.js:248`, `src/make-deploy.js:597`, `src/make-deploy.js:1260`). After reload, verify probes the code panel and a small sandbox file with bounded backoff before its status read (`src/make-client.js:947`, `src/make-deploy.js:559`). These paths have fake coverage only (`tests/make-deploy.test.js`, `tests/make-project-client.test.js`).
 
 `make deploy` (`src/make-deploy.js`, wired at `src/commands/make.js`) is the one Make write team mode allows. A repo admin runs it in a local clone of `main`. It skips the team-mode write gate and runs its own guards instead (`prepare`, `src/make-deploy.js:568`). Command details are in REFERENCE.md, "Deploying main to Make".
+
+## Override follow-ups (2026-11-04)
+
+- The project inventory never reads `PROJECT_EXCLUDES` paths (`inventoryProject`, `src/make-client.js:1134`), so a tracked `.npmrc` is absent from `workingFlat` while the saved and head trees hold it. `notInventoried` (`src/make-unread.js:12`) skips such a path in the override pending set and expected diff (`src/make-deploy.js:452`, `src/make-deploy.js:520`), the normal unsaved check and post-write planned-state check (`plannedState`, `src/make-deploy.js:790`), verify's `driftProblems`, and the client's deploy-save checks (`src/make-client.js:962`). The saved-versus-head blob check for protected paths still runs.
+- Deploy saves (`listed` or override) compare the working copy with the base by content only (`requireFirstVersionPending(..., { contentOnly })`, `src/make-durable.js`), as the plan does; a pure executable-bit difference no longer refuses.
+- Override apply backs up each unplanned served path whose content differs from the saved inventory (`reloadable`, `src/make-deploy.js:888`) into `receipt.reloadBackups`; abort restores those a reload put back to the saved copy (`reverted`, `src/make-deploy.js:917`). A non-text one is not backed up and abort reports the remaining difference. A saved-only path a reload brings back is not deleted by abort (unchanged).
+- Tests: `tests/make-deploy.test.js:976`, `tests/make-deploy.test.js:998`, `tests/make-deploy.test.js:1011`, `tests/make-durable.test.js:816`. FakeMake's `uninventoried` option mirrors the inventory skip.
+- The verify reload-readiness wait (`waitForReloadFilesystem`) still has fake coverage only; a live supervised `--verify` is the proof. **UNVERIFIED** live.
+
+## Deploy reminders (warn only)
+
+`src/make-deploy-notices.js` prints through `deps.warn` and never changes results or exit codes: a reload reminder after a saved version (`src/make-deploy.js:1040`); a stale-tab notice when the tracker reports an error (not for `savedMissing`, which override recovers from), and after a refused save when a fresh `idleState` shows the tracker in error when the deploy did not start in error, or the saved pointer moved; the receipt is saved at `written` before that probe (`src/make-deploy.js:1036`); and an untagged-deploy warning when a local receipt names Make's saved version and `ls-remote` shows no `make-deploy` tag on its commit (`src/make-deploy.js:650`). Make's version history holds AI turns only, so a deploy version's name is known only from local receipts; otherwise nothing is printed. Tests: `tests/make-deploy.test.js:443`.
 
 ## Guards and base
 

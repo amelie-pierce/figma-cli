@@ -7,6 +7,8 @@ import { isIgnored, parseIgnore } from './git-tree.js';
 import { requireGitMode, TREE_HIDDEN_ROOT_FILES } from './make-durable.js';
 import { requireLocalVendorUnedited } from './make-vendor-lock.js';
 import { isSizeChecked, sizeWarnings } from './make-size.js';
+import { notInventoried } from './make-unread.js';
+import { reloadReminder, staleSaveNotice, staleTabNotice, untaggedDeployNotice } from './make-deploy-notices.js';
 import { install as installProject } from './make-local.js';
 import { readRepoAccess } from './make-mode.js';
 import { detectMode, ghRunner, isRepoOnly, lfsMatcher, MAKE_MANAGED, parseMarker, PROJECT_EXCLUDES, PROJECT_MARKER, repoName } from './make-project.js';
@@ -396,7 +398,7 @@ export function requireMakeReady(status, ui, mainFlat = new Map()) {
   if (state.pendingPaths.length) fail(`Make has ${state.pendingPaths.length} unsaved change(s) ${JSON.stringify(state.pendingPaths)}. Nothing was deployed.`, 'DEPLOY_MAKE_AHEAD');
   if (status.treeSource !== 'saved-version') fail('Make\'s saved version was not readable as the deploy base.', 'DEPLOY_MAKE_STATE');
   if (status.history?.generationInProgress) fail('A Make AI generation is running. Nothing was deployed.', 'DEPLOY_MAKE_BUSY');
-  const unsaved = contentDiff(status.workingFlat, status.makeFlat)
+  const unsaved = contentDiff(status.workingFlat, status.makeFlat, notInventoried(status.workingFlat))
     .filter(path => !(isLockfile(path) && status.workingFlat.get(path)?.blob === mainFlat.get(path)?.blob));
   if (unsaved.length) fail(`Make's working copy has unsaved edits in ${JSON.stringify(unsaved)}. Nothing was deployed.`, 'DEPLOY_MAKE_AHEAD');
   return state;
@@ -444,8 +446,10 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes, ove
   const refused = { binary: [], lfs: [], unsupported: [], marker: [], pendingExcluded: [] };
   const makeFlat = overrideMake ? status.workingFlat : status.makeFlat;
   if (overrideMake) {
+    // A tracked .npmrc is never inventoried: its absence from the working copy
+    // is not a pending edit (the saved-versus-head check below still runs).
     const pending = new Set([...(status.persistence.pendingPaths || []),
-      ...contentDiff(status.headFlat || status.makeFlat, status.workingFlat)]);
+      ...contentDiff(status.headFlat || status.makeFlat, status.workingFlat, notInventoried(status.workingFlat))]);
     const isProtected = path => protectedPath(path, ignored, main.flat);
     const savedAndServed = new Set([...status.savedBlobs.keys(), ...status.headFlat.keys()]);
     for (const path of savedAndServed) {
@@ -513,7 +517,7 @@ export function buildPlan({ fileKey, repo, n, main, status, base, mainBytes, ove
     if (file.op === 'delete') target.delete(file.path);
     else target.set(file.path, { mode: '100644', type: 'blob', blob: file.afterBlob });
   }
-  const expectedDiff = overrideMake ? contentDiff(status.headFlat || status.makeFlat, target) : null;
+  const expectedDiff = overrideMake ? contentDiff(status.headFlat || status.makeFlat, target, notInventoried(status.workingFlat)) : null;
   const plan = { schema: PLAN_SCHEMA, fileKey, repo, trunk: TRUNK, n, tag: `${TAG_PREFIX}${n}`,
     mainCommit: main.commit, mainTree: main.tree,
     makeBefore: { versionGitSha: status.persistence.savedVersion, tree: status.makeTree,
@@ -642,6 +646,8 @@ async function prepare(client, { dir, reviewed, overrideMake = false, deleteMake
   }
   if (overrideMake) recoverMissingSaved(status, { fileKey: client.fileKey, repo, home, tags, ctx, readBlob, savedProtected });
   await requireTeamMode(client, status);
+  staleTabNotice(deps.warn, status);
+  untaggedDeployNotice(deps.warn, { dir: deployDir(home), fileKey: client.fileKey, status, ctx });
   let state;
   if (overrideMake) {
     if (ui?.busy || ui?.offline || ui?.readOnly === true || status.history?.generationInProgress) {
@@ -781,7 +787,7 @@ function plannedState(receipt, status) {
     ? [...new Set([...original.keys(), ...status.workingFlat.keys()])]
       .filter(path => !planned.has(path) && (status.workingSha256.get(path) ?? null) !== (original.get(path) ?? null) &&
         !(receipt.saveRefusals && (status.workingSha256.get(path) ?? null) === (saved.get(path) ?? null)))
-    : [...new Set([...contentDiff(status.workingFlat, status.makeFlat), ...(state.pendingPaths || [])])].filter(path => !planned.has(path));
+    : [...new Set([...contentDiff(status.workingFlat, status.makeFlat, notInventoried(status.workingFlat)), ...(state.pendingPaths || [])])].filter(path => !planned.has(path));
   if (others.length) return { problem: `Make has unsaved changes outside the deploy ${JSON.stringify(others)}`, code: 'DEPLOY_MAKE_AHEAD' };
   const files = classify(receipt, status);
   const odd = files.filter(file => file.state === 'other').map(file => file.path);
@@ -871,7 +877,46 @@ async function backupOverride(client, receipt, home) {
     receipt.files.find(item => item.path === file.path).backupPath = backup;
     saveReceipt(receipt);
   }
+  await backupReloadable(client, receipt, home);
 }
+
+// Unplanned served paths whose content differs from Make's saved copy: a kept
+// Make-only file, or a Make edit main already holds. A reload after a refused
+// save serves the saved copy again, and abort must then put the served content
+// back, so it is backed up before the first write too. A path that is not text
+// gets no backup and abort leaves it, reporting the remaining difference.
+function reloadable(receipt) {
+  const planned = new Set(receipt.plan.files.map(file => file.path));
+  const saved = new Map(receipt.makeBefore.savedInventory?.map(item => [item.path, item]));
+  return (receipt.makeBefore.inventory || []).filter(item => !planned.has(item.path) && !saved.get(item.path)?.blob &&
+    (saved.get(item.path)?.sha256 ?? null) !== item.sha256)
+    .map(item => ({ path: item.path, sha256: item.sha256, savedSha256: saved.get(item.path)?.sha256 ?? null }));
+}
+
+async function backupReloadable(client, receipt, home) {
+  receipt.reloadBackups = [];
+  for (const item of reloadable(receipt)) {
+    const original = await client.readDurable(item.path);
+    if (!original.exists || sha256(original.content) !== item.sha256) {
+      stop(receipt, null, 'writing', `Make changed ${item.path} before backup. Nothing was written.`, 'DEPLOY_MAKE_STATE');
+    }
+    if (decode(Buffer.from(original.content)) == null) continue;
+    const dir = join(backupDir(receipt, home), sha256(item.path));
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const backup = join(dir, 'original.txt');
+    writeFileSync(backup, original.content, { mode: 0o600 });
+    writeFileSync(join(dir, 'metadata.json'), `${JSON.stringify({ fileKey: receipt.fileKey, path: item.path, sha256: item.sha256, operation: 'reload-backup' })}\n`, { mode: 0o600 });
+    if (sha256(readFileSync(backup)) !== item.sha256) stop(receipt, null, 'writing', `Backup read-back failed for ${item.path}. Nothing was written.`, 'DEPLOY_MAKE_STATE');
+    receipt.reloadBackups.push({ ...item, backupPath: backup });
+    saveReceipt(receipt);
+  }
+}
+
+// Backed-up unplanned paths a reload put back to Make's saved copy, as files
+// abort restores to their served content.
+const reverted = (receipt, status) => (receipt.reloadBackups || [])
+  .filter(item => (status.workingSha256.get(item.path) ?? null) === item.savedSha256)
+  .map(item => ({ path: item.path, op: 'modify', beforeSha256: item.sha256, state: 'saved', reloaded: true }));
 
 // Make's install rewrites a planned lockfile as soon as package.json is
 // written, so its start content is backed up first, for --abort.
@@ -969,7 +1014,7 @@ async function tagAndFinish(ctx, receipt, home) {
 
 // After the writes: save one version. Normal deploys then check drift and tag;
 // overrides defer both until a fresh-reload verification.
-async function finish(client, ctx, receipt, mainFlat, home) {
+async function finish(client, ctx, receipt, mainFlat, home, warn = () => {}) {
   const plan = receipt.plan;
   receipt.stage = 'saving';
   saveReceipt(receipt);
@@ -988,9 +1033,11 @@ async function finish(client, ctx, receipt, mainFlat, home) {
       stop(receipt, error, 'save-uncertain', `Make's save outcome is unknown: ${error.message} Never retry the save; run ${recovery(receipt)}.`, 'DEPLOY_SAVE_UNCERTAIN');
     }
     if (receipt.mode === 'override-make') receipt.saveRefusals = (receipt.saveRefusals || 0) + 1;
-    stop(receipt, error, 'written', `Make refused the save before creating a version: ${error.message} Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
+    try { stop(receipt, error, 'written', `Make refused the save before creating a version: ${error.message} Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED'); }
+    finally { await staleSaveNotice(client, receipt, warn); }
   }
   receipt.makeAfter = { versionId: version.versionId, versionNumber: version.versionNumber, versionGitSha: version.gitSha, tree: version.tree };
+  reloadReminder(warn, version);
   if (receipt.mode === 'override-make') {
     receipt.stage = 'saved-unverified';
     saveReceipt(receipt);
@@ -1021,7 +1068,7 @@ export function driftProblems(status, receipt, mainFlat) {
     problems.push(`Make's saved version is ${state?.savedVersion ?? 'none'}, not ${receipt.makeAfter.versionGitSha}`);
   }
   if (receipt.mode === 'override-make' && state?.savedVersion !== status.head) problems.push('Make sandbox head is not its saved pointer');
-  const unsaved = contentDiff(status.workingFlat, status.makeFlat);
+  const unsaved = contentDiff(status.workingFlat, status.makeFlat, notInventoried(status.workingFlat));
   if (unsaved.length) problems.push(`${unsaved.length} unsaved path(s) ${JSON.stringify(unsaved.slice(0, 20))}`);
   const differ = contentDiff(status.makeFlat, mainFlat, skipOf(receipt.plan));
   if (differ.length) problems.push(`${differ.length} path(s) differ from main ${JSON.stringify(differ.slice(0, 20))}`);
@@ -1056,7 +1103,7 @@ export async function deployApply(client, { dir, planPath, confirmOverride, over
   await backupLockfiles(client, receipt, deps.home);
   await writeFiles(client, receipt, plan.files, { mainBytes, home: deps.home, deps });
   await reconcile(client, receipt, { mainBytes, home: deps.home, deps });
-  await finish(client, ctx, receipt, main.flat, deps.home);
+  await finish(client, ctx, receipt, main.flat, deps.home, deps.warn);
   return result(receipt, receipt.mode === 'override-make'
     ? `Override saved Make version ${receipt.makeAfter.versionNumber}. Reload and verify with --verify ${receipt.receiptPath} before the tag can be pushed.`
     : `Deployed main ${short(plan.mainCommit)} to Make as version ${receipt.makeAfter.versionNumber} and tagged it ${receipt.tag.name}. ` +
@@ -1084,7 +1131,7 @@ export function classify(receipt, status) {
 
 // Receipts that may continue: nothing saved yet, Make still at the version
 // the deploy started from, and every other path untouched.
-async function resumable(client, receipt, what) {
+async function resumable(client, receipt, what, warn = () => {}) {
   if (receipt.fileKey !== client.fileKey) fail(`The receipt is for Make file ${receipt.fileKey}, not ${client.fileKey}.`, 'DEPLOY_RECEIPT');
   if (receipt.outcome !== 'uncertain' || !BEFORE_SAVE.includes(receipt.stage)) {
     fail(`This deploy is at stage ${receipt.stage} (${receipt.outcome}); --${what} applies only before a version was saved.` +
@@ -1093,6 +1140,7 @@ async function resumable(client, receipt, what) {
   const ui = await client.inspect();
   if (ui?.busy || ui?.offline || ui?.readOnly === true) fail('Make is busy, offline or read-only. Wait until it is idle.', 'DEPLOY_MAKE_BUSY');
   const status = await client.projectStatus();
+  staleTabNotice(warn, status);
   let state;
   try { state = requireGitMode(status.persistence, { overrideMake: overridePin(receipt) }); }
   catch (error) { fail(`Make is not ready: ${error.message}`, 'DEPLOY_MAKE_STATE'); }
@@ -1118,7 +1166,7 @@ export async function deployResume(client, { dir, receiptPath } = {}, deps = {})
   const access = await requireAdmin(receipt.repo, deps.gh);
   if (!revOf(ctx, receipt.mainCommit)) fetchMain(ctx);
   if (!revOf(ctx, receipt.mainCommit)) fail(`The clone does not have main ${short(receipt.mainCommit)}.`, 'DEPLOY_RECEIPT');
-  const { status, files } = await resumable(client, receipt, 'resume');
+  const { status, files } = await resumable(client, receipt, 'resume', deps.warn);
   const todo = files.filter(file => file.state === 'before' || file.state === 'saved' || file.state === 'regenerated' || (file.state === 'after' && isLockfile(file.path)))
     .map(file => ({ ...file, expectedSha256: status.workingSha256.get(file.path) ?? null }));
   receipt.resumedBy = access.login;
@@ -1127,7 +1175,7 @@ export async function deployResume(client, { dir, receiptPath } = {}, deps = {})
   await backupLockfiles(client, receipt, deps.home);
   await writeFiles(client, receipt, todo, { mainBytes, home: deps.home, deps });
   await reconcile(client, receipt, { mainBytes, home: deps.home, deps });
-  await finish(client, ctx, receipt, lsTree(ctx, receipt.mainCommit), deps.home);
+  await finish(client, ctx, receipt, lsTree(ctx, receipt.mainCommit), deps.home, deps.warn);
   return result(receipt, receipt.mode === 'override-make'
     ? `Resumed once: saved version ${receipt.makeAfter.versionNumber}; run --verify ${receipt.receiptPath} after a fresh reload.`
     : `Resumed: wrote ${todo.length} remaining file(s), saved version ${receipt.makeAfter.versionNumber} and tagged ${receipt.tag.name}. ` +
@@ -1158,11 +1206,12 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
   deps = defaults(deps);
   const receipt = readReceipt(receiptPath);
   await requireAdmin(receipt.repo, deps.gh);
-  const { status: first, files } = await resumable(client, receipt, 'abort');
+  const { status: first, files } = await resumable(client, receipt, 'abort', deps.warn);
   const restoreOf = file => (file.op === 'add' ? null : backupContent(receipt, file, deps.home));
   // Every backup is read before anything changes.
   const contents = new Map(files.filter(file => (receipt.mode === 'override-make' || !noOriginal(file)) &&
     (file.state === 'after' || file.state === 'saved' || file.state === 'regenerated')).map(file => [file.path, restoreOf(file)]));
+  for (const file of reverted(receipt, first)) contents.set(file.path, restoreOf(file));
   const restored = new Set(receipt.restored || []);
   // Older abort retries replaced this list. Recover paths that this deploy
   // wrote and a previous abort already returned to their starting content;
@@ -1187,7 +1236,10 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
     stop(receipt, error, 'writing', message, 'DEPLOY_WRITE_FAILED');
   };
   let status = first;
-  let todo = files.filter(file => contents.has(file.path));
+  let todo = [...files.filter(file => contents.has(file.path)), ...reverted(receipt, first)];
+  // A reloaded unplanned path is back once it holds its served content again.
+  const restoredState = (checked, file) => (file.reloaded
+    ? (status.workingSha256.get(file.path) ?? null) === file.beforeSha256 : checked.files.find(item => item.path === file.path).state === 'before');
   const recheck = async () => {
     status = await settledStatus(client, receipt, deps);
     const checked = plannedState(receipt, status);
@@ -1213,7 +1265,7 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
             stopAbort(error, `Abort stopped while restoring: ${error.message} Run --abort again.`);
           }
           const checked = await recheck();
-          if (checked.files.find(item => item.path === file.path).state === 'before') {
+          if (restoredState(checked, file)) {
             recordRestored(file.path);
             break;
           }
@@ -1225,7 +1277,8 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
       }
     }
     const checked = await recheck();
-    todo = checked.files.filter(file => file.state !== 'before' && (receipt.mode === 'override-make' || !noOriginal(file)));
+    todo = [...checked.files.filter(file => file.state !== 'before' && (receipt.mode === 'override-make' || !noOriginal(file))),
+      ...reverted(receipt, status)];
     const pending = status.persistence?.pendingPaths || [];
     const originalTree = receipt.mode === 'override-make' ? receipt.makeBefore.workingTree : receipt.makeBefore.tree;
     const originalPending = receipt.mode === 'override-make' ? receipt.makeBefore.tracker.pendingPaths : [];
