@@ -1,0 +1,19 @@
+tests/make-client.test.js
+  s_5c34306b5bb266::t_9cda70d0a69d29 685-688,690,692,694,696
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "68ada7964ce17c14b25f5dda5aac30544059969a",
+  "prompts": {},
+  "sessions": {
+    "s_5c34306b5bb266": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5efd7ac6-7ad9-4490-a5a4-e450757a68de",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
