@@ -8,6 +8,7 @@ import { requireGitMode, TREE_HIDDEN_ROOT_FILES } from './make-durable.js';
 import { requireLocalVendorUnedited } from './make-vendor-lock.js';
 import { isSizeChecked, sizeWarnings } from './make-size.js';
 import { notInventoried } from './make-unread.js';
+import { reloadReminder, staleSaveNotice, staleTabNotice, untaggedDeployNotice } from './make-deploy-notices.js';
 import { install as installProject } from './make-local.js';
 import { readRepoAccess } from './make-mode.js';
 import { detectMode, ghRunner, isRepoOnly, lfsMatcher, MAKE_MANAGED, parseMarker, PROJECT_EXCLUDES, PROJECT_MARKER, repoName } from './make-project.js';
@@ -645,6 +646,8 @@ async function prepare(client, { dir, reviewed, overrideMake = false, deleteMake
   }
   if (overrideMake) recoverMissingSaved(status, { fileKey: client.fileKey, repo, home, tags, ctx, readBlob, savedProtected });
   await requireTeamMode(client, status);
+  staleTabNotice(deps.warn, status);
+  untaggedDeployNotice(deps.warn, { dir: deployDir(home), fileKey: client.fileKey, status, ctx });
   let state;
   if (overrideMake) {
     if (ui?.busy || ui?.offline || ui?.readOnly === true || status.history?.generationInProgress) {
@@ -1011,7 +1014,7 @@ async function tagAndFinish(ctx, receipt, home) {
 
 // After the writes: save one version. Normal deploys then check drift and tag;
 // overrides defer both until a fresh-reload verification.
-async function finish(client, ctx, receipt, mainFlat, home) {
+async function finish(client, ctx, receipt, mainFlat, home, warn = () => {}) {
   const plan = receipt.plan;
   receipt.stage = 'saving';
   saveReceipt(receipt);
@@ -1030,9 +1033,11 @@ async function finish(client, ctx, receipt, mainFlat, home) {
       stop(receipt, error, 'save-uncertain', `Make's save outcome is unknown: ${error.message} Never retry the save; run ${recovery(receipt)}.`, 'DEPLOY_SAVE_UNCERTAIN');
     }
     if (receipt.mode === 'override-make') receipt.saveRefusals = (receipt.saveRefusals || 0) + 1;
+    await staleSaveNotice(client, receipt, warn);
     stop(receipt, error, 'written', `Make refused the save before creating a version: ${error.message} Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
   }
   receipt.makeAfter = { versionId: version.versionId, versionNumber: version.versionNumber, versionGitSha: version.gitSha, tree: version.tree };
+  reloadReminder(warn, version);
   if (receipt.mode === 'override-make') {
     receipt.stage = 'saved-unverified';
     saveReceipt(receipt);
@@ -1098,7 +1103,7 @@ export async function deployApply(client, { dir, planPath, confirmOverride, over
   await backupLockfiles(client, receipt, deps.home);
   await writeFiles(client, receipt, plan.files, { mainBytes, home: deps.home, deps });
   await reconcile(client, receipt, { mainBytes, home: deps.home, deps });
-  await finish(client, ctx, receipt, main.flat, deps.home);
+  await finish(client, ctx, receipt, main.flat, deps.home, deps.warn);
   return result(receipt, receipt.mode === 'override-make'
     ? `Override saved Make version ${receipt.makeAfter.versionNumber}. Reload and verify with --verify ${receipt.receiptPath} before the tag can be pushed.`
     : `Deployed main ${short(plan.mainCommit)} to Make as version ${receipt.makeAfter.versionNumber} and tagged it ${receipt.tag.name}. ` +
@@ -1126,7 +1131,7 @@ export function classify(receipt, status) {
 
 // Receipts that may continue: nothing saved yet, Make still at the version
 // the deploy started from, and every other path untouched.
-async function resumable(client, receipt, what) {
+async function resumable(client, receipt, what, warn = () => {}) {
   if (receipt.fileKey !== client.fileKey) fail(`The receipt is for Make file ${receipt.fileKey}, not ${client.fileKey}.`, 'DEPLOY_RECEIPT');
   if (receipt.outcome !== 'uncertain' || !BEFORE_SAVE.includes(receipt.stage)) {
     fail(`This deploy is at stage ${receipt.stage} (${receipt.outcome}); --${what} applies only before a version was saved.` +
@@ -1135,6 +1140,7 @@ async function resumable(client, receipt, what) {
   const ui = await client.inspect();
   if (ui?.busy || ui?.offline || ui?.readOnly === true) fail('Make is busy, offline or read-only. Wait until it is idle.', 'DEPLOY_MAKE_BUSY');
   const status = await client.projectStatus();
+  staleTabNotice(warn, status);
   let state;
   try { state = requireGitMode(status.persistence, { overrideMake: overridePin(receipt) }); }
   catch (error) { fail(`Make is not ready: ${error.message}`, 'DEPLOY_MAKE_STATE'); }
@@ -1160,7 +1166,7 @@ export async function deployResume(client, { dir, receiptPath } = {}, deps = {})
   const access = await requireAdmin(receipt.repo, deps.gh);
   if (!revOf(ctx, receipt.mainCommit)) fetchMain(ctx);
   if (!revOf(ctx, receipt.mainCommit)) fail(`The clone does not have main ${short(receipt.mainCommit)}.`, 'DEPLOY_RECEIPT');
-  const { status, files } = await resumable(client, receipt, 'resume');
+  const { status, files } = await resumable(client, receipt, 'resume', deps.warn);
   const todo = files.filter(file => file.state === 'before' || file.state === 'saved' || file.state === 'regenerated' || (file.state === 'after' && isLockfile(file.path)))
     .map(file => ({ ...file, expectedSha256: status.workingSha256.get(file.path) ?? null }));
   receipt.resumedBy = access.login;
@@ -1169,7 +1175,7 @@ export async function deployResume(client, { dir, receiptPath } = {}, deps = {})
   await backupLockfiles(client, receipt, deps.home);
   await writeFiles(client, receipt, todo, { mainBytes, home: deps.home, deps });
   await reconcile(client, receipt, { mainBytes, home: deps.home, deps });
-  await finish(client, ctx, receipt, lsTree(ctx, receipt.mainCommit), deps.home);
+  await finish(client, ctx, receipt, lsTree(ctx, receipt.mainCommit), deps.home, deps.warn);
   return result(receipt, receipt.mode === 'override-make'
     ? `Resumed once: saved version ${receipt.makeAfter.versionNumber}; run --verify ${receipt.receiptPath} after a fresh reload.`
     : `Resumed: wrote ${todo.length} remaining file(s), saved version ${receipt.makeAfter.versionNumber} and tagged ${receipt.tag.name}. ` +
@@ -1200,7 +1206,7 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
   deps = defaults(deps);
   const receipt = readReceipt(receiptPath);
   await requireAdmin(receipt.repo, deps.gh);
-  const { status: first, files } = await resumable(client, receipt, 'abort');
+  const { status: first, files } = await resumable(client, receipt, 'abort', deps.warn);
   const restoreOf = file => (file.op === 'add' ? null : backupContent(receipt, file, deps.home));
   // Every backup is read before anything changes.
   const contents = new Map(files.filter(file => (receipt.mode === 'override-make' || !noOriginal(file)) &&
