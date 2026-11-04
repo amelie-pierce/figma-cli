@@ -882,6 +882,42 @@ current `latest.json` in one sandbox batch (interrupted release files in small
 batches), so its pre-write reads stay inside the per-operation timeout; any
 failed read stops the release before it writes.
 
+Two skills walk people through the whole flow: `atomicaui-release` (workspace
+`main` → kit → hosted release, with the token gate, drift, pending-set, read-back
+and `text/html` stops and the person's Unpublish/Publish click) and
+`atomicaui-upgrade-prototype` (a team clone's `upgrade` pull request, a stop for
+people to merge, then the guarded `make deploy`). Neither merges a pull request.
+The release skill's offline steps use `src/make-atomicaui-kit.js`, run with Node
+(it reads local folders only, never Make, the network or git):
+
+- `transform --source DIR --commit SHA --package NAME --out NEWDIR [--name G]…`
+  turns workspace `component-classes/<g>.md` docs into kit
+  `guidelines/components/<g>.md` guides: the package specifier becomes
+  `@/vendor/atomic-aui`, its `index.css` becomes `src/vendor/atomic-aui/tokens/index.scss`,
+  `Core 6.0` becomes `Core 7.0`, and the kit provenance header naming the doc and
+  12-character commit goes after the frontmatter (or the H1). `_template.md` is skipped.
+- `check --source DIR --commit SHA --package NAME --kit DIR [--vendor VENDOR.json]`
+  replays kit guides whose header names that commit and reports `matched`,
+  `differs`, `otherCommit`, `noHeader`, `noSource`, `notInKit` and, with
+  `--vendor`, whether each kit copy equals its recorded `guidance` hash. With
+  `--origin C=DIR` (the guide folder at a kit guide's own header commit, repeatable)
+  each `otherCommit` entry's `body` compares the doc at `C` with this commit's:
+  `same`, `changed` (the kit copy replays from `C`), `annotated` (it carries a
+  hand-written note), `noSource` or `needsOrigin`; `regenerate` lists the
+  `changed` ones and `notInKit`, `annotated` the ones to stop on.
+- `vendor --baseline VENDOR.json --out NEWFILE [--base-library DIR --library DIR
+  --commit SHA40 --commit-date DATE [--candidate-dir NEWDIR]] [--guides DIR]` writes
+  the next `VENDOR.json`: it proves the base library reproduces the baseline under
+  its `exclusions` (`KIT_BASE_DIFFERS`), refuses any `tokens/generated/**` or
+  `tokens/generated.manifest.json` change (`KIT_TOKEN_GATE`), changes only
+  `source.commit`, `source.commitDate`, `files` and `guidance.files` (existing
+  order kept, new entries inserted before the first greater path, 2-space JSON),
+  and prints added/changed/removed paths and the inventory digest.
+  `--candidate-dir` also writes the new library at full Make paths with that
+  `VENDOR.json`, the `--candidate-dir` for `make sync` and `make export-delta`.
+
+Errors print `{error, code}` on stderr and exit 1; outputs are never overwritten.
+
 ### Make delta and sync
 
 `make export-delta` requires a clean saved git-mode Make file, a trusted

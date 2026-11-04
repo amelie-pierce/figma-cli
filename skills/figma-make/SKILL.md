@@ -12,8 +12,11 @@ commands rather than assuming an upstream installation includes it.
 
 ## Choose the saving mode
 
-For the AtomicAUI library, use the `make atomicaui` command group. “Release a new
-AtomicAUI version” maps to `release --file KEY` (optionally `--version X.Y.Z`);
+For the AtomicAUI library, use the `make atomicaui` command group. To bring the
+workspace's latest AtomicAUI into the kit and release it end to end, follow the
+`atomicaui-release` skill; to upgrade a team-mode prototype and deploy it after the
+merge, follow the `atomicaui-upgrade-prototype` skill.
+“Release a new AtomicAUI version” maps to `release --file KEY` (optionally `--version X.Y.Z`);
 the release command saves the files; the user rebuilds the site in **Make
 settings → General** by clicking **Unpublish** (if already published) and then
 **Publish**. Set **Who can view** to **Anyone on the web**, use no password, and

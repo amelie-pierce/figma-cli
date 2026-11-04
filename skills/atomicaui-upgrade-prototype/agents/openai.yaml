@@ -1,0 +1,4 @@
+interface:
+  display_name: "AtomicAUI Upgrade"
+  short_description: "Upgrade a team prototype to a new AtomicAUI release through a pull request, then deploy after the merge"
+  default_prompt: "Use $atomicaui-upgrade-prototype to upgrade this prototype to the latest AtomicAUI and tell me in plain words what changes."

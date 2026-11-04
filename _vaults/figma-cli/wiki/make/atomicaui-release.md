@@ -7,6 +7,7 @@ date: 2026-10-16
 # AtomicAUI kit-hosted releases
 
 Updated 2026-11-03: batched release pre-write reads and the provider guard; see the last two sections.
+Updated 2026-11-04: the kit update before a release (guides, candidate VENDOR.json, token gate) and the release and upgrade skills are in [atomicaui-kit-update.md](atomicaui-kit-update.md).
 
 `make atomicaui release` builds a versioned payload under
 `public/atomicaui/<version>/` and moves `public/atomicaui/latest.json` after
