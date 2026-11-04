@@ -26,14 +26,18 @@ after the frontmatter or else after the H1, skipping one blank line. CR line
 endings are refused. `guideSource` reads the header back
 (`src/make-atomicaui-kit.js:76`), so `checkGuides` replays only kit guides made
 from the given commit and lists the rest under `otherCommit`
-(`src/make-atomicaui-kit.js:108`).
+(`src/make-atomicaui-kit.js:108`). For those it also replays the given commit's
+source under the guide's own header commit (`body`: `same`, `differs`,
+`noSource`), and `regenerate` lists the `differs` ones plus `notInKit`: the
+release selects guides this way at NEW instead of by `git diff BASE NEW`.
 
 Proof on the 7.0.2 data (2026-11-04, local, not committed): replaying the 47
 guides from their source commit reproduced 44 recorded hashes; the 3 others carry
 hand-written verification notes the transform cannot reproduce (VENDOR.json
 `guidance.transform` names them). The 4 guides changed in 7.0.2 reproduced
 byte for byte. Guide entries can come from different commits: a guide whose
-workspace doc changed after its own commit stays stale until a release regenerates it.
+workspace doc changed after its own commit is stale; the next release's check at
+NEW puts it in `regenerate`.
 
 ## Candidate VENDOR.json and the token gate
 

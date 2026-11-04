@@ -883,7 +883,10 @@ The release skill's offline steps use `src/make-atomicaui-kit.js`, run with Node
 - `check --source DIR --commit SHA --package NAME --kit DIR [--vendor VENDOR.json]`
   replays kit guides whose header names that commit and reports `matched`,
   `differs`, `otherCommit`, `noHeader`, `noSource`, `notInKit` and, with
-  `--vendor`, whether each kit copy equals its recorded `guidance` hash.
+  `--vendor`, whether each kit copy equals its recorded `guidance` hash. Each
+  `otherCommit` entry's `body` says whether this commit's source, replayed under
+  the guide's own header commit, gives the kit copy (`same`, `differs`,
+  `noSource`); `regenerate` lists the `differs` ones and `notInKit`.
 - `vendor --baseline VENDOR.json --out NEWFILE [--base-library DIR --library DIR
   --commit SHA40 --commit-date DATE [--candidate-dir NEWDIR]] [--guides DIR]` writes
   the next `VENDOR.json`: it proves the base library reproduces the baseline under

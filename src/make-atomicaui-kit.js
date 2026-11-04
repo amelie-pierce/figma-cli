@@ -101,13 +101,17 @@ function readGuide(directory, name, label) {
 
 // Replays every kit guide whose header names this commit. Guides made from
 // another commit are listed under otherCommit so the caller replays them from
-// that commit's sources.
+// that commit's sources; each entry's body says whether this commit's source,
+// replayed under the guide's own header commit, gives the kit copy ('same'),
+// does not ('differs') or is missing ('noSource').
+// regenerate lists the guides to transform at this commit: otherCommit guides
+// whose body differs, and workspace guides not yet in the kit.
 // With vendorBytes, each kit copy is also compared with the hash VENDOR.json
 // records for it (recorded.differs or recorded.absent mean the kit copy is not
 // the one the library recorded).
 export function checkGuides({ sourceDir, kitDir, commit, packageName, vendorBytes }) {
   const want = shortCommit(commit);
-  const result = { commit: want, matched: [], differs: [], noSource: [], otherCommit: [], noHeader: [], notInKit: [] };
+  const result = { commit: want, matched: [], differs: [], noSource: [], otherCommit: [], noHeader: [], notInKit: [], regenerate: [] };
   const kitNames = guideNames(kitDir);
   let hashes = null;
   if (vendorBytes) {
@@ -125,13 +129,20 @@ export function checkGuides({ sourceDir, kitDir, commit, packageName, vendorByte
     }
     const origin = guideSource(kit);
     if (!origin || origin.name !== name) { result.noHeader.push(name); continue; }
-    if (origin.commit !== want) { result.otherCommit.push({ name, commit: origin.commit }); continue; }
     const source = readGuide(sourceDir, name, 'Workspace guide');
+    if (origin.commit !== want) {
+      const body = source === null ? 'noSource'
+        : transformGuide(source, { name, commit: origin.commit, packageName }) === kit ? 'same' : 'differs';
+      result.otherCommit.push({ name, commit: origin.commit, body });
+      continue;
+    }
     if (source === null) { result.noSource.push(name); continue; }
     (transformGuide(source, { name, commit: want, packageName }) === kit ? result.matched : result.differs).push(name);
   }
   const kitSet = new Set(kitNames);
   result.notInKit = guideNames(sourceDir).filter(name => !kitSet.has(name));
+  result.regenerate = [...result.otherCommit.filter(entry => entry.body === 'differs').map(entry => entry.name), ...result.notInKit]
+    .sort(byteOrder);
   return result;
 }
 

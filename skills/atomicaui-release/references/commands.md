@@ -70,23 +70,35 @@ the whole new library at Make paths with the candidate `VENDOR.json`. Errors are
 
 ## Guides
 
-Back up and prove (Phase 2), per header commit `C` the check reports:
+Select (Phase 1), from the backed-up kit guides at NEW:
+
+```sh
+node CLI_SRC/make-atomicaui-kit.js check --source WORK/at-NEW/GUIDES --commit NEW \
+  --package <name> --kit WORK/kit-guides --vendor WORK/base/VENDOR.json
+```
+
+`regenerate` lists the guides to transform: `otherCommit` guides whose `body`
+`differs` at NEW (replayed under their own header commit, so a guide pinned to an
+older commit is caught even when BASE..NEW leaves its doc alone) and `notInKit`
+workspace guides. `body: "noSource"` is a removed guide: stop and report; this
+skill does not remove guides.
+
+Prove (Phase 2), per header commit `C` of the existing `regenerate` guides:
 
 ```sh
 node CLI_SRC/make-atomicaui-kit.js check --source WORK/at-C/GUIDES --commit C \
   --package <name> --kit WORK/kit-guides --vendor WORK/base/VENDOR.json
 ```
 
-`matched` and `recorded.matched` must hold every backed-up guide.
-`otherCommit` names guides made from another commit (extract that commit with
-`git archive` as above and check again); `differs` with `recorded.matched` is a
+`matched` and `recorded.matched` must hold every existing `regenerate` guide made
+from `C` (extract `C` with `git archive` as above); `differs` with `recorded.matched` is a
 hand-written note (stop and ask); `recorded.differs` means the kit copy was edited.
 
 Transform (Phase 3):
 
 ```sh
 node CLI_SRC/make-atomicaui-kit.js transform --source WORK/at-NEW/GUIDES --commit NEW \
-  --package <name> --out WORK/guides-new --name <guide> [--name <guide> …]
+  --package <name> --out WORK/guides-new --name <regenerate guide> [--name <guide> …]
 ```
 
 ## Sync (preferred path)
@@ -132,7 +144,7 @@ figma-cli make sync --file KEY --package WORK/package --manifest WORK/base/VENDO
    Never pass `--solo` or `--repo` to get past a mode refusal; a kit is solo, so a
    refusal there is a stop.
 
-## Guides write (after the sync, or with the fallback)
+## Guides write (after a sync)
 
 After a sync the next baseline is `WORK/sync-receipt.VENDOR.json` (the receipt's
 `afterManifestPath`); check its SHA-256 equals the receipt's `afterManifestSha256`
@@ -153,7 +165,10 @@ figma-cli make save-version --file KEY --title "AtomicAUI guides from workspace 
 
 ## Fallback: file-by-file writes
 
-Build one `VENDOR.json` with the library and the guides together:
+Also the path for a guides-only release: with no library change the sync scope is
+empty, so there is no sync receipt or `WORK/sync-receipt.VENDOR.json`.
+Build one `VENDOR.json` with the library and the guides together (with an unchanged
+library it moves only `source.commit`, `source.commitDate` and `guidance.files`):
 `vendor --baseline WORK/base/VENDOR.json --base-library … --library … --commit NEW
 --commit-date <date> --guides WORK/guides-new --out WORK/VENDOR-final.json`.
 Then for each added file `make write src/vendor/atomic-aui/<p> --file KEY --from

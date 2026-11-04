@@ -88,10 +88,36 @@ test('check replays kit guides from their sources and sorts every other case out
   const result = checkGuides({ sourceDir: src, kitDir: kit, commit: COMMIT, packageName: PKG, vendorBytes });
   assert.deepEqual(result, {
     commit: 'abcdef012345', matched: ['alpha'], differs: ['beta'], noSource: ['gone'],
-    otherCommit: [{ name: 'gamma', commit: other }], noHeader: ['delta'], notInKit: ['fresh'],
+    otherCommit: [{ name: 'gamma', commit: other, body: 'differs' }], noHeader: ['delta'], notInKit: ['fresh'],
+    regenerate: ['fresh', 'gamma'],
     recorded: { matched: ['alpha'], differs: ['beta'], absent: ['delta', 'gamma', 'gone'] },
   });
   assert.deepEqual(guideNames(src), ['alpha', 'beta', 'delta', 'fresh', 'gamma']);
+});
+
+test('check at NEW selects a guide pinned to an older commit whose doc changed before BASE', t => {
+  const root = temp(t);
+  const older = '0123456789ab';
+  const atOlder = join(root, 'at-older'), atBase = join(root, 'at-base'), atNew = join(root, 'at-new'), kit = join(root, 'kit');
+  put(atOlder, 'stale.md', '# stale\n\nv0\n');
+  put(atOlder, 'steady.md', '# steady\n\nv0\n');
+  for (const dir of [atBase, atNew]) {
+    put(dir, 'stale.md', '# stale\n\nv1\n');
+    put(dir, 'steady.md', '# steady\n\nv0\n');
+  }
+  for (const name of ['stale', 'steady']) {
+    put(kit, `${name}.md`, transformGuide(readFileSync(join(atOlder, `${name}.md`), 'utf8'), { name, commit: older, packageName: PKG }));
+  }
+  assert.equal(readFileSync(join(atBase, 'stale.md'), 'utf8'), readFileSync(join(atNew, 'stale.md'), 'utf8'));
+  const proof = checkGuides({ sourceDir: atOlder, kitDir: kit, commit: older, packageName: PKG });
+  assert.deepEqual(proof.matched, ['stale', 'steady']);
+  const result = checkGuides({ sourceDir: atNew, kitDir: kit, commit: COMMIT, packageName: PKG });
+  assert.deepEqual(result.otherCommit, [
+    { name: 'stale', commit: older, body: 'differs' }, { name: 'steady', commit: older, body: 'same' }]);
+  assert.deepEqual(result.regenerate, ['stale']);
+  const run = spawnSync(process.execPath, [SCRIPT, 'check', '--source', atNew, '--commit', COMMIT, '--package', PKG, '--kit', kit]);
+  assert.equal(run.status, 0, run.stderr.toString());
+  assert.deepEqual(JSON.parse(run.stdout.toString()).regenerate, ['stale']);
 });
 
 test('exclusions are anchored globs where **/ also matches the library root', () => {

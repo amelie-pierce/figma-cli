@@ -63,7 +63,8 @@ and its port); `CLI_SRC` is the `src` folder next to the `src/index.js` it runs.
 | **`text/html` answer** | The hosted check gets HTTP 200 with `text/html`: the version is not on the site (the site's fallback page), so "200" proves nothing. The CLI client refuses it; do not work around it. |
 | **Guide proof** | A guide that will change does not replay byte for byte from its source, does not match its recorded hash, or carries a hand-written note the transform cannot reproduce. |
 | **New package** | Changed library files import a package the kit's `package.json` does not declare; `release` would refuse. Adding it is a kit change the person approves first. |
-| **Removed guide or library file** | Ask; deletions are rare and need the person's yes. |
+| **Removed guide** | A kit guide whose workspace doc is gone at NEW (`body: "noSource"` in the check). This skill does not remove guides: stop and report it to the person, who handles the removal outside this skill. |
+| **Removed library file** | Ask; deletions are rare and need the person's yes. |
 | **Not the kit** | The file is in team mode, or a write refuses with `MAKE_VENDOR_LOCKED`: that file installed AtomicAUI from a release, so it is an app, not the kit. Ask for the kit's link. |
 
 ## Phase 1: what changed (read-only)
@@ -85,39 +86,48 @@ and its port); `CLI_SRC` is the `src` folder next to the `src/index.js` it runs.
 6. Build the library candidate `VENDOR.json` with the helper's `vendor` command.
    It proves BASE reproduces the baseline, applies the exclusions, enforces the
    **token gate**, and lists added / changed / removed files and the inventory
-   digest. If nothing changed in the library or its guides, stop: nothing to release.
-7. List changed guides: `git -C WORK/ws diff --name-status BASE NEW -- <guide folder>`
-   (ignore `_template.md`). List the commits and pull requests behind the change
-   (`git log --oneline BASE..NEW -- <paths>`, `gh api repos/OWNER/REPO/commits/<sha>/pulls`).
+   digest.
+7. Select the guides by replaying all of them at NEW, not by a git diff (a guide
+   pinned to an older header commit can be stale even when BASE..NEW leaves its doc
+   alone). Back up every kit guide the baseline's `guidance.files` lists:
+   `figma-cli make read guidelines/components/<g>.md --file KEY --remote --timeout 90000
+   --out WORK/kit-guides/<g>.md` (one failed read is usually transient: read again
+   before concluding anything). Then run the helper's `check` at NEW (recipe
+   "Guides"): `regenerate` is the guides to transform (a changed body under the
+   guide's own header commit, or a new workspace guide); an `otherCommit` entry with
+   `body: "noSource"` is a **removed guide** (stop). If nothing changed in the
+   library and `regenerate` is empty, stop: nothing to release. List the commits and
+   pull requests behind the change (`git log --oneline BASE..NEW -- <paths>`, or `<C>..NEW` for a guide pinned to an older commit `C`;
+   `gh api repos/OWNER/REPO/commits/<sha>/pulls`).
 8. Check new package imports in changed files against the kit's `package.json`
    (`figma-cli make read package.json --file KEY --remote --timeout 90000`).
 9. **Ask the person** with a plain summary (components, files, guides, pull requests):
    the version (default next patch; their call), whether anything breaks apps
    (then a breaking-notes file, see `make atomicaui release --help`), and the scope.
 
-## Phase 2: kit pre-flight and backup (read-only on the kit)
+## Phase 2: kit pre-flight and guide proof (read-only on the kit)
 
 1. `figma-cli make status --file KEY --json`: git mode, **solo** (a kit has no team
    marker), `pendingCount` 0. Record `savedVersion`: the rollback point.
 2. `figma-cli make drift --file KEY --manifest WORK/base/VENDOR.json --json`:
    `ok`, every file matched, `extra` 0, `VENDOR.json` in Make equal to the baseline.
-3. Back up every guide that will change: `figma-cli make read guidelines/components/<g>.md
-   --file KEY --remote --timeout 90000 --out WORK/kit-guides/<g>.md`. One failed read
-   is usually transient: read again before concluding anything.
-4. Prove the guide transform on exactly those guides with the helper's `check`
-   (recipe "Guides"): every backed-up guide `matched` at the commit its header names
-   and `recorded.matched`. A guide made from an older commit is listed under
-   `otherCommit`: extract that commit's guide folder and check again.
+3. Prove the guide transform on every existing guide in `regenerate` with the
+   helper's `check` (recipe "Guides") at the commit `C` its header names: each one
+   `matched` at `C` and `recorded.matched`.
 
 ## Phase 3: candidates (offline)
 
-1. Transform the added and changed guides at NEW with the helper's `transform`.
+1. Transform the `regenerate` guides at NEW with the helper's `transform`.
 2. Prepare the sync (preferred path, recipe "Sync"): the workspace package for NEW,
    the candidate folder at full Make paths with the library candidate `VENDOR.json`,
    and the request JSON.
 3. Only when the sync path cannot be used (no workspace package tool, or the CLI
    refuses the package), fall back to file-by-file writes (recipe "Fallback"); tell
    the person which path you are using and why.
+4. A guides-only release (the library helper listed no added, changed or removed
+   file) has an empty sync scope and so no sync receipt: skip the sync and use the
+   fallback's combined `VENDOR.json` (recipe "Fallback"), which moves
+   `source.commit` to NEW and records the guides.
 
 ## Phase 4: write and save
 
@@ -135,7 +145,7 @@ Sync path:
    `vendor --guides`, write each guide and then `VENDOR.json` last, and save exactly
    those paths with `make save-version` (recipe "Guides write").
 
-Fallback path: one `make write` per file with `--expected-sha256` for every
+Fallback path (also a guides-only release): one `make write` per file with `--expected-sha256` for every
 existing file, `VENDOR.json` last, then one `make save-version` naming every path.
 
 ## Phase 5: verify the saved library
@@ -181,7 +191,7 @@ more; still refused, stop and ask the person to check the Publish settings.
    whose file list the helper built from workspace NEW, so the kit library equals
    NEW's vendorable files (same inventory digest).
 2. Kit → workspace: `make export-delta --file KEY --manifest <final VENDOR.json>
-   --who <person> --candidate-dir WORK/ws-full --out WORK/delta.json` must refuse with
+   --who <person> --candidate-dir WORK/cand --out WORK/delta.json` must refuse with
    **"No exportable saved changes in scope."** That refusal means clean. Release
    files under `public/atomicaui/` never appear in drift or export.
 
