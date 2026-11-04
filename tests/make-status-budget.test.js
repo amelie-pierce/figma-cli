@@ -17,14 +17,28 @@ test('default status budget keeps the Make operation after fake connection time'
   assert.ok(operationBudget > 500 && operationBudget <= 1000, `default budget leaves time for the operation: ${operationBudget}`);
 });
 
-test('an explicit timeout includes fake connection and the rest of status', async () => {
+test('an explicit timeout gives the Make operation only what connection left', async () => {
   const client = { timeoutMs: 1000, async connect() { await delay(200); } };
   let operationBudget;
-  await assert.rejects(runStatusBudget(client, 'ExactKey', async () => {
+  let finished = false;
+  await runStatusBudget(client, 'ExactKey', async () => {
     operationBudget = client.timeoutMs;
-    await delay(1200);
-  }, 1000), /Make status timed out/);
+    await delay(50);
+    finished = true;
+  }, 1000);
+  assert.equal(finished, true);
   assert.ok(operationBudget < 1000 && operationBudget > 500, `remaining budget ${operationBudget}`);
+});
+
+test('a failed status action is reported once, after it has stopped', async () => {
+  const client = { timeoutMs: 1000, async connect() {} };
+  const events = [];
+  await assert.rejects(runStatusBudget(client, 'ExactKey', async () => {
+    await delay(50);
+    events.push('action done');
+    throw new Error('Make operation timed out.');
+  }, 1000).finally(() => events.push('settled')), /Make operation timed out/);
+  assert.deepEqual(events, ['action done', 'settled']);
 });
 
 test('an explicit timeout can expire during fake connection', async () => {

@@ -305,8 +305,9 @@ items (pending changes, no baseline, ambiguous mode, any relation other than
 
 For `make status`, the default wall budget is 150000 ms: up to 30000 ms for
 CDP discovery and connection, then up to 120000 ms for the Make operation.
-An explicit `--timeout` (500–120000 ms) instead bounds the entire status
-command, including connection and optional GitHub reads. A roughly 140 s status
+An explicit `--timeout` (500–120000 ms) instead bounds connection and the
+Make operation together (each GitHub read keeps its own cap); its timeout error
+suggests leaving `--timeout` out for the longer default. A roughly 140 s status
 run with about 20 s of startup and connection time fits the default budget.
 Other Make operations still use the 120000 ms maximum; each filesystem read or
 write may use the operation's remaining time, so one large file is not cut off

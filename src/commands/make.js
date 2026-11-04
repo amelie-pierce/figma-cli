@@ -90,8 +90,10 @@ async function withClient(options, fn, write, paths = [], { readOnly = false, wa
     if (wallBudget) await runStatusBudget(client, options.file, run, options.timeout);
     else { await client.connect(options.file); await run(); }
   } catch (error) {
-    if (wallBudget && options.timeout === STATUS_DEFAULT_WALL_MS && /timed out/i.test(error.message)) {
-      error.message += ' The 150000 ms default status budget includes connection; Make may be busy, so wait a minute and try once more.';
+    if (wallBudget && /timed out/i.test(error.message)) {
+      error.message += options.timeout === STATUS_DEFAULT_WALL_MS
+        ? ' The 150000 ms default status budget includes connection; Make may be busy, so wait a minute and try once more.'
+        : ' Large projects can need longer: run it again without --timeout for the 150000 ms default status budget.';
     } else if (readOnly) timeoutHint(error, options.timeout);
     failure(error);
   }
@@ -207,11 +209,11 @@ target(make.command('drift').description('Read-only vendor inventory, manifest c
     process.exitCode = driftExitCode(result);
   }));
 
-target(make.command('status').description('Read-only project status: Make saved and working tree SHAs, solo/team mode and, with --repo, GitHub main'), STATUS_DEFAULT_WALL_MS, 'Maximum whole-command time')
+target(make.command('status').description('Read-only project status: Make saved and working tree SHAs, solo/team mode and, with --repo, GitHub main'), STATUS_DEFAULT_WALL_MS, 'Maximum connection plus Make operation time')
   .option('--repo <owner/repo>', 'Compare with this GitHub repo through your gh login (GET requests only); records the link in ~/.figma-cli for the write gate', repoName)
   .option('--json', 'Print the complete machine-readable result')
   .addHelpText('after', '\nDefault wall budget: 150000 ms (up to 30000 ms for connection before the 120000 ms Make operation).' +
-    '\nAn explicit --timeout (500–120000 ms) bounds the entire command, including connection and GitHub reads.' +
+    '\nAn explicit --timeout (500–120000 ms) bounds connection and the Make operation together.' +
     '\nExit codes: 0 all read and nothing needs attention; 1 the status could not be read' +
     '\n(Make or GitHub error); 2 read completely, with attention items listed.')
   .action(options => withClient(options, async client => {
