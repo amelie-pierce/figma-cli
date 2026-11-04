@@ -10,5 +10,7 @@ export async function runStatusBudget(client, file, action, budgetMs) {
   const remaining = deadline - Date.now();
   if (remaining <= 0) throw new Error('Make status timed out.');
   client.timeoutMs = Math.min(CLIENT_MAX_MS, remaining);
+  // Every Make operation the action runs shares the one wall deadline.
+  client.deadline = deadline;
   await action();
 }

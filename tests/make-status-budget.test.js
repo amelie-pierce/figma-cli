@@ -49,3 +49,25 @@ test('an explicit timeout can expire during fake connection', async () => {
   await assert.rejects(runStatusBudget(client, 'ExactKey', async () => { actionRan = true; }, 1000), /Make status timed out/);
   assert.equal(actionRan, false);
 });
+
+test('an explicit timeout bounds every Make operation the status action runs, not each one', async () => {
+  const { MakeClient } = await import('../src/make-client.js');
+  // Each Make operation takes ~150 ms, well inside the 500 ms budget on its
+  // own; four of them in sequence must not outlive the whole-command budget.
+  const transport = {
+    target: null,
+    async connect() { transport.target = { fileKey: 'ExactKey' }; },
+    async evaluate(expression) { if (expression.includes('ui-snapshot-probe')) await delay(150); return {}; },
+    async send() { return {}; },
+    close() {},
+  };
+  const client = new MakeClient({ transport, timeoutMs: 1000 });
+  const probe = () => client._operation(deadline => client._evaluate('"ui-snapshot-probe"', deadline));
+  let completed = 0;
+  const started = Date.now();
+  await assert.rejects(runStatusBudget(client, 'ExactKey', async () => {
+    for (let i = 0; i < 4; i++) { await probe(); completed++; }
+  }, 500), /timed out/);
+  assert.ok(completed < 4, `completed ${completed} operations`);
+  assert.ok(Date.now() - started < 900, `ran ${Date.now() - started} ms`);
+});
