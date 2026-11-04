@@ -1,0 +1,29 @@
+tests/make-status-budget.test.js
+  s_ac34e403a7904e::t_1f97441bb4fb56 17,21-31
+src/make-status-budget.js
+  s_ac34e403a7904e::t_04479536b3ee42 2,4
+skills/figma-make-team/SKILL.md
+  s_ac34e403a7904e::t_04479536b3ee42 131
+src/commands/make.js
+  s_ac34e403a7904e::t_04479536b3ee42 95-96,215
+CHANGELOG.md
+  s_ac34e403a7904e::t_04479536b3ee42 7
+REFERENCE.md
+  s_ac34e403a7904e::t_04479536b3ee42 306,311
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5568e19757aece82857b5bfabe68f1537ba46d95",
+  "prompts": {},
+  "sessions": {
+    "s_ac34e403a7904e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fb1bbeb6-2871-4f3e-aa3c-97036482e917",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
