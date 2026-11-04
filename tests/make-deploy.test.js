@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gitBlobSha, gitTreeSha } from '../src/git-tree.js';
 import { MakeClient } from '../src/make-client.js';
-import { DEPLOY_IGNORE, defaultReadBlob, deployAbort, deployApply, deployPlan, deployResume, deployVerify, driftProblems, ignoreMatcher, ignorePatterns, readReceipt } from '../src/make-deploy.js';
+import { DEPLOY_IGNORE, defaultReadBlob, deployDir, deployAbort, deployApply, deployPlan, deployResume, deployVerify, driftProblems, ignoreMatcher, ignorePatterns, readReceipt } from '../src/make-deploy.js';
 import { markerContent } from '../src/make-mode.js';
 import { PROJECT_MARKER } from '../src/make-project.js';
 import { defaultRun } from '../src/make-team.js';
@@ -512,16 +512,29 @@ describe('make deploy reminders (warn only)', () => {
   it('says the open tab is behind Make when a save is refused from a stale baseline, and not otherwise', async t => {
     const s = setup(t);
     const warnings = capture(s);
-    staleOverride(s);
-    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
-    warnings.length = 0;
+    landChange(s);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
     s.make.hooks.save = 'refused';
-    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
-      confirmOverride: plan.digest.slice(0, 12) }, s.deps).catch(cause => cause);
+    const save = s.make.saveCheckedVersion.bind(s.make);
+    s.make.saveCheckedVersion = async (...args) => { s.make.trackerError = true; return save(...args); };
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
     assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
     assert.equal(readReceipt(error.receiptPath).stage, 'written');
     assert.ok(warnings.some(message => message === `Make refused the save from a stale baseline. The open Make tab is behind Make: its saved baseline is stale. ` +
       `Close the Make file and open it again before you run --resume or --abort ${error.receiptPath}.`), JSON.stringify(warnings));
+
+    const override = setup(t);
+    const overrideWarnings = capture(override);
+    staleOverride(override);
+    const overridePlan = await deployPlan(override.make, { ...override.opts, overrideMake: true }, override.deps);
+    overrideWarnings.length = 0;
+    override.make.hooks.save = 'refused';
+    const overrideError = await deployApply(override.make, { ...override.opts, planPath: overridePlan.planPath,
+      confirmOverride: overridePlan.digest.slice(0, 12) }, override.deps).catch(cause => cause);
+    assert.equal(overrideError.code, 'DEPLOY_WRITE_FAILED');
+    assert.equal(overrideWarnings.some(message => /stale baseline/.test(message)), false,
+      'a tracker already in error when the override started is no evidence of a stale baseline');
+
     const normal = setup(t);
     const normalWarnings = capture(normal);
     landChange(normal);
@@ -529,6 +542,32 @@ describe('make deploy reminders (warn only)', () => {
     normal.make.hooks.save = 'refused';
     await refuses(deployApply(normal.make, { ...normal.opts, planPath: normalPlan.planPath }, normal.deps), 'DEPLOY_WRITE_FAILED');
     assert.deepEqual(normalWarnings, [], 'a refusal with a healthy tracker and an unmoved pointer says nothing');
+  });
+
+  it('records a refused save as written before probing Make for the stale-baseline notice', async t => {
+    const s = setup(t);
+    const warnings = capture(s);
+    landChange(s);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.save = 'refused';
+    let probed = false;
+    const stagesDuringProbe = [];
+    const idleState = s.make.idleState.bind(s.make);
+    s.make.idleState = async paths => {
+      if (!s.make.calls.some(([kind]) => kind === 'save')) return idleState(paths);
+      probed = true;
+      const dir = deployDir(s.deps.home);
+      for (const name of readdirSync(dir).filter(entry => entry.endsWith('.json'))) {
+        stagesDuringProbe.push(JSON.parse(readFileSync(join(dir, name), 'utf8')).stage);
+      }
+      throw new Error('Make operation timed out.');
+    };
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+    assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+    assert.ok(probed, 'the warn-only probe ran');
+    assert.deepEqual(stagesDuringProbe, ['written']);
+    assert.equal(readReceipt(error.receiptPath).stage, 'written');
+    assert.deepEqual(warnings, []);
   });
 
   it('warns when the newest Make version is a deploy with no make-deploy tag on GitHub', async t => {

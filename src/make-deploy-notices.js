@@ -23,16 +23,17 @@ export function staleTabNotice(warn, status) {
 }
 
 // After Make refused a save before creating a version: when the tracker now
-// reports an error, or Make's saved pointer moved off the one the deploy
-// started from, the refusal came from a stale baseline. An unreadable state
-// says nothing.
+// reports an error it did not report when the deploy started, or Make's saved
+// pointer moved off the one the deploy started from, the refusal came from a
+// stale baseline. An unreadable state says nothing.
 export async function staleSaveNotice(client, receipt, warn) {
   let state;
   try { state = (await client.idleState([]))?.state; }
   catch { return; }
   if (state?.mode !== 'git') return;
   const moved = SHA.test(state.savedVersion || '') && state.savedVersion !== receipt.makeBefore?.versionGitSha;
-  if (!state.error && !moved) return;
+  const newError = state.error && !receipt.makeBefore?.tracker?.error;
+  if (!newError && !moved) return;
   warn(`Make refused the save from a stale baseline. ${STALE_TAB} before you run --resume or --abort ${receipt.receiptPath}.`);
 }
 

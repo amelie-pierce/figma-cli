@@ -1033,8 +1033,8 @@ async function finish(client, ctx, receipt, mainFlat, home, warn = () => {}) {
       stop(receipt, error, 'save-uncertain', `Make's save outcome is unknown: ${error.message} Never retry the save; run ${recovery(receipt)}.`, 'DEPLOY_SAVE_UNCERTAIN');
     }
     if (receipt.mode === 'override-make') receipt.saveRefusals = (receipt.saveRefusals || 0) + 1;
-    await staleSaveNotice(client, receipt, warn);
-    stop(receipt, error, 'written', `Make refused the save before creating a version: ${error.message} Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
+    try { stop(receipt, error, 'written', `Make refused the save before creating a version: ${error.message} Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED'); }
+    finally { await staleSaveNotice(client, receipt, warn); }
   }
   receipt.makeAfter = { versionId: version.versionId, versionNumber: version.versionNumber, versionGitSha: version.gitSha, tree: version.tree };
   reloadReminder(warn, version);

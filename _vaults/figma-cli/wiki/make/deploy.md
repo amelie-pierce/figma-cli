@@ -40,7 +40,7 @@ The saved-inventory fallback is implemented by `inventoryFromCommit`, `savedInve
 
 ## Deploy reminders (warn only)
 
-`src/make-deploy-notices.js` prints through `deps.warn` and never changes results or exit codes: a reload reminder after a saved version (`src/make-deploy.js:1035`); a stale-tab notice when the tracker reports an error (not for `savedMissing`, which override recovers from), and after a refused save when a fresh `idleState` shows the tracker in error or the saved pointer moved (`src/make-deploy.js:1031`); and an untagged-deploy warning when a local receipt names Make's saved version and `ls-remote` shows no `make-deploy` tag on its commit (`src/make-deploy.js:645`). Make's version history holds AI turns only, so a deploy version's name is known only from local receipts; otherwise nothing is printed. Tests: `tests/make-deploy.test.js:443`.
+`src/make-deploy-notices.js` prints through `deps.warn` and never changes results or exit codes: a reload reminder after a saved version (`src/make-deploy.js:1035`); a stale-tab notice when the tracker reports an error (not for `savedMissing`, which override recovers from), and after a refused save when a fresh `idleState` shows the tracker in error when the deploy did not start in error, or the saved pointer moved; the receipt is saved at `written` before that probe (`src/make-deploy.js:1031`); and an untagged-deploy warning when a local receipt names Make's saved version and `ls-remote` shows no `make-deploy` tag on its commit (`src/make-deploy.js:645`). Make's version history holds AI turns only, so a deploy version's name is known only from local receipts; otherwise nothing is printed. Tests: `tests/make-deploy.test.js:443`.
 
 ## Guards and base
 
