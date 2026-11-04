@@ -100,18 +100,22 @@ function readGuide(directory, name, label) {
 }
 
 // Replays every kit guide whose header names this commit. Guides made from
-// another commit are listed under otherCommit so the caller replays them from
-// that commit's sources; each entry's body says whether this commit's source,
-// replayed under the guide's own header commit, gives the kit copy ('same'),
-// does not ('differs') or is missing ('noSource').
-// regenerate lists the guides to transform at this commit: otherCommit guides
-// whose body differs, and workspace guides not yet in the kit.
+// another commit C are listed under otherCommit; each entry's body compares the
+// workspace doc at C (from originDirs[C]) with the doc at this commit:
+// 'same' (unchanged: leave the kit copy alone, hand-written notes included),
+// 'changed' (changed, and the kit copy replays from C: regenerate it),
+// 'annotated' (changed, but the kit copy carries what the transform cannot
+// reproduce: stop and report), 'noSource' (gone at this commit) or
+// 'needsOrigin' (no folder for C was given).
+// regenerate lists the 'changed' guides and workspace guides not yet in the
+// kit; annotated lists the 'annotated' ones.
 // With vendorBytes, each kit copy is also compared with the hash VENDOR.json
 // records for it (recorded.differs or recorded.absent mean the kit copy is not
 // the one the library recorded).
-export function checkGuides({ sourceDir, kitDir, commit, packageName, vendorBytes }) {
+export function checkGuides({ sourceDir, kitDir, commit, packageName, vendorBytes, originDirs = {} }) {
   const want = shortCommit(commit);
-  const result = { commit: want, matched: [], differs: [], noSource: [], otherCommit: [], noHeader: [], notInKit: [], regenerate: [] };
+  const origins = new Map(Object.entries(originDirs).map(([at, dir]) => [shortCommit(at), dir]));
+  const result = { commit: want, matched: [], differs: [], noSource: [], otherCommit: [], noHeader: [], notInKit: [], regenerate: [], annotated: [] };
   const kitNames = guideNames(kitDir);
   let hashes = null;
   if (vendorBytes) {
@@ -131,8 +135,13 @@ export function checkGuides({ sourceDir, kitDir, commit, packageName, vendorByte
     if (!origin || origin.name !== name) { result.noHeader.push(name); continue; }
     const source = readGuide(sourceDir, name, 'Workspace guide');
     if (origin.commit !== want) {
-      const body = source === null ? 'noSource'
-        : transformGuide(source, { name, commit: origin.commit, packageName }) === kit ? 'same' : 'differs';
+      let body = source === null ? 'noSource' : origins.has(origin.commit) ? null : 'needsOrigin';
+      if (!body) {
+        const before = readGuide(origins.get(origin.commit), name, 'Workspace guide at its header commit');
+        if (before === null) fail(`Workspace guide ${name}.md is missing at its header commit ${origin.commit}.`, 'KIT_NO_SOURCE');
+        body = before === source ? 'same'
+          : transformGuide(before, { name, commit: origin.commit, packageName }) === kit ? 'changed' : 'annotated';
+      }
       result.otherCommit.push({ name, commit: origin.commit, body });
       continue;
     }
@@ -141,8 +150,9 @@ export function checkGuides({ sourceDir, kitDir, commit, packageName, vendorByte
   }
   const kitSet = new Set(kitNames);
   result.notInKit = guideNames(sourceDir).filter(name => !kitSet.has(name));
-  result.regenerate = [...result.otherCommit.filter(entry => entry.body === 'differs').map(entry => entry.name), ...result.notInKit]
-    .sort(byteOrder);
+  const withBody = body => result.otherCommit.filter(entry => entry.body === body).map(entry => entry.name);
+  result.regenerate = [...withBody('changed'), ...result.notInKit].sort(byteOrder);
+  result.annotated = withBody('annotated');
   return result;
 }
 
@@ -304,7 +314,7 @@ function writeNew(path, bytes) { writeFileSync(path, bytes, { flag: 'wx', mode: 
 
 const USAGE = `Usage:
   make-atomicaui-kit.js transform --source <component-classes dir> --commit <sha> --package <name> --out <new dir> [--name <guide>]...
-  make-atomicaui-kit.js check --source <component-classes dir> --commit <sha> --package <name> --kit <kit guides dir> [--vendor <VENDOR.json>]
+  make-atomicaui-kit.js check --source <component-classes dir> --commit <sha> --package <name> --kit <kit guides dir> [--vendor <VENDOR.json>] [--origin <commit>=<guides dir at that commit>]...
   make-atomicaui-kit.js vendor --baseline <VENDOR.json> --out <new file>
       [--base-library <dir> --library <dir> --commit <40-hex sha> --commit-date <date> [--candidate-dir <new dir>]]
       [--guides <dir>]`;
@@ -328,8 +338,14 @@ export function run(argv) {
   }
   if (command === 'check') {
     const vendor = one(options, 'vendor', false);
+    const originDirs = {};
+    for (const value of options.origin || []) {
+      const at = value.indexOf('=');
+      if (at < 1) fail('Option --origin takes <commit>=<guides dir>.', 'KIT_USAGE');
+      originDirs[shortCommit(value.slice(0, at))] = resolve(value.slice(at + 1));
+    }
     return checkGuides({ sourceDir: resolve(one(options, 'source')), kitDir: resolve(one(options, 'kit')),
-      commit: one(options, 'commit'), packageName: one(options, 'package'),
+      commit: one(options, 'commit'), packageName: one(options, 'package'), originDirs,
       vendorBytes: vendor === undefined ? undefined : readFileSync(resolve(vendor)) });
   }
   if (command === 'vendor') {

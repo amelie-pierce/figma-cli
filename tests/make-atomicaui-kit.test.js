@@ -88,36 +88,41 @@ test('check replays kit guides from their sources and sorts every other case out
   const result = checkGuides({ sourceDir: src, kitDir: kit, commit: COMMIT, packageName: PKG, vendorBytes });
   assert.deepEqual(result, {
     commit: 'abcdef012345', matched: ['alpha'], differs: ['beta'], noSource: ['gone'],
-    otherCommit: [{ name: 'gamma', commit: other, body: 'differs' }], noHeader: ['delta'], notInKit: ['fresh'],
-    regenerate: ['fresh', 'gamma'],
+    otherCommit: [{ name: 'gamma', commit: other, body: 'needsOrigin' }], noHeader: ['delta'], notInKit: ['fresh'],
+    regenerate: ['fresh'], annotated: [],
     recorded: { matched: ['alpha'], differs: ['beta'], absent: ['delta', 'gamma', 'gone'] },
   });
   assert.deepEqual(guideNames(src), ['alpha', 'beta', 'delta', 'fresh', 'gamma']);
 });
 
-test('check at NEW selects a guide pinned to an older commit whose doc changed before BASE', t => {
+test('check at NEW regenerates a guide only when its doc changed since the guide\'s own commit', t => {
   const root = temp(t);
   const older = '0123456789ab';
   const atOlder = join(root, 'at-older'), atBase = join(root, 'at-base'), atNew = join(root, 'at-new'), kit = join(root, 'kit');
-  put(atOlder, 'stale.md', '# stale\n\nv0\n');
-  put(atOlder, 'steady.md', '# steady\n\nv0\n');
-  for (const dir of [atBase, atNew]) {
-    put(dir, 'stale.md', '# stale\n\nv1\n');
-    put(dir, 'steady.md', '# steady\n\nv0\n');
+  const docs = { stale: ['v0', 'v1'], steady: ['v0', 'v0'], noted: ['v0', 'v0'], notedChanged: ['v0', 'v1'], gone: ['v0', null] };
+  for (const [name, [then, now]] of Object.entries(docs)) {
+    put(atOlder, `${name}.md`, `# ${name}\n\n${then}\n`);
+    for (const dir of [atBase, atNew]) if (now) put(dir, `${name}.md`, `# ${name}\n\n${now}\n`);
+    const note = name.startsWith('noted') ? 'Verified by hand.\n' : '';
+    put(kit, `${name}.md`, `${transformGuide(`# ${name}\n\n${then}\n`, { name, commit: older, packageName: PKG })}${note}`);
   }
-  for (const name of ['stale', 'steady']) {
-    put(kit, `${name}.md`, transformGuide(readFileSync(join(atOlder, `${name}.md`), 'utf8'), { name, commit: older, packageName: PKG }));
-  }
+  // The stale doc changed between the guide's commit and BASE, so BASE..NEW shows nothing.
   assert.equal(readFileSync(join(atBase, 'stale.md'), 'utf8'), readFileSync(join(atNew, 'stale.md'), 'utf8'));
-  const proof = checkGuides({ sourceDir: atOlder, kitDir: kit, commit: older, packageName: PKG });
-  assert.deepEqual(proof.matched, ['stale', 'steady']);
-  const result = checkGuides({ sourceDir: atNew, kitDir: kit, commit: COMMIT, packageName: PKG });
+  const result = checkGuides({ sourceDir: atNew, kitDir: kit, commit: COMMIT, packageName: PKG, originDirs: { [older]: atOlder } });
   assert.deepEqual(result.otherCommit, [
-    { name: 'stale', commit: older, body: 'differs' }, { name: 'steady', commit: older, body: 'same' }]);
+    { name: 'gone', commit: older, body: 'noSource' }, { name: 'noted', commit: older, body: 'same' },
+    { name: 'notedChanged', commit: older, body: 'annotated' }, { name: 'stale', commit: older, body: 'changed' },
+    { name: 'steady', commit: older, body: 'same' }]);
   assert.deepEqual(result.regenerate, ['stale']);
-  const run = spawnSync(process.execPath, [SCRIPT, 'check', '--source', atNew, '--commit', COMMIT, '--package', PKG, '--kit', kit]);
+  assert.deepEqual(result.annotated, ['notedChanged']);
+  const run = spawnSync(process.execPath, [SCRIPT, 'check', '--source', atNew, '--commit', COMMIT, '--package', PKG, '--kit', kit,
+    '--origin', `${older}=${atOlder}`]);
   assert.equal(run.status, 0, run.stderr.toString());
-  assert.deepEqual(JSON.parse(run.stdout.toString()).regenerate, ['stale']);
+  const out = JSON.parse(run.stdout.toString());
+  assert.deepEqual([out.regenerate, out.annotated], [['stale'], ['notedChanged']]);
+  rmSync(join(atOlder, 'steady.md'));
+  assert.throws(() => checkGuides({ sourceDir: atNew, kitDir: kit, commit: COMMIT, packageName: PKG, originDirs: { [older]: atOlder } }),
+    { code: 'KIT_NO_SOURCE' });
 });
 
 test('exclusions are anchored globs where **/ also matches the library root', () => {

@@ -26,10 +26,14 @@ after the frontmatter or else after the H1, skipping one blank line. CR line
 endings are refused. `guideSource` reads the header back
 (`src/make-atomicaui-kit.js:76`), so `checkGuides` replays only kit guides made
 from the given commit and lists the rest under `otherCommit`
-(`src/make-atomicaui-kit.js:108`). For those it also replays the given commit's
-source under the guide's own header commit (`body`: `same`, `differs`,
-`noSource`), and `regenerate` lists the `differs` ones plus `notInKit`: the
-release selects guides this way at NEW instead of by `git diff BASE NEW`.
+(`src/make-atomicaui-kit.js:108`). Given the guide folder at each guide's own
+header commit C (`originDirs`, `--origin C=DIR`), it compares the doc at C with the
+doc at this commit (`body`: `same`, `changed`, `annotated`, `noSource`,
+`needsOrigin`): `regenerate` is the `changed` ones (the kit copy replays from C)
+plus `notInKit`, and `annotated` is a changed doc whose kit guide has a
+hand-written note, which the release stops on rather than overwrite. An unchanged
+doc leaves its guide alone, note or not. The release selects guides this way at
+NEW instead of by `git diff BASE NEW`.
 
 Proof on the 7.0.2 data (2026-11-04, local, not committed): replaying the 47
 guides from their source commit reproduced 44 recorded hashes; the 3 others carry

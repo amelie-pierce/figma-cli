@@ -70,29 +70,33 @@ the whole new library at Make paths with the candidate `VENDOR.json`. Errors are
 
 ## Guides
 
-Select (Phase 1), from the backed-up kit guides at NEW:
+Select (Phase 1), from the backed-up kit guides at NEW. Run it once without
+`--origin`: every `otherCommit` entry with `body: "needsOrigin"` names a header
+commit `C`. Extract each `C` (`git -C WORK/ws archive C GUIDES | tar -x -C WORK/at-C`
+after `mkdir -p WORK/at-C`) and run it again with one `--origin` per `C`:
 
 ```sh
 node CLI_SRC/make-atomicaui-kit.js check --source WORK/at-NEW/GUIDES --commit NEW \
-  --package <name> --kit WORK/kit-guides --vendor WORK/base/VENDOR.json
+  --package <name> --kit WORK/kit-guides --vendor WORK/base/VENDOR.json \
+  --origin C=WORK/at-C/GUIDES [--origin C2=WORK/at-C2/GUIDES …]
 ```
 
-`regenerate` lists the guides to transform: `otherCommit` guides whose `body`
-`differs` at NEW (replayed under their own header commit, so a guide pinned to an
-older commit is caught even when BASE..NEW leaves its doc alone) and `notInKit`
-workspace guides. `body: "noSource"` is a removed guide: stop and report; this
-skill does not remove guides.
+Each `otherCommit` entry's `body` compares the workspace doc at its own header
+commit `C` with the doc at NEW, so a guide pinned to an older commit is caught even
+when BASE..NEW leaves its doc alone:
 
-Prove (Phase 2), per header commit `C` of the existing `regenerate` guides:
+- `same`: the doc did not change; leave the kit guide alone (a hand-written note
+  in it stays).
+- `changed`: the doc changed and the kit copy replays byte for byte from `C`; it is
+  in `regenerate` (with `notInKit`, the new workspace guides).
+- `annotated` (also listed under `annotated`): the doc changed but the kit copy
+  carries a hand-written note the transform cannot reproduce. Regenerating would
+  delete the note: stop and report it to the person.
+- `noSource`: a removed guide: stop and report; this skill does not remove guides.
 
-```sh
-node CLI_SRC/make-atomicaui-kit.js check --source WORK/at-C/GUIDES --commit C \
-  --package <name> --kit WORK/kit-guides --vendor WORK/base/VENDOR.json
-```
-
-`matched` and `recorded.matched` must hold every existing `regenerate` guide made
-from `C` (extract `C` with `git archive` as above); `differs` with `recorded.matched` is a
-hand-written note (stop and ask); `recorded.differs` means the kit copy was edited.
+Every existing `regenerate` guide must also be in `recorded.matched`;
+`recorded.differs` means the kit copy was edited (stop). No entry may still say
+`needsOrigin`.
 
 Transform (Phase 3):
 

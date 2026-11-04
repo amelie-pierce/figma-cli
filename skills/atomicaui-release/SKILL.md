@@ -61,7 +61,7 @@ and its port); `CLI_SRC` is the `src` folder next to the `src/index.js` it runs.
 | **Pending set** | `make status` shows pending changes before you start, or, before any save, pending paths that are not exactly the set you wrote. A Make save takes every pending path. |
 | **Timeout or uncertain outcome** | A write, save, sync or release timed out or says its outcome is uncertain. **Read back, never replay** (see Recovery). |
 | **`text/html` answer** | The hosted check gets HTTP 200 with `text/html`: the version is not on the site (the site's fallback page), so "200" proves nothing. The CLI client refuses it; do not work around it. |
-| **Guide proof** | A guide that will change does not replay byte for byte from its source, does not match its recorded hash, or carries a hand-written note the transform cannot reproduce. |
+| **Guide proof** | A guide whose doc changed does not replay byte for byte from its header commit (`annotated` in the check: it carries a hand-written note regenerating would delete), or does not match its recorded hash. A guide whose doc did not change is left alone, note or not. |
 | **New package** | Changed library files import a package the kit's `package.json` does not declare; `release` would refuse. Adding it is a kit change the person approves first. |
 | **Removed guide** | A kit guide whose workspace doc is gone at NEW (`body: "noSource"` in the check). This skill does not remove guides: stop and report it to the person, who handles the removal outside this skill. |
 | **Removed library file** | Ask; deletions are rare and need the person's yes. |
@@ -92,10 +92,13 @@ and its port); `CLI_SRC` is the `src` folder next to the `src/index.js` it runs.
    alone). Back up every kit guide the baseline's `guidance.files` lists:
    `figma-cli make read guidelines/components/<g>.md --file KEY --remote --timeout 90000
    --out WORK/kit-guides/<g>.md` (one failed read is usually transient: read again
-   before concluding anything). Then run the helper's `check` at NEW (recipe
-   "Guides"): `regenerate` is the guides to transform (a changed body under the
-   guide's own header commit, or a new workspace guide); an `otherCommit` entry with
-   `body: "noSource"` is a **removed guide** (stop). If nothing changed in the
+   before concluding anything). Then run the helper's `check` at NEW with the guide
+   folder at each guide's own header commit `C` (recipe "Guides"): it compares each
+   guide's workspace doc at `C` with NEW. `regenerate` is the guides to transform
+   (doc changed and the kit copy replays from `C`, or a new workspace guide);
+   `annotated` is a changed doc whose kit guide has a hand-written note (**guide
+   proof**: stop); an `otherCommit` entry with `body: "noSource"` is a **removed
+   guide** (stop). If nothing changed in the
    library and `regenerate` is empty, stop: nothing to release. List the commits and
    pull requests behind the change (`git log --oneline BASE..NEW -- <paths>`, or `<C>..NEW` for a guide pinned to an older commit `C`;
    `gh api repos/OWNER/REPO/commits/<sha>/pulls`).
@@ -111,9 +114,8 @@ and its port); `CLI_SRC` is the `src` folder next to the `src/index.js` it runs.
    marker), `pendingCount` 0. Record `savedVersion`: the rollback point.
 2. `figma-cli make drift --file KEY --manifest WORK/base/VENDOR.json --json`:
    `ok`, every file matched, `extra` 0, `VENDOR.json` in Make equal to the baseline.
-3. Prove the guide transform on every existing guide in `regenerate` with the
-   helper's `check` (recipe "Guides") at the commit `C` its header names: each one
-   `matched` at `C` and `recorded.matched`.
+3. Confirm the Phase 1 guide check proved every existing guide in `regenerate`:
+   `body: "changed"` (it replays from `C`), in `recorded.matched`, `annotated` empty.
 
 ## Phase 3: candidates (offline)
 
