@@ -1,0 +1,32 @@
+src/make-client.js
+  s_cc745aedc50b2e::t_a085280a7c43ec 18,944-949,996-997
+tests/make-deploy.test.js
+  s_cc745aedc50b2e::t_4ec9c29d7a3686 14,94,96-97,156,162-164,169
+  s_cc745aedc50b2e::t_7f2b8dfeb10fac 808-851
+src/make-durable.js
+  s_cc745aedc50b2e::t_9739c474323be6 133-139
+tests/make-durable.test.js
+  s_cc745aedc50b2e::t_7f2b8dfeb10fac 793-824
+src/make-unread.js
+  s_cc745aedc50b2e::t_6dced44d3d0937 1-12
+src/make-deploy.js
+  s_cc745aedc50b2e::t_4d98c3a69bccc4 9,399,447-448,450,518,1061
+  s_cc745aedc50b2e::t_25765832a7f113 872,875-879,881-912,1203,1228-1231,1257,1269-1270
+  s_cc745aedc50b2e::t_3329490d99ba21 880
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7c0b667d29035aa735bbde1589575dd9ff2d98a3",
+  "prompts": {},
+  "sessions": {
+    "s_cc745aedc50b2e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "180a905c-781c-4b9e-b235-0b1f74ffeedf",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
