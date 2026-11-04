@@ -1,0 +1,61 @@
+CHANGELOG.md
+  s_f71e1304afcd78::t_9fb7a906f60705 28-29
+src/make-atomicaui-kit.js
+  s_f71e1304afcd78::t_1338cf0007b465 1-13,15-44,46-104,109-111,119-120,126-249,251-295,297,300-318,320,323-338,347,359-369
+  s_f71e1304afcd78::t_da9eb4101dc4a8 14,250,298-299,339-346,348-358
+  s_f71e1304afcd78::t_7d16e4c9192753 45,105-108,112-118,121-125,319,321-322
+  s_f71e1304afcd78::t_2b222326934795 296
+skills/atomicaui-release/SKILL.md
+  s_f71e1304afcd78::t_2226e00f79f850 67
+  s_f71e1304afcd78::t_05524eae750ee5 1-66,68-202
+skills/atomicaui-upgrade-prototype/agents/openai.yaml
+  s_f71e1304afcd78::t_f632622d844a0a 1-4
+skills/figma-make/SKILL.md
+  s_f71e1304afcd78::t_e9e05d546df654 15-19
+skills/atomicaui-upgrade-prototype/SKILL.md
+  s_f71e1304afcd78::t_2d3f9e0bcd03cc 106,115
+  s_f71e1304afcd78::t_dca33595100dd1 1-105,107-114,116-126
+skills/atomicaui-release/agents/openai.yaml
+  s_f71e1304afcd78::t_f632622d844a0a 1-4
+_vaults/figma-cli/wiki/make/atomicaui-kit-update.md
+  s_f71e1304afcd78::t_2838615d9f36a2 1-71
+AGENTS.md
+  s_f71e1304afcd78::t_d6f15b930d5db8 9-11
+_vaults/figma-cli/wiki/make/index.md
+  s_f71e1304afcd78::t_8f6779cbcdb464 13
+README.md
+  s_f71e1304afcd78::t_d9e1189c4252d8 40-47
+  s_f71e1304afcd78::t_56d971e6d6531a 111-112
+_vaults/figma-cli/wiki/make/atomicaui-release.md
+  s_f71e1304afcd78::t_8f6779cbcdb464 10
+tests/make-atomicaui-kit.test.js
+  s_f71e1304afcd78::t_f446e5a28874fe 250-251,253
+  s_f71e1304afcd78::t_0b5d0a41d72e69 181-184
+  s_f71e1304afcd78::t_be67318a15d164 126-127,141-143
+  s_f71e1304afcd78::t_f7aae1468af4a2 255-288
+  s_f71e1304afcd78::t_f530413ff21bcd 1-125,128-140,144-180,185-226
+  s_f71e1304afcd78::t_b8e9ab594a7fe0 227-249,252,254
+skills/atomicaui-release/references/commands.md
+  s_f71e1304afcd78::t_d71f7a732b658f 1-136,141,143-146,148-188
+  s_f71e1304afcd78::t_f632622d844a0a 137-140,142,147
+REFERENCE.md
+  s_f71e1304afcd78::t_285cf947bce5fe 869-899
+tests/node-install-smoke.mjs
+  s_f71e1304afcd78::t_ae628a8c29da10 42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "faa70d7666978547623d40db7a9c49331f1d7106",
+  "prompts": {},
+  "sessions": {
+    "s_f71e1304afcd78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b05d92c5-d6ed-4e31-a49c-20d8c8991c17",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
