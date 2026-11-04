@@ -1,0 +1,33 @@
+tests/make-atomicaui-kit.test.js
+  s_89a6d595911586::t_cd016d42f77b61 91-92,98-120
+  s_89a6d595911586::t_5849b6c99dd396 121-122
+skills/atomicaui-release/references/commands.md
+  s_89a6d595911586::t_843e7c0df7c89a 73-86,93-94,101,147,168-171
+_vaults/figma-cli/wiki/make/atomicaui-kit-update.md
+  s_89a6d595911586::t_bf624e787262c7 29-32,39-40
+src/make-atomicaui-kit.js
+  s_89a6d595911586::t_3f68b066ca5068 104-108,114
+  s_89a6d595911586::t_eb6dccce8b699c 133-138,144-145
+skills/atomicaui-release/SKILL.md
+  s_89a6d595911586::t_4e2d4f1ffde275 108,148
+  s_89a6d595911586::t_843e7c0df7c89a 66-67,89-99,101,114-116,120,127-130,194
+  s_89a6d595911586::t_bf624e787262c7 100
+REFERENCE.md
+  s_89a6d595911586::t_bf624e787262c7 886-889
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "37baae220281be759786194acb32c5bd3ca0b933",
+  "prompts": {},
+  "sessions": {
+    "s_89a6d595911586": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ed5fbbf4-e84a-4d90-b158-76350a8dd635",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
