@@ -16,7 +16,7 @@ import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, 
   writeApplyOutputs } from '../make-sync.js';
 import { registerAtomicaui } from './make-atomicaui.js';
 import { requireMakeVendorWritable } from '../make-vendor-lock.js';
-import { runStatusBudget, STATUS_CONNECT_MS, STATUS_DEFAULT_WALL_MS } from '../make-status-budget.js';
+import { runStatusBudget, STATUS_DEFAULT_WALL_MS } from '../make-status-budget.js';
 
 const make = program.command('make')
   .description('Experimental direct source-file editing in Figma Make Desktop')
@@ -78,7 +78,7 @@ async function withClient(options, fn, write, paths = [], { readOnly = false, wa
   try {
     refuseMarkerPaths(paths);
     if (write && write !== 'mode') requireSessionOnly(write, options);
-    client = new MakeClient({ timeoutMs: wallBudget && options.timeout === STATUS_DEFAULT_WALL_MS ? STATUS_CONNECT_MS : options.timeout });
+    client = new MakeClient({ timeoutMs: Math.min(120000, options.timeout) });
     const run = async () => {
       if (write) {
         const { warning, note } = await checkWriteMode(client, options);
@@ -212,7 +212,7 @@ target(make.command('drift').description('Read-only vendor inventory, manifest c
 target(make.command('status').description('Read-only project status: Make saved and working tree SHAs, solo/team mode and, with --repo, GitHub main'), STATUS_DEFAULT_WALL_MS, 'Maximum connection plus Make operation time')
   .option('--repo <owner/repo>', 'Compare with this GitHub repo through your gh login (GET requests only); records the link in ~/.figma-cli for the write gate', repoName)
   .option('--json', 'Print the complete machine-readable result')
-  .addHelpText('after', '\nDefault wall budget: 150000 ms (up to 30000 ms for connection before the 120000 ms Make operation).' +
+  .addHelpText('after', '\nDefault wall budget: 150000 ms (connection, then up to 120000 ms for the Make operation).' +
     '\nAn explicit --timeout (500–120000 ms) bounds connection and the Make operation together.' +
     '\nExit codes: 0 all read and nothing needs attention; 1 the status could not be read' +
     '\n(Make or GitHub error); 2 read completely, with attention items listed.')

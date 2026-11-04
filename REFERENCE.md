@@ -303,8 +303,8 @@ Make or GitHub could not be read, `2` when the read completed with `attention`
 items (pending changes, no baseline, ambiguous mode, any relation other than
 `in-sync`, unreviewed commits, an unsafe mirror, and so on).
 
-For `make status`, the default wall budget is 150000 ms: up to 30000 ms for
-CDP discovery and connection, then up to 120000 ms for the Make operation.
+For `make status`, the default wall budget is 150000 ms: CDP discovery and
+connection first, then the rest for the Make operation, capped at 120000 ms.
 An explicit `--timeout` (500–120000 ms) instead bounds connection and the
 Make operation together (each GitHub read keeps its own cap); its timeout error
 suggests leaving `--timeout` out for the longer default. A roughly 140 s status
