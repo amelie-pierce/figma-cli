@@ -40,8 +40,9 @@ guides from their source commit reproduced 44 recorded hashes; the 3 others carr
 hand-written verification notes the transform cannot reproduce (VENDOR.json
 `guidance.transform` names them). The 4 guides changed in 7.0.2 reproduced
 byte for byte. Guide entries can come from different commits: a guide whose
-workspace doc changed after its own commit is stale; the next release's check at
-NEW puts it in `regenerate`.
+workspace doc changed after its own commit C is stale. The next release's check at
+NEW puts it in `regenerate` when its kit copy replays from C, or in `annotated`
+(stop and report) when it carries a hand-written note.
 
 ## Candidate VENDOR.json and the token gate
 
