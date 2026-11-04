@@ -11,7 +11,7 @@ the kit; a release then snapshots the saved kit ([atomicaui-release.md](atomicau
 The skills `skills/atomicaui-release/` and `skills/atomicaui-upgrade-prototype/`
 run that flow and the downstream team upgrade; their offline steps are
 `src/make-atomicaui-kit.js`, a module that is also a Node script (`run`,
-`src/make-atomicaui-kit.js:301`; the script guard at `src/make-atomicaui-kit.js:363`).
+`src/make-atomicaui-kit.js:322`; the script guard at `src/make-atomicaui-kit.js:390`).
 It reads local folders only. Tests: `tests/make-atomicaui-kit.test.js`.
 
 ## Guide transform
@@ -26,7 +26,7 @@ after the frontmatter or else after the H1, skipping one blank line. CR line
 endings are refused. `guideSource` reads the header back
 (`src/make-atomicaui-kit.js:76`), so `checkGuides` replays only kit guides made
 from the given commit and lists the rest under `otherCommit`
-(`src/make-atomicaui-kit.js:108`). Given the guide folder at each guide's own
+(`src/make-atomicaui-kit.js:115`). Given the guide folder at each guide's own
 header commit C (`originDirs`, `--origin C=DIR`), it compares the doc at C with the
 doc at this commit (`body`: `same`, `changed`, `annotated`, `noSource`,
 `needsOrigin`): `regenerate` is the `changed` ones (the kit copy replays from C)
@@ -46,18 +46,18 @@ NEW puts it in `regenerate` when its kit copy replays from C, or in `annotated`
 
 ## Candidate VENDOR.json and the token gate
 
-`candidateVendor` (`src/make-atomicaui-kit.js:209`) inventories the base and new
+`candidateVendor` (`src/make-atomicaui-kit.js:230`) inventories the base and new
 workspace library under the baseline's `exclusions` (anchored globs, `**/` also
-matching the root: `globRegExp`, `src/make-atomicaui-kit.js:150`). The base tree
+matching the root: `globRegExp`, `src/make-atomicaui-kit.js:171`). The base tree
 must reproduce the baseline `files` exactly (`KIT_BASE_DIFFERS`,
-`src/make-atomicaui-kit.js:230`), which also catches any other reading of the
+`src/make-atomicaui-kit.js:249`), which also catches any other reading of the
 exclusions. Any change under `tokens/generated/` or to
 `tokens/generated.manifest.json` refuses (`KIT_TOKEN_GATE`,
-`src/make-atomicaui-kit.js:243`); hand-written token-folder styling passes and is
+`src/make-atomicaui-kit.js:263`); hand-written token-folder styling passes and is
 reported. Only `source.commit`, `source.commitDate`, `files` and `guidance.files`
 change; `mergeEntries` keeps the existing order (the kit's list is not strictly
 sorted: `tokens/generated/_index.scss` precedes `.generated`) and inserts new
-entries before the first greater path (`src/make-atomicaui-kit.js:193`). The
+entries before the first greater path (`src/make-atomicaui-kit.js:214`). The
 baseline must round-trip as 2-space JSON with a trailing newline.
 On the 7.0.2 data it rebuilt the saved 7.0.2 `VENDOR.json` byte for byte.
 
