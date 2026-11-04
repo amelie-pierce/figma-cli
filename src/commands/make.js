@@ -2,7 +2,8 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { program } from '../lib/cli-core.js';
 import { MakeTransport } from '../make-transport.js';
-import { MakeClient } from '../make-client.js';
+import { MakeClient, timeoutHint } from '../make-client.js';
+import { sizeWarnings } from '../make-size.js';
 import { decodeMakeSource } from '../make-source.js';
 import { requireSessionOnly } from '../make-session.js';
 import { driftExitCode, digest } from '../make-drift.js';
@@ -70,7 +71,8 @@ function modeGated(command) {
 function sessionWrite(command) {
   return modeGated(target(command).option('--session-only', 'Accept that the write is lost when the file is reopened unless saved in Make'));
 }
-async function withClient(options, fn, write, paths = []) {
+// `readOnly` commands add a --timeout hint to a timeout error.
+async function withClient(options, fn, write, paths = [], { readOnly = false } = {}) {
   let client;
   try {
     refuseMarkerPaths(paths);
@@ -83,7 +85,7 @@ async function withClient(options, fn, write, paths = []) {
       if (note) console.error(`note: ${note}`);
     }
     await fn(client);
-  } catch (error) { failure(error); }
+  } catch (error) { failure(readOnly ? timeoutHint(error, options.timeout) : error); }
   finally { client?.close(); }
 }
 
@@ -122,7 +124,7 @@ target(make.command('read <path>').description('Read source and its SHA-256 from
     writeFileSync(outputPath, result.content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     const { content, ...metadata } = result;
     report({ ...metadata, bytes: Buffer.byteLength(content), outputPath });
-  }));
+  }, undefined, [], { readOnly: true }));
 
 sessionWrite(make.command('replace <path>').description('Session-only: back up and replace one existing source file at any depth in the open session\'s working copy, then read it back'))
   .requiredOption('--from <local-file>', 'UTF-8 source to write into the Make session')
@@ -214,6 +216,9 @@ target(make.command('status').description('Read-only project status: Make saved 
     }
     const linked = options.repo ? null : linkedRepo(client.fileKey);
     const result = buildStatus({ fileKey: client.fileKey, make, marker, repo: options.repo, linked, github, githubError });
+    // Only sizes are known here; warnings never change the exit code.
+    const sized = sizeWarnings([...(make.workingBytes || [])].map(([path, bytes]) => ({ path, bytes })));
+    if (sized.length) result.sizeWarnings = sized;
     if (options.json) report(result);
     else {
       const m = result.make;
@@ -233,8 +238,9 @@ target(make.command('status').description('Read-only project status: Make saved 
       }
       for (const item of result.attention) console.log(`attention: ${item}`);
     }
+    for (const warning of sized) console.error(`warning: ${warning}`);
     process.exitCode = statusExitCode(result);
-  }));
+  }, undefined, [], { readOnly: true }));
 
 modeGated(target(make.command('write <path>').description('Write one git-mode Make file through Make client VFS; save-version is required to persist it'), 120000)
   .requiredOption('--from <source>', 'Existing UTF-8 file, or - for stdin')

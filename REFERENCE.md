@@ -303,6 +303,22 @@ Make or GitHub could not be read, `2` when the read completed with `attention`
 items (pending changes, no baseline, ambiguous mode, any relation other than
 `in-sync`, unreviewed commits, an unsafe mirror, and so on).
 
+The default `--timeout` is 120000 (also the maximum); each Make filesystem
+read or write may use the operation's remaining time, so one large file is not cut
+off at a fixed few seconds. A read that still times out says so: below the
+maximum it names `--timeout 120000`; at the maximum it suggests waiting a
+minute and running it once more (`make read` adds the same hint).
+
+**Source size warnings.** `make status` (byte sizes only) and `make deploy`
+dry run and apply (sizes, lines and content of `main`) print a `warning:` line,
+and `sizeWarnings` in the JSON, for each authored source file over 150 KB or
+1500 lines, or holding more than 50 KB of inline base64 (data URIs and long
+base64 runs). Vendored code (`vendor/`), `public/`, `docs/`, `guidelines/`,
+asset and generated modules (an `assets`, `images`, `fonts`, `icons` or
+`generated` folder or file name, or a generated header), `.d.ts`, `.min.*` and
+deploy-ignored paths are skipped. These only warn: nothing is refused and exit
+codes do not change. Thresholds: `src/make-size.js`.
+
 **Write gate.** Every Make write (`write`, `delete`, `save-version`, `sync`, and
 the session-only `replace`, `create`, `import`, `remove`, which still require
 `--session-only`) reads the marker through Make's client VFS, and the recorded

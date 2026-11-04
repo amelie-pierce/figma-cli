@@ -47,6 +47,20 @@ function saveRequest(title, expectedPaths) {
 // call carrying a whole file into the page can outlast: a 377 KB stylesheet
 // write timed out live. Such a call gets 100 ms more per KiB it carries.
 const payloadTimeout = bytes => 5000 + Math.ceil(bytes / 1024) * 100;
+// How long one filesystem request may wait for Make's reply: the
+// operation's remaining time, less a second so the request reports its own
+// timeout before the CDP call does. A short budget keeps it all.
+export const bridgeRequestTimeout = remaining => Math.max(Math.min(5000, remaining), remaining - 1000);
+// A timeout on a read-only command: name the longer --timeout when there is
+// one, otherwise say what makes it likely. Reads only: a write that timed out
+// has an unknown outcome and must never be simply re-run.
+export function timeoutHint(error, timeoutMs) {
+  if (!/timed out/i.test(error?.message || '') || /--timeout/.test(error.message)) return error;
+  error.message += timeoutMs < 120000
+    ? ` Large projects can need longer: run it again with --timeout 120000.`
+    : ' This was already the longest --timeout (120000). Make\'s file system may be busy: wait a minute and run it once more; very large source files make this more likely.';
+  return error;
+}
 
 // How long a selected file may show no source editor before durable read-back
 // uses the agreeing client VFS, sandbox and rendered tree instead.
@@ -571,7 +585,10 @@ export class MakeClient {
     try {
       for (;;) {
         const vfs = await this._durable({ type: 'read', path }, deadline);
-        const bridge = await this._fileBridge(deadline);
+        // An absence check walks up unanswered missing-folder listings, so it
+        // keeps a short per-request cap instead of the remaining budget.
+        const bridge = await this._fileBridge(deadline, expectedContent === null
+          ? { requestTimeoutMs: Math.min(5000, this._remaining(deadline)) } : undefined);
         let sandbox;
         let absentInSandbox = false;
         try {
@@ -1298,6 +1315,7 @@ export class MakeClient {
       savedMissing: git.savedMissing,
       makeFlat: git.flat, headFlat: git.headFlat, workingFlat: working, workingTree: treeOf(working), fileCount: scan.inventory.size,
       workingSha256: new Map([...scan.inventory].map(([path, file]) => [path, file.sha256])),
+      workingBytes: new Map([...scan.inventory].map(([path, file]) => [path, file.bytes])),
       ...(savedInventory ? { savedSha256: git.savedSha256, savedBlobs: git.savedBlobs } : {}),
       ...(classifyText ? { workingText: new Map([...scan.inventory].map(([path, file]) => [path, file.text])) } : {}),
       excluded: scan.excluded, excludeSource: scan.excludeSource, lfsPaths, isLfs,
@@ -1351,9 +1369,9 @@ export class MakeClient {
     return { fileKey: this.fileKey, ...result, batches, scanTruncation: { arrayItems: 0, depth: 0 } };
   }
 
-  async _fileBridge(deadline) {
+  async _fileBridge(deadline, { requestTimeoutMs = bridgeRequestTimeout(this._remaining(deadline)) } = {}) {
     const response = await this.transport.send('Runtime.evaluate', {
-      expression: `(${captureMakeFileSocket.toString()})(${JSON.stringify(this.fileKey)}, null, ${Math.min(5000, this._remaining(deadline))}, ${this._remaining(deadline)})`,
+      expression: `(${captureMakeFileSocket.toString()})(${JSON.stringify(this.fileKey)}, null, ${requestTimeoutMs}, ${this._remaining(deadline)})`,
       returnByValue: false,
     }, { timeoutMs: this._remaining(deadline) });
     if (response.exceptionDetails || !response.result?.objectId) throw new Error('Could not observe Make filesystem connection.');

@@ -1981,3 +1981,32 @@ describe('make deploy across a top-level folder it empties', () => {
     await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_UNSUPPORTED_PATH', /docs\/guide\.md/);
   });
 });
+
+describe('make deploy source size warnings', () => {
+  it('warns about an oversized authored file on dry run and apply without changing the plan', async t => {
+    // public/ already exists: Make cannot take a new top-level folder.
+    const s = setup(t, { files: { ...BASE, 'public/themes/dark.css': 'body {}\n' } });
+    const big = `${Array.from({ length: 1600 }, (_, i) => `export const v${i} = ${i};`).join('\n')}\n`;
+    landChange(s, { 'src/Workspace.tsx': big, 'src/vendor/lib/Huge.tsx': big, 'public/themes/dark.css': big,
+      'scripts/big.ts': big, [DEPLOY_IGNORE]: '/scripts/\n' });
+    const warnings = [];
+    const deps = { ...s.deps, warn: message => warnings.push(message) };
+    const plan = await deployPlan(s.make, s.opts, deps);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /^src\/Workspace\.tsx is large \(\d+ KB, 1,600 lines\)\. .*split it into smaller modules by feature area\.$/);
+    assert.deepEqual(plan.sizeWarnings, warnings);
+    assert.ok(plan.files.some(file => file.path === 'src/Workspace.tsx'), 'the large file still deploys');
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, deps);
+    assert.equal(applied.stage, 'deployed');
+    assert.equal(warnings.length, 2, 'apply warns again');
+  });
+
+  it('prints nothing for a project without large files', async t => {
+    const s = setup(t);
+    landChange(s);
+    const warnings = [];
+    const plan = await deployPlan(s.make, s.opts, { ...s.deps, warn: message => warnings.push(message) });
+    assert.deepEqual(warnings, []);
+    assert.equal(Object.hasOwn(plan, 'sizeWarnings'), false);
+  });
+});

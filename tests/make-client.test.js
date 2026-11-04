@@ -6,7 +6,7 @@ import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { MakeClient } from '../src/make-client.js';
+import { bridgeRequestTimeout, MakeClient, timeoutHint } from '../src/make-client.js';
 import { makeWorkspace } from '../src/make-workspace.js';
 
 const hash = (content) => createHash('sha256').update(content).digest('hex');
@@ -963,4 +963,31 @@ test('cleanup is bounded within the operation timeout even when the renderer doe
   const started = Date.now();
   await assert.rejects(client.inspect(), /focus emulation could not be disabled.*timed out/);
   assert.ok(Date.now() - started < 250, 'cleanup must not wait for the default multi-second CDP timeout');
+});
+
+test('a filesystem request may wait for the operation\'s remaining time, not a fixed 5 s', async () => {
+  assert.equal(bridgeRequestTimeout(120000), 119000);
+  assert.equal(bridgeRequestTimeout(15000), 14000);
+  assert.equal(bridgeRequestTimeout(5500), 5000);
+  assert.equal(bridgeRequestTimeout(3000), 3000);
+  const expressions = [];
+  const client = new MakeClient({ timeoutMs: 120000, transport: { close() {}, send: async (_method, params) => {
+    expressions.push(params.expression);
+    return { exceptionDetails: { text: 'stop' } };
+  } } });
+  client.fileKey = 'ExactKey';
+  await assert.rejects(client._fileBridge(Date.now() + 120000), /Could not observe Make filesystem connection/);
+  const [, requestMs] = expressions[0].match(/\)\("ExactKey", null, (\d+), \d+\)$/);
+  assert.ok(Number(requestMs) > 100000, `request timeout ${requestMs} follows the 120 s budget`);
+  await assert.rejects(client._fileBridge(Date.now() + 120000, { requestTimeoutMs: 5000 }), /Could not observe Make filesystem connection/);
+  assert.match(expressions[1], /\)\("ExactKey", null, 5000, \d+\)$/);
+});
+
+test('a read-only timeout names --timeout 120000, or says what to do at the maximum', () => {
+  const short = timeoutHint(new Error('Make filesystem request timed out; outcome is unknown.'), 15000);
+  assert.match(short.message, /Large projects can need longer: run it again with --timeout 120000\.$/);
+  assert.match(timeoutHint(new Error('Make operation timed out.'), 120000).message, /already the longest --timeout \(120000\)/);
+  assert.equal(timeoutHint(new Error('Make directory listing is unavailable: src'), 15000).message, 'Make directory listing is unavailable: src');
+  const once = timeoutHint(timeoutHint(new Error('Make operation timed out.'), 15000), 15000);
+  assert.equal(once.message.match(/--timeout/g).length, 1);
 });
