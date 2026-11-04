@@ -304,7 +304,7 @@ items (pending changes, no baseline, ambiguous mode, any relation other than
 `in-sync`, unreviewed commits, an unsafe mirror, and so on).
 
 The default `--timeout` is 120000 (also the maximum); each Make filesystem
-request may use the operation's remaining time, so one large file is not cut
+read or write may use the operation's remaining time, so one large file is not cut
 off at a fixed few seconds. A read that still times out says so: below the
 maximum it names `--timeout 120000`; at the maximum it suggests waiting a
 minute and running it once more (`make read` adds the same hint).

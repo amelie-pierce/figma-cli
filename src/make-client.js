@@ -585,6 +585,8 @@ export class MakeClient {
     try {
       for (;;) {
         const vfs = await this._durable({ type: 'read', path }, deadline);
+        // An absence check walks up unanswered missing-folder listings, so it
+        // keeps a short per-request cap instead of the remaining budget.
         const bridge = await this._fileBridge(deadline, expectedContent === null
           ? { requestTimeoutMs: Math.min(5000, this._remaining(deadline)) } : undefined);
         let sandbox;
