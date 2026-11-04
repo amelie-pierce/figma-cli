@@ -14,10 +14,21 @@ test('default status budget lets a connect longer than 30 s finish inside the wa
       t.mock.timers.tick(45000);
     },
   };
+  const started = Date.now();
   let operationBudget;
   await runStatusBudget(client, 'ExactKey', async () => { operationBudget = client.timeoutMs; }, STATUS_DEFAULT_WALL_MS);
   assert.equal(connectBudget, 120000);
-  assert.equal(operationBudget, 105000);
+  assert.equal(operationBudget, 120000);
+  // The whole command shares one 5 minute deadline.
+  assert.equal(client.deadline - started, 300000);
+});
+
+test('default status budget gives late Make operations only what is left of 5 minutes', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const client = { timeoutMs: 1, async connect() { t.mock.timers.tick(200000); } };
+  let operationBudget;
+  await runStatusBudget(client, 'ExactKey', async () => { operationBudget = client.timeoutMs; }, STATUS_DEFAULT_WALL_MS);
+  assert.equal(operationBudget, 100000);
 });
 
 test('default status budget caps the Make operation at 120 s after a quick connect', async (t) => {

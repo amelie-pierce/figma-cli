@@ -128,7 +128,7 @@ can time out. Suggest, as its own small pull request:
   instead of inline base64.
 
 Vendored AtomicAUI, `public/` themes, docs and generated asset modules are
-not checked. `make status` defaults to a 150000 ms wall budget (CDP connection
+not checked. `make status` defaults to a 300000 ms wall budget (CDP connection
 first, then the rest for the Make operation, capped at 120000 ms). An explicit
 `--timeout` (500–120000 ms) bounds connection and the Make read together, so
 it is never longer than the default. If status times out, say Make was slow to
