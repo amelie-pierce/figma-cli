@@ -682,14 +682,18 @@ test('durable read-back of a deep unselectable file accepts three views only whi
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async (_bridge, target) => ({ content: state.fs[target] });
   const expected = state.fs[path];
+  // The rejections below poll until this deadline runs out, so it sets the
+  // test's runtime; it is wide because a slow CI runner once spent more than
+  // 1.5s before the first poll observed the editor.
+  const deadline = () => Date.now() + 5000;
   await assert.rejects(client.diagnostics(path), error => error.code === 'MAKE_TREE_VIEWPORT');
-  assert.equal(await client._durableAgreement(path, expected, Date.now() + 5000), 'tree-vfs-sandbox-matched');
+  assert.equal(await client._durableAgreement(path, expected, deadline()), 'tree-vfs-sandbox-matched');
   Object.assign(state, { breadcrumbFolder: 'src/components/lib/forms/fields', breadcrumbLeaf: 'Field.tsx' });
-  await assert.rejects(client._durableAgreement(path, expected, Date.now() + 1500), /editor unavailable/);
+  await assert.rejects(client._durableAgreement(path, expected, deadline()), /editor unavailable/);
   state.workspace = false;
-  await assert.rejects(client._durableAgreement(path, expected, Date.now() + 1500), /editor unavailable/);
+  await assert.rejects(client._durableAgreement(path, expected, deadline()), /editor unavailable/);
   state.editorCount = 0;
-  assert.equal(await client._durableAgreement(path, expected, Date.now() + 5000), 'tree-vfs-sandbox-matched');
+  assert.equal(await client._durableAgreement(path, expected, deadline()), 'tree-vfs-sandbox-matched');
 });
 
 test('Markdown reads through the bridge, where the editor shows no source document', async (t) => {
