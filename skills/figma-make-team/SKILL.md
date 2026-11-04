@@ -133,7 +133,7 @@ first, then the rest for the Make operation, capped at 120000 ms). An explicit
 `--timeout` (500–120000 ms) bounds connection and the Make read together, so
 it is never longer than the default. If status times out, say Make was slow to
 answer, not that something broke; follow the hint in the error: without
-`--timeout` wait a minute and try once more, with one run it again without it.
+`--timeout`, wait a minute and try once more; with one, run it again without it.
 
 Write a short, specific commit message from what you changed for them when you
 know it (`-m "Tighten card padding"`); otherwise let `save` generate one.
