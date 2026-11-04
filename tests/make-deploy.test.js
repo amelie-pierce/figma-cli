@@ -2175,7 +2175,9 @@ describe('make deploy source size warnings', () => {
     assert.ok(plan.files.some(file => file.path === 'src/Workspace.tsx'), 'the large file still deploys');
     const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, deps);
     assert.equal(applied.stage, 'deployed');
-    assert.equal(warnings.length, 2, 'apply warns again');
+    assert.equal(warnings.filter(w => w === warnings[0]).length, 2, 'apply warns again');
+    assert.equal(warnings.length, 3);
+    assert.match(warnings[2], /should reload it now/);
   });
 
   it('prints nothing for a project without large files', async t => {
