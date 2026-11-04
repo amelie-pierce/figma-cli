@@ -3,15 +3,22 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { runStatusBudget, STATUS_DEFAULT_WALL_MS } from '../src/make-status-budget.js';
 
+// A manual clock: Node 18's mock timers cannot fake Date, so stub Date.now.
+function fakeClock(t) {
+  let now = 1_000_000;
+  t.mock.method(Date, 'now', () => now);
+  return { tick(ms) { now += ms; } };
+}
+
 test('default status budget lets a connect longer than 30 s finish inside the wall budget', async (t) => {
-  t.mock.timers.enable({ apis: ['Date'] });
+  const clock = fakeClock(t);
   let connectBudget;
   const client = {
     timeoutMs: 1,
     async connect(file) {
       assert.equal(file, 'ExactKey');
       connectBudget = client.timeoutMs;
-      t.mock.timers.tick(45000);
+      clock.tick(45000);
     },
   };
   const started = Date.now();
@@ -24,16 +31,16 @@ test('default status budget lets a connect longer than 30 s finish inside the wa
 });
 
 test('default status budget gives late Make operations only what is left of 5 minutes', async (t) => {
-  t.mock.timers.enable({ apis: ['Date'] });
-  const client = { timeoutMs: 1, async connect() { t.mock.timers.tick(200000); } };
+  const clock = fakeClock(t);
+  const client = { timeoutMs: 1, async connect() { clock.tick(200000); } };
   let operationBudget;
   await runStatusBudget(client, 'ExactKey', async () => { operationBudget = client.timeoutMs; }, STATUS_DEFAULT_WALL_MS);
   assert.equal(operationBudget, 100000);
 });
 
 test('default status budget caps the Make operation at 120 s after a quick connect', async (t) => {
-  t.mock.timers.enable({ apis: ['Date'] });
-  const client = { timeoutMs: 1, async connect() { t.mock.timers.tick(20000); } };
+  const clock = fakeClock(t);
+  const client = { timeoutMs: 1, async connect() { clock.tick(20000); } };
   let operationBudget;
   await runStatusBudget(client, 'ExactKey', async () => { operationBudget = client.timeoutMs; }, STATUS_DEFAULT_WALL_MS);
   assert.equal(operationBudget, 120000);
