@@ -995,6 +995,19 @@ describe('guarded Make override (fake Make and local git only)', () => {
     assert.equal((await deployVerify(normal.make, { ...normal.opts, receiptPath: deployed.receiptPath }, normal.deps)).stage, 'deployed');
   });
 
+  it('saves a normal dependency deploy on a project with an unchanged tracked .npmrc', async t => {
+    const pkg = { ...PKG, dependencies: { react: '^19.0.0' } };
+    const s = setup(t, { makeFiles: { ...BASE, 'pnpm-lock.yaml': lockFor(PKG), '.npmrc': 'registry=fixture\n' },
+      make: { uninventoried: true } });
+    s.make.install = next => ({ 'pnpm-lock.yaml': lockFor(next) });
+    landChange(s, { 'package.json': pkg, 'pnpm-lock.yaml': lockFor(pkg) });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.outcome, 'ok');
+    assert.equal(s.make.saved.get('package.json').toString(), text(pkg));
+    assert.equal(s.make.saved.get('.npmrc').toString(), 'registry=fixture\n');
+  });
+
   it('restores a kept Make-only file a reload put back to its saved copy when aborting a refused save', async t => {
     const s = setup(t, { makeFiles: { ...BASE, 'src/make-only.ts': 'served edit\n' } });
     s.make.saved.set('src/make-only.ts', Buffer.from('saved copy\n'));

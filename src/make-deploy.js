@@ -787,7 +787,7 @@ function plannedState(receipt, status) {
     ? [...new Set([...original.keys(), ...status.workingFlat.keys()])]
       .filter(path => !planned.has(path) && (status.workingSha256.get(path) ?? null) !== (original.get(path) ?? null) &&
         !(receipt.saveRefusals && (status.workingSha256.get(path) ?? null) === (saved.get(path) ?? null)))
-    : [...new Set([...contentDiff(status.workingFlat, status.makeFlat), ...(state.pendingPaths || [])])].filter(path => !planned.has(path));
+    : [...new Set([...contentDiff(status.workingFlat, status.makeFlat, notInventoried(status.workingFlat)), ...(state.pendingPaths || [])])].filter(path => !planned.has(path));
   if (others.length) return { problem: `Make has unsaved changes outside the deploy ${JSON.stringify(others)}`, code: 'DEPLOY_MAKE_AHEAD' };
   const files = classify(receipt, status);
   const odd = files.filter(file => file.state === 'other').map(file => file.path);
