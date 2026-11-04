@@ -615,10 +615,10 @@ differs from Make's saved copy (a kept Make-only file, for example), so
 never change the result, the exit code or what is written to Make:
 - after a deploy saves a version: everyone with the Make file open should
   reload it now;
-- when Make's change tracker in the open tab reports an error or names a saved
-  version the sandbox no longer has, or a save is refused while the tracker
-  is in error or the saved pointer has moved: the open tab is behind Make, so
-  close the Make file and open it again;
+- when Make's change tracker in the open tab reports an error, or a save is
+  refused while the tracker is in error or the saved pointer has moved: the
+  open tab is behind Make, so close the Make file and open it again (if the
+  command stops, before running it again);
 - when a receipt on this machine shows that Make's newest saved version is a
   deploy (`deploy <sha7>`) and GitHub has no `make-deploy/<n>` tag on that
   commit. Make's version history lists AI turns only, so without such a

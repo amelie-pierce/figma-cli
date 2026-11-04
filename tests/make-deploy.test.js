@@ -481,7 +481,7 @@ describe('make deploy reminders (warn only)', () => {
     staleOverride(s);
     await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_MAKE_STATE');
     assert.equal(warnings.length, 1);
-    assert.match(warnings[0], /change tracker in this tab reports an error\. The open Make tab is behind Make: its saved baseline is stale\. Close the Make file and open it again, then run this command again\./);
+    assert.match(warnings[0], /change tracker in this tab reports an error\. The open Make tab is behind Make: its saved baseline is stale\. Close the Make file and open it again if this command stops, before you run it again\./);
     warnings.length = 0;
     const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
     assert.ok(plan.planPath, 'an override still plans with the tracker in error');
@@ -491,6 +491,22 @@ describe('make deploy reminders (warn only)', () => {
     landChange(clean);
     await deployPlan(clean.make, clean.opts, clean.deps);
     assert.deepEqual(cleanWarnings, []);
+  });
+
+  it('says nothing about a stale tab when only the saved commit is missing from the sandbox', async t => {
+    const s = setup(t);
+    const warnings = capture(s);
+    landChange(s, { 'src/App.tsx': 'export const App = 2;\n' });
+    const first = await deployPlan(s.make, s.opts, s.deps);
+    rmSync((await deployApply(s.make, { ...s.opts, planPath: first.planPath }, s.deps)).receiptPath);
+    landChange(s, { 'src/App.tsx': 'export const App = 3;\n' });
+    s.make.head = 'b'.repeat(40);
+    s.make.sandbox = new Map(s.make.working);
+    s.make.savedCommitMissing = true;
+    warnings.length = 0;
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    assert.ok(plan.planPath);
+    assert.equal(warnings.some(message => /behind Make/.test(message)), false, JSON.stringify(warnings));
   });
 
   it('says the open tab is behind Make when a save is refused from a stale baseline, and not otherwise', async t => {
