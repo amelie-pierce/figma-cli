@@ -15,13 +15,11 @@ export function reloadReminder(warn, version) {
     'so no open tab stays behind Make.');
 }
 
-// Make's change tracker failed, or the saved pointer this tab reports is no
-// longer in Make's sandbox.
+// Make's change tracker in this tab failed.
 export function staleTabNotice(warn, status) {
   const state = status?.persistence;
-  if (state?.mode !== 'git' || !(state.error || status.savedMissing)) return;
-  warn(`Make's change tracker in this tab ${state.error ? 'reports an error' : 'names a saved version the sandbox no longer has'}. ` +
-    `${STALE_TAB}, then run this command again.`);
+  if (state?.mode !== 'git' || !state.error) return;
+  warn(`Make's change tracker in this tab reports an error. ${STALE_TAB} if this command stops, before you run it again.`);
 }
 
 // After Make refused a save before creating a version: when the tracker now
