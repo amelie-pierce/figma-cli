@@ -113,6 +113,25 @@ lists repo-only paths (docs, tests) and Make-only ones (Make's `AGENTS.md`) in
 `.figma-cli/deploy-ignore` through a pull request. `DEPLOY_IGNORE`: that list is
 not text; fix it the same way.
 
+## Keep files small
+
+`make deploy` (dry run and apply) and `make status` print a `warning:` for a
+source file over about 150 KB or 1500 lines, or one holding more than about
+50 KB of inline base64 images. They never stop anything, but pass them on: Make
+reads and saves every file whole, so one huge file (for example a whole app in
+`Workspace.tsx` with images pasted in as `data:` strings) makes Make slow and
+can time out. Suggest, as its own small pull request:
+
+- split the file by feature area (one module per view or panel, shared pieces
+  in their own files), keeping behaviour and looks the same;
+- move images to asset files (for example `src/assets/`) and import them,
+  instead of inline base64.
+
+Vendored AtomicAUI, `public/` themes, docs and generated asset modules are
+not checked. If `make status` times out, say Make was slow to answer, not that
+something broke; follow the hint in the error: run it once more with
+`--timeout 120000`, or at that maximum wait a minute and try once more.
+
 Write a short, specific commit message from what you changed for them when you
 know it (`-m "Tighten card padding"`); otherwise let `save` generate one.
 

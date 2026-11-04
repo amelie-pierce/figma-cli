@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { isIgnored, parseIgnore } from './git-tree.js';
 import { requireGitMode, TREE_HIDDEN_ROOT_FILES } from './make-durable.js';
 import { requireLocalVendorUnedited } from './make-vendor-lock.js';
+import { isSizeChecked, sizeWarnings } from './make-size.js';
 import { install as installProject } from './make-local.js';
 import { readRepoAccess } from './make-mode.js';
 import { detectMode, ghRunner, isRepoOnly, lfsMatcher, MAKE_MANAGED, parseMarker, PROJECT_EXCLUDES, PROJECT_MARKER, repoName } from './make-project.js';
@@ -615,6 +616,10 @@ async function prepare(client, { dir, reviewed, overrideMake = false, deleteMake
   const mainBytes = blob => readBlob(ctx.root, blob);
   const ignored = ignoreMatcher(ignoreOf(mainFlat, mainBytes));
   const savedProtected = path => protectedPath(path, ignored, mainFlat);
+  // Warn only: oversized authored source never stops a deploy.
+  const sizeWarned = sizeWarnings([...mainFlat].filter(([path, entry]) => entry.type === 'blob' && entry.mode !== '120000' &&
+    !ignored(path) && isSizeChecked(path)).map(([path, entry]) => ({ path, content: mainBytes(entry.blob) })));
+  for (const warning of sizeWarned) deps.warn(warning);
   if (reviewed && tags.some(tag => tag.name === reviewed.tag)) {
     fail(`${reviewed.tag} was taken by another deploy since the dry run. Run a new dry run. Nothing was deployed.`, 'DEPLOY_TAG_CLASH');
   }
@@ -664,7 +669,7 @@ async function prepare(client, { dir, reviewed, overrideMake = false, deleteMake
   } else base = { source: 'first-deploy', flat: status.makeFlat };
   const plan = buildPlan({ fileKey: client.fileKey, repo, n, main: { ...main, flat: mainFlat }, status, base,
     mainBytes, overrideMake, deleteMakeOnly });
-  return { ctx, repo, access, pr, built, main: { ...main, flat: mainFlat }, status, plan };
+  return { ctx, repo, access, pr, built, main: { ...main, flat: mainFlat }, status, plan, sizeWarnings: sizeWarned };
 }
 
 const counts = files => ({ add: files.filter(f => f.op === 'add').length, modify: files.filter(f => f.op === 'modify').length,
@@ -679,14 +684,14 @@ export async function deployPlan(client, { dir, overrideMake = false, deleteMake
   deps = defaults(deps);
   requireLocalVendorUnedited(teamContext({ dir: resolve(dir || '.'), run: deps.run, warn: deps.warn }), 'DEPLOY_VENDOR_EDITED', 'the deploy');
   if (deleteMakeOnly && !overrideMake) fail('--delete-make-only requires --override-make.', 'DEPLOY_STALE_PLAN');
-  const { plan, access, pr, built } = await prepare(client, { dir, overrideMake, deleteMakeOnly }, deps);
+  const { plan, access, pr, built, sizeWarnings: sizeWarned } = await prepare(client, { dir, overrideMake, deleteMakeOnly }, deps);
   const c = counts(plan.files);
   const planPath = join(deployDir(deps.home), 'plans', `${plan.fileKey}-${short(plan.mainCommit)}-${plan.digest.slice(0, 12)}.json`);
   if (plan.files.length && !hasRefusals(plan)) writeJson(planPath, plan);
   return { dryRun: true, fileKey: plan.fileKey, repo: plan.repo, who: access.login, mainCommit: plan.mainCommit, pr, build: built,
     base: plan.base, tag: plan.tag, counts: c, files: plan.files.map(({ path, op }) => ({ path, op })),
     excluded: plan.excluded, excludedCount: plan.excluded.length, ...(plan.ignore ? { ignore: plan.ignore } : {}),
-    modeOnly: plan.modeOnly, digest: plan.digest,
+    modeOnly: plan.modeOnly, digest: plan.digest, ...(sizeWarned.length ? { sizeWarnings: sizeWarned } : {}),
     ...(overrideMake ? { mode: plan.mode, tracker: plan.makeBefore.tracker, keepMakeOnly: plan.keepMakeOnly,
       makeAhead: plan.makeAhead, deleteMakeOnly, refused: plan.refused,
       counts: { ...c, keepMakeOnly: plan.keepMakeOnly.length,

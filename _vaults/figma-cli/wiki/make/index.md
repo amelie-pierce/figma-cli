@@ -16,3 +16,4 @@
 - [review.md](review.md): cross-review verbs (`team reviews`, `review`, `comment`, `approve`, `request-changes`, `feedback`, `address`); no self-review, no push from the detached review copy, commit-pinned approvals, and how Lavish notes map to pull request comments.
 - [mode.md](mode.md): `make mode team|solo`, the only path that adds or removes the team marker; tree-checked save, gate exemption scope, reload verification and receipts.
 - [deploy.md](deploy.md): `make deploy`, a repo admin's deploy of GitHub `main` into a team-mode Make file; guards, the `.figma-cli/deploy-ignore` list, content-compared plan, write order, receipt, tag and recovery stages, why root creates are refused, and the live proofs.
+- [size-and-timeouts.md](size-and-timeouts.md): why one huge source file times out, the former 5 s per-request bridge cap behind the ADC status timeouts, the read-only `--timeout` hint, and the warn-only size rule on `make status` and `make deploy`.

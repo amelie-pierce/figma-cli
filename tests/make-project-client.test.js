@@ -79,6 +79,8 @@ test('project status hashes the saved tree from sandbox git objects, with exact 
   assert.equal(result.workingTree, tree, 'unchanged files keep their 100755 mode');
   assert.equal(result.head, head);
   assert.equal(result.fileCount, 6);
+  assert.equal(result.workingBytes.size, 6, 'byte sizes for the size warnings');
+  assert.equal(result.workingBytes.get('package.json'), readFileSync(join(dir, 'package.json')).length);
   assert.deepEqual(result.excluded, ['.figma/design-context/', '.npmrc', 'debug.log', 'dist/', 'node_modules/']);
   assert.equal(result.excludeSource, '.git/info/exclude');
   assert.ok(JSON.parse(result.markerBytes).repo === 'owner/proto');
