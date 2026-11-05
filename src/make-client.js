@@ -647,9 +647,22 @@ export class MakeClient {
             // they fall back only while the mounted editor provably shows
             // another path.
             try {
-              const editor = await this._read(path, deadline, { editorWaitMs: EDITOR_WAIT_MS });
+              // A verified pre-write selection can still be mounted after a
+              // replacement. The editor action validates its selected row and
+              // complete ancestry; if Make remounted it, select normally.
+              let editor;
+              if (treeState?.editorEntry) {
+                try {
+                  const current = await this._editor({ type: 'read', entry: treeState.editorEntry }, deadline);
+                  editor = { content: current.content, entry: treeState.editorEntry };
+                } catch { /* The selection changed; use the guarded path selection below. */ }
+              }
+              editor ??= await this._read(path, deadline, { editorWaitMs: EDITOR_WAIT_MS });
               observed.editor = editor.content === expectedContent ? 'matched' : 'different';
-              if (observed.editor === 'matched') return 'editor-tree-vfs-sandbox-matched';
+              if (observed.editor === 'matched') {
+                if (treeState) treeState.editorEntry = editor.entry;
+                return 'editor-tree-vfs-sandbox-matched';
+              }
               editorDisagreed = true;
             } catch (error) {
               if (!editorDisagreed && error.code === 'MAKE_NO_EDITOR') return 'tree-vfs-sandbox-matched';
@@ -733,7 +746,7 @@ export class MakeClient {
         if (accepted?.refused) { refused = true; throw new Error(accepted.refused); }
         const expectedChange = !existing.exists && !treeHidden(path)
           ? { beforeEntries: treeState.entries, beforeRows: treeState.rows, writtenPath: path } : undefined;
-        verification = await this._durableAgreement(path, content, deadline, { expectedChange, releaseAsset, vendorTreeFallback });
+        verification = await this._durableAgreement(path, content, deadline, { treeState, expectedChange, releaseAsset, vendorTreeFallback });
       } catch (cause) {
         const error = new Error(`Make durable write outcome is uncertain: ${cause.message}. Inspect before retrying.`);
         error.backupPath = backupPath;

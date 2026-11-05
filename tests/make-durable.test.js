@@ -55,6 +55,32 @@ test('replacement backs up old bytes, invokes VFS and verifies agreement', async
   ]);
 });
 
+test('replacement reuses a validated editor selection and reselects if it moved', async () => {
+  for (const moved of [false, true]) {
+    const { client } = fakeClient({ original: 'old' });
+    // Exercise the real agreement path instead of fakeClient's agreement stub.
+    client._durableAgreement = MakeClient.prototype._durableAgreement;
+    client._sourceTree = async () => [{ kind: 'file', path: 'src/App.tsx' }];
+    client._fileBridge = async () => ({ dispose: async () => {} });
+    let current = 'old';
+    client._durable = async action => {
+      if (action.type === 'read') return { exists: true, content: current };
+      if (action.type === 'write') { current = action.content; return { accepted: true }; }
+    };
+    client._bridgeRead = async () => ({ content: current });
+    let selections = 0;
+    const entry = { path: 'src/App.tsx', name: 'App.tsx', level: 2, top: 32, ancestors: [] };
+    client._read = async () => { selections++; return { content: current, entry }; };
+    client._editor = async () => {
+      if (moved) throw new Error('Make selected source file changed before the editor operation.');
+      return { content: current };
+    };
+    const result = await client.writeDurable('src/App.tsx', 'new', { expectedSha256: hash('old') });
+    assert.equal(result.verification, 'editor-tree-vfs-sandbox-matched');
+    assert.equal(selections, moved ? 2 : 1);
+  }
+});
+
 test('new file verifies absence and read-back; delete keeps backup', async () => {
   const added = fakeClient();
   const result = await added.client.writeDurable('src/new.ts', 'hello');

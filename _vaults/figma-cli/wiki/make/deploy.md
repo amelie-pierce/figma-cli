@@ -17,6 +17,7 @@ Updated 2026-10-29: status marks a missing saved commit even when Make claims a 
 Updated 2026-11-04: tracked `.npmrc`, mode-only and reloaded Make-only override follow-ups; warn-only deploy reminders.
 Updated 2026-11-06: deploy progress and local status are documented in the command reference.
 Updated 2026-11-06: detached deploy details live in the command reference and runner modules.
+Updated 2026-11-06: existing-file read-back reuses a validated editor selection.
 
 # make deploy
 Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI files first (`DEPLOY_VENDOR_EDITED`); see [vendor-lock.md](vendor-lock.md).
@@ -30,6 +31,10 @@ Detached startup, per-run records and terminal results are implemented in
 `src/make-deploy-lock.js` and `src/make-deploy-heartbeat.js`. The offline coverage
 is in `tests/make-deploy-runner.test.js`. Windows execution and live Figma
 delivery are **UNVERIFIED**.
+
+## Existing-file verification cost
+
+Before this change, a replacement selected the same Files-tree row twice, once for each agreement check (`src/make-client.js:650`, `src/make-client.js:748`). The after check now reads the selected editor entry directly if Make's editor validates its row and ancestry; if the selection moved, normal selection runs (`src/make-client.js:132`, `src/make-client.js:650`). Per-file VFS, sandbox, Files-tree, and available-editor content comparisons remain (`src/make-client.js:590`, `src/make-client.js:624`, `src/make-client.js:654`). A delayed fake client measured 0.329 s before and 0.212 s after per existing-file write: selections fell from two to one, while tree, VFS, sandbox, and drift-state reads stayed at two, four, two, and two respectively. Live latency is **UNVERIFIED**. Fake coverage checks selection reuse and fallback (`tests/make-durable.test.js:58`).
 
 ## Current-main override
 
