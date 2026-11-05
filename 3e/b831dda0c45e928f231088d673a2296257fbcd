@@ -19,21 +19,25 @@ _vaults/figma-cli/wiki/make/deploy.md
   s_16a7fa47f8eee4::t_a0c556d2496e8b 24-25
   s_16a7fa47f8eee4::t_9f4054980410a7 37
   s_1951762204c0d8::t_00fd0a9025abff 19,28-29,34
+  s_ee428fd0504bc6::t_e279c5c6f2bb09 30-33
 src/make-deploy-status.js
   s_16a7fa47f8eee4::t_249d66fb18da6d 1-3,5-6,8,10-18,24-28,33-34,36-37,40-42,44-45,48
   s_1951762204c0d8::t_c26b15d7b56445 21
   s_1951762204c0d8::t_434d9ff88179f4 39
   s_1951762204c0d8::t_b93f8a95a3d3af 20,22-23,38,43,46-47
+  s_ee428fd0504bc6::t_e279c5c6f2bb09 4,19
 REFERENCE.md
   s_16a7fa47f8eee4::t_9f8121ab9c3062 451-452,464-465,468
   s_16a7fa47f8eee4::t_155e78bea20813 472
   s_1951762204c0d8::t_d6829fced1c335 458
   s_1951762204c0d8::t_00fd0a9025abff 442,453-455,461,469-471
+  s_ee428fd0504bc6::t_e279c5c6f2bb09 456-457,459-460,462-463
 src/make-transport.js
   s_1951762204c0d8::t_14e3dcaad39290 30
 tests/make-deploy-runner.test.js
   s_1951762204c0d8::t_be9eb3dde26b86 1-6,8-16,21-51,53
   s_1951762204c0d8::t_caf2d0b69d6cfe 7,17-20
+  s_ee428fd0504bc6::t_e279c5c6f2bb09 52
 src/make-deploy-runner.js
   s_1951762204c0d8::t_aab004f39e05bb 77-78
   s_1951762204c0d8::t_7bcb7a0ae52f5c 1-2,4-53,63-68,70-74,79-86,89-103,105-111,116-117
@@ -41,6 +45,7 @@ src/make-deploy-runner.js
   s_1951762204c0d8::t_19bdd45f4a4a6c 75-76
   s_1951762204c0d8::t_f29932df24dbd9 104
   s_1951762204c0d8::t_f58fb222780e96 54-62,87-88,112-115
+  s_ee428fd0504bc6::t_e279c5c6f2bb09 3
 ---
 {
   "schema_version": "authorship/3.0.0",
@@ -61,6 +66,14 @@ src/make-deploy-runner.js
         "tool": "codex",
         "id": "01a1acfa-18b9-7200-a0c1-e99ebd264c40",
         "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_ee428fd0504bc6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1ad50-c13a-7af0-9146-85f8d215ff27",
+        "model": "gpt-6-astra"
       },
       "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
     }
