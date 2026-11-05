@@ -14,13 +14,15 @@ export function deployStatus({ receiptPath, fileKey, home } = {}) {
     try { return readReceipt(path); }
     catch (error) { if (receiptPath) throw error; return null; }
   }).filter(receipt => receipt && (!fileKey || receipt.fileKey === fileKey));
-  receipts.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  receipts.sort((a, b) => (b.sequence || 0) - (a.sequence || 0));
   const receipt = receipts[0];
-  const runner = readDeployRunner(fileKey || receipt?.fileKey, { home });
+  const latestRunner = receiptPath ? null : readDeployRunner(fileKey, { home });
+  if (!receiptPath && receipts.length > 1 && !receipt?.sequence && !latestRunner) throw new Error(`Receipts for ${fileKey} predate deploy sequencing; select one with --receipt.`);
+  const runner = receipt?.runnerId ? readDeployRunner(receipt.fileKey, { home, runId: receipt.runnerId }) : latestRunner;
   if (!receipt && !runner) throw new Error(fileKey ? `No local deploy receipt or runner for ${fileKey}.` : 'No local deploy receipts found.');
-  if (!receipt || (!receiptPath && runner && receipt.runnerId !== runner.id && Date.parse(runner.startedAt) > Date.parse(receipt.at))) return { fileKey: runner.fileKey, receiptPath: null, deployId: null, completedWrites: 0, totalWrites: null,
-    stage: 'starting', outcome: 'uncertain', startedAt: runner.startedAt, lastWriteAt: null,
-    averageSecondsPerFile: null, eta: null, runner };
+  if (!receipt || (latestRunner && latestRunner.sequence > (receipt.sequence || 0))) return { fileKey: latestRunner.fileKey, receiptPath: null, deployId: null, completedWrites: 0, totalWrites: null,
+    stage: 'starting', outcome: 'uncertain', startedAt: latestRunner.startedAt, lastWriteAt: null,
+    averageSecondsPerFile: null, eta: null, runner: latestRunner };
   const completed = new Set((receipt.completedWrites || []).filter(write => !write.uncertain && !write.backupOnly).map(write => write.path)).size;
   const total = receipt.plan.files.length;
   const startedMs = Date.parse(receipt.at);

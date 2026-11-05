@@ -456,11 +456,12 @@ PID and private log path. The child writes progress and its final JSON to that l
 or died alongside receipt progress. Apply, verify, resume and abort take a local
 writer lock for the exact Make file key before connecting. A second writer refuses.
 After a crash, inspect status and retry the intended operation with
-`--clear-stale-lock`; this only clears a lock whose owner PID is no longer alive.
-Runner records, logs and locks are private under `~/.figma-cli/deploys/`.
+`--clear-stale-lock`; this clears only an expired writer lease. A running deploy
+renews its lease. Runner records, logs and locks are private under
+`~/.figma-cli/deploys/`.
 
 The final JSON remains on stdout for a foreground deploy. `make deploy status`
-reads the exact `--receipt` or newest local receipt for the exact `--file` key without any
+reads the exact `--receipt` or newest sequenced local receipt for the exact `--file` key without any
 Make connection or GitHub request. It reports completed writes, stage, outcome,
 start and last-write time, average seconds per completed file and an estimated
 finish while writing. The estimate uses the current write segment on resume and

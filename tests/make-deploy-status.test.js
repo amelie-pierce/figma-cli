@@ -58,10 +58,10 @@ describe('make deploy status (receipt only)', () => {
     const dir = deployDir(home);
     mkdirSync(dir, { recursive: true });
     const plan = { files: [{ path: 'src/a.ts' }] };
-    for (const [name, key, at] of [['older', 'key', '2026-10-15T01:00:00.000Z'],
-      ['selected', 'key', '2026-10-15T01:02:00.000Z'], ['other', 'other', '2026-10-15T01:03:00.000Z']]) {
+    for (const [name, key, at, sequence] of [['older', 'key', '2026-10-15T01:00:00.000Z', 1],
+      ['selected', 'key', '2026-10-15T01:02:00.000Z', 2], ['other', 'other', '2026-10-15T01:03:00.000Z', 1]]) {
       writeFileSync(join(dir, `${name}.json`), JSON.stringify({ schema: RECEIPT_SCHEMA, plan, planDigest: planDigest(plan),
-        fileKey: key, at, stage: 'deployed', outcome: 'ok', completedWrites: [{ path: 'src/a.ts' }] }));
+        fileKey: key, at, sequence, stage: 'deployed', outcome: 'ok', completedWrites: [{ path: 'src/a.ts' }] }));
     }
     assert.throws(() => deployStatus({ home }), /requires --receipt/);
     assert.equal(deployStatus({ fileKey: 'key', home }).receiptPath, join(dir, 'selected.json'));

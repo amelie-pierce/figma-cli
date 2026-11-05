@@ -13,7 +13,7 @@ import { buildStatus, checkWriteMode, linkedRepo, MODE_CODES, parseMarker, readG
 import { CONFIRM_FLAG, runModeChange } from '../make-mode.js';
 import { DEPLOY_CODES, deployAbort, deployApply, deployPlan, deployResume, deployVerify } from '../make-deploy.js';
 import { deployStatus, formatDeployStatus } from '../make-deploy-status.js';
-import { acquireDeployLock, awaitDetachedStart, finishDeployRunner, releaseDeployLock, requireDetachedOwner, startDetachedDeploy } from '../make-deploy-runner.js';
+import { acquireDeployLock, awaitDetachedStart, finishDeployRunner, releaseDeployLock, requireDetachedOwner, startDeployHeartbeat, startDetachedDeploy } from '../make-deploy-runner.js';
 import { requestedKey } from '../make-transport.js';
 import { cloneProject, install, LOCAL_CODES, noticeStore, pullProject, repoRoot, resolveCloneRepo, runDev } from '../make-local.js';
 import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, planSync, syncReceipt, validatePlanDigest, VENDOR_ROOT,
@@ -458,9 +458,11 @@ const deployCommand = make.command('deploy').description('Deploy GitHub main fro
       } catch (error) { return failure(error); }
     }
     let lock;
+    let stopHeartbeat;
     try {
-      if (runnerToken) { await awaitDetachedStart(); requireDetachedOwner(key, runnerToken); }
+      if (runnerToken) { await awaitDetachedStart(); lock = requireDetachedOwner(key, runnerToken); }
       else if (chosen.length) lock = acquireDeployLock(key, { clearStale: options.clearStaleLock });
+      if (lock) stopHeartbeat = startDeployHeartbeat(lock);
       await withClient(options, async client => {
         const deps = { warn: message => console.error(`warning: ${message}`), progress: message => console.error(`deploy: ${message}`) };
         const dir = options.dir ? resolve(options.dir) : undefined;
@@ -478,9 +480,10 @@ const deployCommand = make.command('deploy').description('Deploy GitHub main fro
       });
     } catch (error) { failure(error); }
     finally {
+      stopHeartbeat?.();
       if (runnerToken) {
         try { finishDeployRunner(key, runnerToken, process.exitCode || 0); }
-        finally { releaseDeployLock({ key, token: runnerToken }); }
+        finally { if (lock) releaseDeployLock(lock); }
       }
       else if (lock) releaseDeployLock(lock);
     }

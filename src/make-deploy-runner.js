@@ -1,140 +1,168 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { deployDir } from './make-deploy.js';
 
+const LEASE_MS = 120000;
 const keyHash = key => createHash('sha256').update(key).digest('hex');
 const paths = (key, home) => {
   const dir = deployDir(home);
   const hash = keyHash(key);
-  return { dir, lock: join(dir, 'locks', hash), record: join(dir, 'runners', `${hash}.json`) };
-};
-const atomicJson = (path, value) => {
-  mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 });
-  const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temp, path);
+  return { lock: join(dir, 'locks', hash), runners: join(dir, 'runners', hash), sequence: join(dir, 'runners', hash, 'sequence.json') };
 };
 const json = path => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; } };
-export const pidAlive = pid => {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return error.code === 'EPERM'; }
+const atomicJson = (path, value) => {
+  mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 });
+  const temp = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    renameSync(temp, path);
+  } finally { rmSync(temp, { force: true }); }
 };
 const locked = (message, code = 'DEPLOY_WRITER_LOCKED') => Object.assign(new Error(message), { code });
-const GRACE_MS = 2000;
-const processStart = pid => {
-  if (!pidAlive(pid)) return null;
-  const result = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' });
-  const ms = Date.parse(result.stdout?.trim() || '');
-  return result.status === 0 && Number.isFinite(ms) ? new Date(ms).toISOString() : null;
-};
-const ownerAlive = owner => {
-  if (!pidAlive(owner?.pid)) return false;
-  const startedAt = processStart(owner.pid);
-  return !owner.processStartedAt || !startedAt || owner.processStartedAt === startedAt;
-};
-const oldEnough = path => Date.now() - statSync(path).mtimeMs >= GRACE_MS;
+const expired = record => !record || !Number.isFinite(record.leaseUntil) || record.leaseUntil <= Date.now();
+const oldEnough = path => Date.now() - statSync(path).mtimeMs >= LEASE_MS;
+const runnerPath = (key, runId, home) => join(paths(key, home).runners, `${runId}.json`);
 
-function removeOwnedLock(lock, token) {
+export function nextDeploySequence(key, { home } = {}) {
+  const { sequence } = paths(key, home);
+  const next = (json(sequence)?.value || 0) + 1;
+  atomicJson(sequence, { value: next });
+  return next;
+}
+
+function claimOwner(lock, observed) {
   const ownerPath = join(lock, 'owner.json');
-  const claim = join(lock, `.reclaim-${randomUUID()}`);
-  try { renameSync(ownerPath, claim); }
+  const claimedPath = join(lock, `.claim-${randomUUID()}`);
+  try { renameSync(ownerPath, claimedPath); }
   catch (error) { if (error.code === 'ENOENT') return false; throw error; }
-  const current = json(claim);
-  if (current?.token !== token) {
-    renameSync(claim, ownerPath);
+  const claimed = json(claimedPath);
+  if ((observed?.token && claimed?.token !== observed.token) || !expired(claimed)) {
+    if (existsSync(ownerPath)) unlinkSync(claimedPath);
+    else renameSync(claimedPath, ownerPath);
     return false;
   }
-  unlinkSync(claim);
-  try { rmdirSync(lock); }
-  catch (error) { if (error.code !== 'ENOTEMPTY' && error.code !== 'ENOENT') throw error; }
+  unlinkSync(claimedPath);
   return true;
 }
 
-export function acquireDeployLock(key, { home, clearStale = false, token = randomUUID() } = {}) {
+function removeEmptyLock(lock) {
+  try { rmdirSync(lock); }
+  catch (error) { if (error.code !== 'ENOENT' && error.code !== 'ENOTEMPTY') throw error; }
+}
+
+export function acquireDeployLock(key, { home, clearStale = false, token = randomUUID(), runId = randomUUID() } = {}) {
   const { lock } = paths(key, home);
   mkdirSync(join(lock, '..'), { recursive: true, mode: 0o700 });
   const staged = `${lock}.prepare-${randomUUID()}`;
   mkdirSync(staged, { mode: 0o700 });
-  atomicJson(join(staged, 'owner.json'), { fileKey: key, pid: process.pid, token, startedAt: new Date().toISOString(), processStartedAt: processStart(process.pid) });
+  atomicJson(join(staged, 'owner.json'), { fileKey: key, token, runId, leaseUntil: Date.now() + LEASE_MS });
   try {
-    if (statSync(lock, { throwIfNoEntry: false })) {
+    if (existsSync(lock)) {
       const error = new Error('Deploy lock exists.');
       error.code = 'EEXIST';
       throw error;
     }
     renameSync(staged, lock);
-  }
-  catch (error) {
+  } catch (error) {
     rmSync(staged, { recursive: true, force: true });
     if (error.code !== 'EEXIST' && error.code !== 'ENOTEMPTY') throw error;
     const ownerPath = join(lock, 'owner.json');
-    const ownerFileExists = existsSync(ownerPath);
+    const ownerExists = existsSync(ownerPath);
     const owner = json(ownerPath);
     if (owner?.fileKey && owner.fileKey !== key) throw locked(`Deploy lock ${lock} is invalid; inspect it before removing it.`);
-    if (ownerAlive(owner)) throw locked(`A deploy writer for ${key} is running (PID ${owner.pid}). Check make deploy status --file ${key}.`);
-    if (!owner && (!oldEnough(lock) || (ownerFileExists && !oldEnough(ownerPath)))) throw locked(`Deploy lock for ${key} is being acquired.`);
-    if (!clearStale) throw locked(`Stale deploy lock for ${key} (PID ${owner?.pid ?? 'unknown'}). Inspect make deploy status --file ${key}, then retry with --clear-stale-lock.`, 'DEPLOY_STALE_LOCK');
-    if (ownerFileExists) {
-      const claim = join(lock, `.reclaim-${randomUUID()}`);
-      try { renameSync(ownerPath, claim); }
-      catch (claimError) { if (claimError.code === 'ENOENT') return acquireDeployLock(key, { home, clearStale, token }); throw claimError; }
-      const claimed = json(claim);
-      if ((owner && claimed?.token !== owner.token) || ownerAlive(claimed)) {
-        renameSync(claim, ownerPath);
-        return acquireDeployLock(key, { home, clearStale, token });
-      }
-      unlinkSync(claim);
+    const complete = owner?.token && owner?.runId && Number.isFinite(owner.leaseUntil);
+    if (complete && !expired(owner)) throw locked(`A deploy writer for ${key} holds a live lease. Check make deploy status --file ${key}.`);
+    if (!complete) {
+      let recent;
+      try { recent = !oldEnough(lock) || (ownerExists && !oldEnough(ownerPath)); }
+      catch (race) { if (race.code === 'ENOENT') return acquireDeployLock(key, { home, clearStale, token, runId }); throw race; }
+      if (recent) throw locked(`Deploy lock for ${key} is being acquired.`);
     }
-    if (!ownerFileExists) {
-      for (const name of readdirSync(lock).filter(name => name.startsWith('.reclaim-'))) {
+    if (!clearStale) throw locked(`Stale deploy lock for ${key}. Inspect make deploy status --file ${key}, then retry with --clear-stale-lock.`, 'DEPLOY_STALE_LOCK');
+    if (ownerExists && !claimOwner(lock, owner)) return acquireDeployLock(key, { home, clearStale, token, runId });
+    if (!ownerExists) {
+      let names;
+      try { names = readdirSync(lock); }
+      catch (race) { if (race.code === 'ENOENT') return acquireDeployLock(key, { home, clearStale, token, runId }); throw race; }
+      for (const name of names.filter(name => name.startsWith('.claim-') || name.endsWith('.tmp'))) {
         const claimed = join(lock, name);
-        if (oldEnough(claimed)) unlinkSync(claimed);
+        try { if (oldEnough(claimed)) unlinkSync(claimed); }
+        catch (race) { if (race.code !== 'ENOENT') throw race; }
       }
     }
-    try { rmdirSync(lock); }
-    catch (removeError) { if (removeError.code !== 'ENOENT' && removeError.code !== 'ENOTEMPTY') throw removeError; }
-    return acquireDeployLock(key, { home, clearStale, token });
+    removeEmptyLock(lock);
+    return acquireDeployLock(key, { home, clearStale, token, runId });
   }
-  return { key, token, home };
+  return { key, token, runId, home };
 }
 
-export function updateDeployLock(owner, pid) {
+export function renewDeployLock(owner) {
   const { lock } = paths(owner.key, owner.home);
-  const current = json(join(lock, 'owner.json'));
-  if (current?.token !== owner.token) throw locked('Deploy lock ownership changed.');
-  atomicJson(join(lock, 'owner.json'), { ...current, pid, processStartedAt: processStart(pid) });
+  const ownerPath = join(lock, 'owner.json');
+  const current = json(ownerPath);
+  if (current?.token !== owner.token || current.runId !== owner.runId || expired(current)) throw locked('Deploy lock lease expired or ownership changed.');
+  const temp = join(lock, `.lease-${randomUUID()}.tmp`);
+  try {
+    writeFileSync(temp, `${JSON.stringify({ ...current, leaseUntil: Date.now() + LEASE_MS })}\n`, { mode: 0o600, flag: 'wx' });
+    const latest = json(ownerPath);
+    if (latest?.token !== owner.token || latest.runId !== owner.runId || expired(latest)) throw locked('Deploy lock lease expired or ownership changed.');
+    renameSync(temp, ownerPath);
+  } finally { rmSync(temp, { force: true }); }
+}
+
+export function startDeployHeartbeat(owner) {
+  const timer = setInterval(() => renewDeployLock(owner), LEASE_MS / 4);
+  timer.unref();
+  return () => clearInterval(timer);
 }
 
 export function requireDetachedOwner(key, token, { home } = {}) {
-  const { lock, record } = paths(key, home);
-  const owner = json(join(lock, 'owner.json'));
-  const runner = json(record);
-  if (!token || owner?.token !== token || runner?.token !== token || owner.pid !== process.pid || runner.pid !== process.pid) {
+  const runId = process.env.FIGMA_CLI_DEPLOY_RUNNER_ID;
+  const owner = json(join(paths(key, home).lock, 'owner.json'));
+  const runner = runId && json(runnerPath(key, runId, home));
+  if (!token || !runId || owner?.token !== token || owner.runId !== runId || expired(owner) || runner?.token !== token || runner.id !== runId) {
     throw locked(`Detached deploy for ${key} does not own its writer lock.`);
   }
+  return { key, token, runId, home };
 }
 
 export function releaseDeployLock(owner) {
   const { lock } = paths(owner.key, owner.home);
-  if (json(join(lock, 'owner.json'))?.token === owner.token) removeOwnedLock(lock, owner.token);
+  const current = json(join(lock, 'owner.json'));
+  if (current?.token !== owner.token || current.runId !== owner.runId) return;
+  const ownerPath = join(lock, 'owner.json');
+  const claimed = join(lock, `.claim-${randomUUID()}`);
+  try { renameSync(ownerPath, claimed); }
+  catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  const moved = json(claimed);
+  if (moved?.token !== owner.token || moved.runId !== owner.runId) {
+    if (existsSync(ownerPath)) unlinkSync(claimed);
+    else renameSync(claimed, ownerPath);
+    return;
+  }
+  unlinkSync(claimed);
+  removeEmptyLock(lock);
 }
 
-export function readDeployRunner(key, { home } = {}) {
+export function readDeployRunner(key, { home, runId } = {}) {
   if (!key) return null;
-  const { record, lock } = paths(key, home);
-  const value = json(record);
-  if (!value || value.fileKey !== key) return null;
+  const { runners, lock } = paths(key, home);
+  const records = runId ? [runnerPath(key, runId, home)] : existsSync(runners)
+    ? readdirSync(runners).filter(name => name.endsWith('.json') && name !== 'sequence.json').map(name => join(runners, name)) : [];
+  const value = records.map(json).filter(item => item?.fileKey === key && item.id && (!runId || item.id === runId))
+    .sort((a, b) => b.sequence - a.sequence)[0];
+  if (!value) return null;
   const owner = json(join(lock, 'owner.json'));
-  const alive = owner?.token === value.token && ownerAlive(owner);
+  const alive = owner?.token === value.token && owner.runId === value.id && !expired(owner);
   const { token, ...publicValue } = value;
   return { ...publicValue, state: value.finishedAt ? value.state : alive ? 'running' : 'died', alive: !!alive };
 }
 
-export function finishDeployRunner(key, token, exitCode, { home } = {}) {
-  const { record } = paths(key, home);
+export function finishDeployRunner(key, token, exitCode, { home, runId = process.env.FIGMA_CLI_DEPLOY_RUNNER_ID } = {}) {
+  if (!runId) return;
+  const record = runnerPath(key, runId, home);
   const value = json(record);
   if (value?.token !== token) return;
   atomicJson(record, { ...value, state: exitCode === 0 ? 'finished' : 'failed', exitCode,
@@ -142,28 +170,30 @@ export function finishDeployRunner(key, token, exitCode, { home } = {}) {
 }
 
 export async function startDetachedDeploy(key, argv, { home, clearStale = false, cliEntry = resolve('src/index.js'), node = process.execPath } = {}) {
-  const owner = acquireDeployLock(key, { home, clearStale });
-  const { dir, record } = paths(key, home);
-  const logPath = join(dir, 'runners', `${keyHash(key)}-${Date.now()}.log`);
-  const id = randomUUID();
+  const runId = randomUUID();
+  const owner = acquireDeployLock(key, { home, clearStale, runId });
+  const stopHeartbeat = startDeployHeartbeat(owner);
+  const { runners } = paths(key, home);
+  const record = runnerPath(key, runId, home);
+  const logPath = join(runners, `${runId}.log`);
   let log;
   try {
-    mkdirSync(join(record, '..'), { recursive: true, mode: 0o700 });
+    mkdirSync(runners, { recursive: true, mode: 0o700 });
+    const sequence = nextDeploySequence(key, { home });
     log = openSync(logPath, 'a', 0o600);
     const child = spawn(node, [cliEntry, ...argv], { detached: true, stdio: ['ignore', log, log, 'ipc'],
-      env: { ...process.env, FIGMA_CLI_DEPLOY_RUNNER_TOKEN: owner.token, FIGMA_CLI_DEPLOY_RUNNER_ID: id } });
+      env: { ...process.env, FIGMA_CLI_DEPLOY_RUNNER_TOKEN: owner.token, FIGMA_CLI_DEPLOY_RUNNER_ID: runId, FIGMA_CLI_DEPLOY_SEQUENCE: String(sequence) } });
     await new Promise((resolveReady, reject) => {
       child.once('spawn', resolveReady);
       child.once('error', reject);
     });
-    updateDeployLock(owner, child.pid);
-    atomicJson(record, { fileKey: key, id, token: owner.token, pid: child.pid, logPath,
+    atomicJson(record, { fileKey: key, id: runId, sequence, token: owner.token, pid: child.pid, logPath,
       startedAt: new Date().toISOString(), state: 'running', exitCode: null, finishedAt: null });
     await new Promise((resolveSent, reject) => child.send('start', error => error ? reject(error) : resolveSent()));
     child.unref();
     return { fileKey: key, pid: child.pid, logPath, status: `figma-cli make deploy status --file ${key}` };
   } catch (error) { releaseDeployLock(owner); throw error; }
-  finally { if (log !== undefined) closeSync(log); }
+  finally { stopHeartbeat(); if (log !== undefined) closeSync(log); }
 }
 
 export async function awaitDetachedStart() {
