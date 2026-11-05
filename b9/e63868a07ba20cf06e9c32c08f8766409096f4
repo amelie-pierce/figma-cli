@@ -1,0 +1,27 @@
+tests/make-durable.test.js
+  s_7c8ff204fa1785::t_da766b9f27f9db 62
+  s_7c8ff204fa1785::t_7b09be5bc4d711 58-61,63-83
+_vaults/figma-cli/wiki/make/deploy.md
+  s_7c8ff204fa1785::t_59eb7f2035d372 19,28-30
+  s_7c8ff204fa1785::t_98856b3006a773 31
+REFERENCE.md
+  s_7c8ff204fa1785::t_e1f4bb2a81f898 462-471
+src/make-client.js
+  s_7c8ff204fa1785::t_f171e718e27738 650-660,662-665,749
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b9e63868a07ba20cf06e9c32c08f8766409096f4",
+  "prompts": {},
+  "sessions": {
+    "s_7c8ff204fa1785": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1acfa-7305-7d12-8619-7f519fd9bf15",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
