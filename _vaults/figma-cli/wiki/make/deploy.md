@@ -16,6 +16,7 @@ Updated 2026-10-29: saved-inventory fallback implementation and fake coverage.
 Updated 2026-10-29: status marks a missing saved commit even when Make claims a baseline; verify waits for the reloaded code panel and sandbox filesystem before reading.
 Updated 2026-11-04: tracked `.npmrc`, mode-only and reloaded Make-only override follow-ups; warn-only deploy reminders.
 Updated 2026-11-06: deploy progress and local status are documented in the command reference.
+Updated 2026-11-06: detached apply, local writer lock and runner status.
 
 # make deploy
 Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI files first (`DEPLOY_VENDOR_EDITED`); see [vendor-lock.md](vendor-lock.md).
@@ -23,6 +24,16 @@ Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI fil
 ## Progress and local status
 
 See [Deploying main to Make](../../../../REFERENCE.md#deploying-main-to-make-make-deploy) for progress output and receipt status commands. The implementation is in `src/make-deploy.js` and `src/make-deploy-status.js`; fake receipt coverage is in `tests/make-deploy-status.test.js`.
+
+`--apply PLAN --detach` starts a child for the guarded apply and returns its PID
+and private log path. A writer lock keyed by the exact Make file key is taken
+before connecting, so apply, verify, resume and abort refuse a concurrent writer.
+A dead owner leaves a stale lock; an inspected retry can clear it with
+`--clear-stale-lock` (`src/make-deploy-runner.js:27`,
+`src/commands/make.js:447`). Runner records and logs live beside receipts, and
+status reports running, finished, failed or died from the runner record and PID
+without a Make connection (`src/make-deploy-status.js:7`). The fake child and
+lock tests are in `tests/make-deploy-runner.test.js:12`.
 
 ## Current-main override
 

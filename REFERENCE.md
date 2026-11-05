@@ -439,6 +439,7 @@ written, the `receiptPath`.
 ```bash
 figma-cli make deploy --file KEY [--dir CLONE]   # dry run (default)
 figma-cli make deploy --file KEY [--dir CLONE] --apply PLAN
+figma-cli make deploy --file KEY [--dir CLONE] --apply PLAN --detach
 figma-cli make deploy --file KEY [--dir CLONE] --verify RECEIPT
 figma-cli make deploy --file KEY [--dir CLONE] --resume RECEIPT
 figma-cli make deploy --file KEY --abort RECEIPT
@@ -449,15 +450,25 @@ figma-cli make deploy status (--receipt RECEIPT | --file KEY) [--json]
 
 During apply and resume, deploy prints a short `deploy: n/total path (seconds)` line
 on stderr after each completed write, plus plan, save and verification stages.
-The final JSON remains on stdout. `make deploy status` reads the exact `--receipt`
-or newest local receipt for the exact `--file` key without any
+`--detach` starts the same guarded apply in a background process, then returns its
+PID and private log path. The child writes progress and its final JSON to that log.
+`make deploy status --file KEY` reports the runner as running, finished, failed,
+or died alongside receipt progress. Apply, verify, resume and abort take a local
+writer lock for the exact Make file key before connecting. A second writer refuses.
+After a crash, inspect status and retry the intended operation with
+`--clear-stale-lock`; this only clears a lock whose owner PID is no longer alive.
+Runner records, logs and locks are private under `~/.figma-cli/deploys/`.
+
+The final JSON remains on stdout for a foreground deploy. `make deploy status`
+reads the exact `--receipt` or newest local receipt for the exact `--file` key without any
 Make connection or GitHub request. It reports completed writes, stage, outcome,
 start and last-write time, average seconds per completed file and an estimated
 finish while writing. The estimate uses the current write segment on resume and
 is anchored to the last completed write; an old receipt without a
 last-write timestamp reports no estimate. `--json` prints the same fields for
-scripts. The command only reads local receipts; it cannot prove the writer is
-still alive or that Make has saved a version.
+scripts. Status reads local receipts and runner records without connecting to Make.
+Process liveness does not prove that Make has saved a version; use the receipt and
+fresh reload verification for that proof. Older receipts have no runner record.
 
 Normal deploy guards, each refusing with nothing written:
 - a release-installed AtomicAUI folder in the clone equals its VENDOR.json file
