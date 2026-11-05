@@ -11,6 +11,7 @@ import { buildStatus, checkWriteMode, linkedRepo, MODE_CODES, parseMarker, readG
   repoName, statusExitCode } from '../make-project.js';
 import { CONFIRM_FLAG, runModeChange } from '../make-mode.js';
 import { DEPLOY_CODES, deployAbort, deployApply, deployPlan, deployResume, deployVerify } from '../make-deploy.js';
+import { deployStatus, formatDeployStatus } from '../make-deploy-status.js';
 import { cloneProject, install, LOCAL_CODES, noticeStore, pullProject, repoRoot, resolveCloneRepo, runDev } from '../make-local.js';
 import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, planSync, syncReceipt, validatePlanDigest, VENDOR_ROOT,
   writeApplyOutputs } from '../make-sync.js';
@@ -415,7 +416,9 @@ modeCommand(mode.command('solo').description('Remove the team marker, save that 
 
 // Deploy GitHub main into a team-mode Make file. It is the one Make write that
 // team mode allows, so it runs its own guards instead of the write gate.
-target(make.command('deploy').description('Deploy GitHub main from a local clone into a team-mode Make file (repo admins only). Dry run by default'), 120000)
+const deployCommand = make.command('deploy').description('Deploy GitHub main from a local clone into a team-mode Make file (repo admins only). Dry run by default')
+  .option('--file <key-or-url>', 'Exact open Make file key or URL (required for deploy writes)')
+  .option('--timeout <ms>', 'Maximum operation time', timeout, 120000)
   .option('--dir <path>', 'Local clone of the repo, on a clean main equal to GitHub\'s (default: current folder)')
   .option('--apply <plan>', 'Re-plan, check the reviewed plan, then write and save; normal deploy tags now, override requires --verify first')
   .option('--verify <receipt>', 'Reload Make, confirm the deployed version and tree, and finalise an uncertain receipt (pushes a missing tag)')
@@ -433,10 +436,12 @@ target(make.command('deploy').description('Deploy GitHub main from a local clone
     '\nwritten, created or deleted on either side, so repo-only files stay in GitHub and Make-only files stay in Make.' +
     '\n--override-make keeps Make-only files by default, backs up every overwritten/deleted path, and requires --verify' +
     '\nafter a fresh reload before the tag is pushed. --delete-make-only is included in the reviewed digest.')
-  .action(options => withClient(options, async client => {
+  .action(options => {
+    if (!options.file) return failure(new Error('Deploy requires --file <key-or-url>.'));
+    return withClient(options, async client => {
     const chosen = ['apply', 'verify', 'resume', 'abort'].filter(name => options[name]);
     if (chosen.length > 1) throw new Error(`Choose one of --apply, --verify, --resume or --abort, not ${chosen.map(name => `--${name}`).join(' and ')}.`);
-    const deps = { warn: message => console.error(`warning: ${message}`) };
+    const deps = { warn: message => console.error(`warning: ${message}`), progress: message => console.error(`deploy: ${message}`) };
     const dir = options.dir ? resolve(options.dir) : undefined;
     if (options.apply) return report(await deployApply(client, { dir, planPath: options.apply, confirmOverride: options.confirmOverride,
       overrideMake: options.overrideMake === true, deleteMakeOnly: options.deleteMakeOnly === true }, deps));
@@ -449,7 +454,20 @@ target(make.command('deploy').description('Deploy GitHub main from a local clone
     if (options.abort) return report(await deployAbort(client, { receiptPath: options.abort }, deps));
     report(await deployPlan(client, { dir, overrideMake: options.overrideMake === true,
       deleteMakeOnly: options.deleteMakeOnly === true }, deps));
-  }));
+    });
+  });
+
+deployCommand.command('status').description('Read local deploy progress from a receipt; no Make connection')
+  .option('--receipt <path>', 'Read this exact deploy receipt')
+  .option('--file <key>', 'Read the newest local receipt for this Make file key')
+  .option('--json', 'Print machine-readable JSON')
+  .action(options => {
+    try {
+      const status = deployStatus({ receiptPath: options.receipt, fileKey: options.file });
+      if (options.json) report(status);
+      else console.log(formatDeployStatus(status));
+    } catch (error) { failure(error); }
+  });
 
 // Local runs of a team-mode project. They read GitHub through the caller's
 // own gh and git logins and never write to Make; only clone --file reads Make

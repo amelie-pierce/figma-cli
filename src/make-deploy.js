@@ -555,6 +555,7 @@ const skipOf = plan => {
 function defaults(deps = {}) {
   const run = deps.run || defaultRun;
   return { run, gh: deps.gh || ghRunner(), home: deps.home, now: deps.now || (() => new Date()), warn: deps.warn || (() => {}),
+    progress: deps.progress || (message => console.error(`deploy: ${message}`)),
     readBlob: deps.readBlob || defaultReadBlob,
     install: deps.install || (ctx => installProject(ctx.root, { run, warn: deps.warn || (() => {}) })),
     build: deps.build || defaultBuild, settle: { ...SETTLE, ...deps.settle },
@@ -797,6 +798,7 @@ function plannedState(receipt, status) {
 
 const recordWrite = (receipt, file, backupPath, extra = {}) => {
   receipt.completedWrites.push({ path: file.path, op: file.op, backupPath: backupPath ?? null, ...extra });
+  if (!extra.uncertain && !extra.backupOnly) receipt.lastWriteAt = new Date().toISOString();
   const entry = receipt.files.find(item => item.path === file.path);
   if (entry && backupPath && !extra.uncertain) entry.backupPath = backupPath;
   saveReceipt(receipt);
@@ -808,6 +810,7 @@ const recordWrite = (receipt, file, backupPath, extra = {}) => {
 // every unsaved path against the plan, then try that path again.
 async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
   for (const file of [...todo].sort(byWriteOrder)) {
+    const writeStarted = Date.now();
     if (receipt.mode === 'override-make') {
       const checked = plannedState(receipt, await client.projectStatus());
       if (checked.problem) stop(receipt, null, 'writing', `Override stopped before writing ${file.path}: ${checked.problem}.`, checked.code);
@@ -851,10 +854,13 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
       recordWrite(receipt, file, result?.backupPath);
       break;
     }
+    const completed = new Set(receipt.completedWrites.filter(write => !write.uncertain && !write.backupOnly).map(write => write.path)).size;
+    deps.progress(`${completed}/${receipt.plan.files.length} ${file.path} (${Math.round((Date.now() - writeStarted) / 1000)}s)`);
     if (isDependency(file.path)) await waitIdle(client, receipt, deps);
   }
   receipt.stage = 'written';
   saveReceipt(receipt);
+  deps.progress('written; reconciling');
 }
 
 // An override may discard Make edits. Save and read back every original before
@@ -992,7 +998,7 @@ export function pushTag(ctx, receipt) {
   return after === 'ours' ? 'pushed' : after ? 'clash' : 'failed';
 }
 
-async function tagAndFinish(ctx, receipt, home) {
+async function tagAndFinish(ctx, receipt, home, progress = () => {}) {
   const result = pushTag(ctx, receipt);
   if (result === 'clash') {
     stop(receipt, null, 'tag-clash', `Make saved version ${receipt.makeAfter.versionNumber} with main ${short(receipt.mainCommit)}, but ${receipt.tag.name} ` +
@@ -1007,6 +1013,7 @@ async function tagAndFinish(ctx, receipt, home) {
   receipt.outcome = 'ok';
   receipt.error = null;
   saveReceipt(receipt);
+  progress('deployed');
   for (const older of openReceipts(receipt.fileKey, { home }).filter(item => item.deployId !== receipt.deployId && KNOWN_BASE.includes(item.stage))) {
     saveReceipt({ ...older, supersededBy: receipt.deployId });
   }
@@ -1014,10 +1021,11 @@ async function tagAndFinish(ctx, receipt, home) {
 
 // After the writes: save one version. Normal deploys then check drift and tag;
 // overrides defer both until a fresh-reload verification.
-async function finish(client, ctx, receipt, mainFlat, home, warn = () => {}) {
+async function finish(client, ctx, receipt, mainFlat, home, warn = () => {}, progress = () => {}) {
   const plan = receipt.plan;
   receipt.stage = 'saving';
   saveReceipt(receipt);
+  progress('saving');
   let version;
   try {
     version = await client.saveCheckedVersion(`deploy ${short(plan.mainCommit)}`, plan.files.map(file => file.path),
@@ -1041,10 +1049,12 @@ async function finish(client, ctx, receipt, mainFlat, home, warn = () => {}) {
   if (receipt.mode === 'override-make') {
     receipt.stage = 'saved-unverified';
     saveReceipt(receipt);
+    progress('saved; verification required');
     return;
   }
   receipt.stage = 'saved';
   saveReceipt(receipt);
+  progress('saved; checking drift');
   let after;
   try { after = await client.projectStatus(); }
   catch (error) { stop(receipt, error, 'saved', `Saved version ${version.versionNumber}, but its drift check could not read Make: ${error.message} Run ${recovery(receipt)}.`, 'DEPLOY_DRIFT'); }
@@ -1055,7 +1065,7 @@ async function finish(client, ctx, receipt, mainFlat, home, warn = () => {}) {
   }
   receipt.verification = 'saved-clean-tree-matched';
   saveReceipt(receipt);
-  await tagAndFinish(ctx, receipt, home);
+  await tagAndFinish(ctx, receipt, home, progress);
 }
 
 export function driftProblems(status, receipt, mainFlat) {
@@ -1098,12 +1108,13 @@ export async function deployApply(client, { dir, planPath, confirmOverride, over
   const receipt = newReceipt(plan, access.login, deps.now().toISOString(), deps.home);
   receipt.planPath = resolve(planPath);
   saveReceipt(receipt);
+  deps.progress(`plan checked; writing 0/${plan.files.length}`);
   const mainBytes = blob => deps.readBlob(ctx.root, blob);
   await backupOverride(client, receipt, deps.home);
   await backupLockfiles(client, receipt, deps.home);
   await writeFiles(client, receipt, plan.files, { mainBytes, home: deps.home, deps });
   await reconcile(client, receipt, { mainBytes, home: deps.home, deps });
-  await finish(client, ctx, receipt, main.flat, deps.home, deps.warn);
+  await finish(client, ctx, receipt, main.flat, deps.home, deps.warn, deps.progress);
   return result(receipt, receipt.mode === 'override-make'
     ? `Override saved Make version ${receipt.makeAfter.versionNumber}. Reload and verify with --verify ${receipt.receiptPath} before the tag can be pushed.`
     : `Deployed main ${short(plan.mainCommit)} to Make as version ${receipt.makeAfter.versionNumber} and tagged it ${receipt.tag.name}. ` +
@@ -1171,11 +1182,12 @@ export async function deployResume(client, { dir, receiptPath } = {}, deps = {})
     .map(file => ({ ...file, expectedSha256: status.workingSha256.get(file.path) ?? null }));
   receipt.resumedBy = access.login;
   receipt.stage = 'writing';
+  deps.progress(`resuming ${new Set(receipt.completedWrites.filter(write => !write.uncertain && !write.backupOnly).map(write => write.path)).size}/${receipt.plan.files.length}`);
   const mainBytes = blob => deps.readBlob(ctx.root, blob);
   await backupLockfiles(client, receipt, deps.home);
   await writeFiles(client, receipt, todo, { mainBytes, home: deps.home, deps });
   await reconcile(client, receipt, { mainBytes, home: deps.home, deps });
-  await finish(client, ctx, receipt, lsTree(ctx, receipt.mainCommit), deps.home, deps.warn);
+  await finish(client, ctx, receipt, lsTree(ctx, receipt.mainCommit), deps.home, deps.warn, deps.progress);
   return result(receipt, receipt.mode === 'override-make'
     ? `Resumed once: saved version ${receipt.makeAfter.versionNumber}; run --verify ${receipt.receiptPath} after a fresh reload.`
     : `Resumed: wrote ${todo.length} remaining file(s), saved version ${receipt.makeAfter.versionNumber} and tagged ${receipt.tag.name}. ` +
@@ -1321,6 +1333,7 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
 export async function deployVerify(client, { dir, receiptPath } = {}, deps = {}) {
   deps = defaults(deps);
   const receipt = readReceipt(receiptPath);
+  deps.progress('verifying after reload');
   if (receipt.fileKey !== client.fileKey) fail(`The receipt is for Make file ${receipt.fileKey}, not ${client.fileKey}.`, 'DEPLOY_RECEIPT');
   if (BEFORE_SAVE.includes(receipt.stage) || receipt.outcome === 'aborted') {
     fail(`Nothing was saved by this deploy (stage ${receipt.stage}).${receipt.outcome === 'uncertain' ? ` Run ${recovery(receipt)}.` : ''}`, 'DEPLOY_RECEIPT');
@@ -1368,7 +1381,7 @@ export async function deployVerify(client, { dir, receiptPath } = {}, deps = {})
   }
   if (problems.length && receipt.stage === 'tag-pending' && receipt.mode !== 'override-make') {
     await requireAdmin(receipt.repo, deps.gh);
-    await tagAndFinish(ctx, receipt, deps.home);
+    await tagAndFinish(ctx, receipt, deps.home, deps.progress);
     return result(receipt, `Pushed ${receipt.tag.name}: Make version ${receipt.makeAfter.versionNumber ?? short(receipt.makeAfter.versionGitSha)} matched main ` +
       `${short(receipt.mainCommit)} when it was saved, but Make has changed since: ${problems.join('; ')}.`);
   }
@@ -1385,8 +1398,9 @@ export async function deployVerify(client, { dir, receiptPath } = {}, deps = {})
   saveReceipt(receipt);
   if (!receipt.tag.pushed) {
     await requireAdmin(receipt.repo, deps.gh);
-    await tagAndFinish(ctx, receipt, deps.home);
+    await tagAndFinish(ctx, receipt, deps.home, deps.progress);
   }
+  deps.progress('verified');
   return result(receipt, `Verified after a fresh reload: Make version ${receipt.makeAfter.versionNumber ?? short(receipt.makeAfter.versionGitSha)} holds main ` +
     `${short(receipt.mainCommit)}, tagged ${receipt.tag.name}.`);
 }

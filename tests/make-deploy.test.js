@@ -333,7 +333,7 @@ function setup(t, { files = BASE, marker = true, makeFiles, make: makeOptions, g
   const make = new FakeMake(makeFiles ?? files, makeOptions);
   const gh = fakeGh(ghOptions);
   const run = fakeRun(runOptions);
-  const deps = { run: run.run, gh: gh.gh, home: p.home, install: install ?? (() => {}), now: () => new Date('2026-10-15T01:02:03.000Z'),
+  const deps = { run: run.run, gh: gh.gh, home: p.home, install: install ?? (() => {}), now: () => new Date('2026-10-15T01:02:03.000Z'), progress: () => {},
     settle: { quietMs: 0, pollMs: 0, timeoutMs: 5000 }, sleep: async () => {} };
   return { p, make, gh, run, deps, opts: { dir: p.clone } };
 }
@@ -408,6 +408,19 @@ function checkUnopenedReadback(make) {
 }
 
 describe('make deploy unopened deep-file read-back', () => {
+  it('reports one progress line per completed planned write and stage changes', async t => {
+    const s = setup(t);
+    landChange(s);
+    const lines = [];
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, { ...s.deps, progress: line => lines.push(line) });
+    const writes = lines.filter(line => /^\d+\/\d+ /.test(line));
+    assert.equal(writes.length, plan.files.length);
+    assert.ok(writes.every((line, index) => line.startsWith(`${index + 1}/${plan.files.length} `)));
+    assert.match(lines[0], /^plan checked; writing 0\//);
+    assert.ok(lines.includes('saving'));
+    assert.ok(lines.includes('deployed'));
+  });
   it('applies and saves a deep file with three matching views', async t => {
     const s = setup(t, { files: { ...BASE, [DEEP_PATH]: 'old\n' } });
     landChange(s, { [DEEP_PATH]: 'new\n' });

@@ -15,9 +15,14 @@ Updated 2026-10-29: current-main override is documented in the command reference
 Updated 2026-10-29: saved-inventory fallback implementation and fake coverage.
 Updated 2026-10-29: status marks a missing saved commit even when Make claims a baseline; verify waits for the reloaded code panel and sandbox filesystem before reading.
 Updated 2026-11-04: tracked `.npmrc`, mode-only and reloaded Make-only override follow-ups; warn-only deploy reminders.
+Updated 2026-11-06: stderr write progress and receipt-only deploy status.
 
 # make deploy
 Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI files first (`DEPLOY_VENDOR_EDITED`); see [vendor-lock.md](vendor-lock.md).
+
+## Progress and local status
+
+The apply and resume paths report each completed file after its receipt update, then report save and verification stages on stderr (`src/make-deploy.js:795`, `src/make-deploy.js:1019`, `src/commands/make.js:441`). `make deploy status` reads the newest local receipt or an explicitly selected receipt without creating a Make client (`src/commands/make.js:454`, `src/make-deploy-status.js:1`). It derives completed paths from confirmed write records, excluding uncertain writes and backup-only records; the last-write timestamp is additive, so older receipts remain readable (`src/make-deploy.js:795`, `src/make-deploy-status.js:15`). The ETA is only a pace estimate while writing; a receipt does not prove that a deploy process is still running (`src/make-deploy-status.js:23`). Fake receipt and write-loop coverage is in `tests/make-deploy-status.test.js:1` and `tests/make-deploy.test.js:410`.
 
 ## Current-main override
 
