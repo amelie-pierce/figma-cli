@@ -1,0 +1,33 @@
+skills/figma-make-team/SKILL.md
+  s_db510feb968a18::t_f2248007f66c32 109,111
+  s_db510feb968a18::t_42e247776f0cdf 95-103,107-108,110
+_vaults/figma-cli/wiki/make/deploy.md
+  s_db510feb968a18::t_f2248007f66c32 20,27-32
+  s_f5e467cec9e21d::t_da0483e4edd0b7 33
+skills/figma-make/SKILL.md
+  s_db510feb968a18::t_42e247776f0cdf 216-270
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c7d17acbb26ad9c9790dc23b44a526706291ca9b",
+  "prompts": {},
+  "sessions": {
+    "s_db510feb968a18": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1ad05-cf06-7cb0-aac0-9131c07ab795",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_f5e467cec9e21d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1ad06-f4a1-77a2-90cb-3026e1098a30",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
