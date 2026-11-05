@@ -62,6 +62,10 @@ describe('make deploy status (receipt only)', () => {
     }
     assert.throws(() => deployStatus({ home }), /requires --receipt/);
     assert.equal(deployStatus({ fileKey: 'key', home }).receiptPath, join(dir, 'selected.json'));
+    const byFile = spawnSync(process.execPath, ['src/index.js', 'make', 'deploy', 'status', '--file', 'key', '--json'],
+      { encoding: 'utf8', env: { ...process.env, HOME: home } });
+    assert.equal(byFile.status, 0, byFile.stderr);
+    assert.equal(JSON.parse(byFile.stdout).receiptPath, join(dir, 'selected.json'));
     const cli = spawnSync(process.execPath, ['src/index.js', 'make', 'deploy', 'status'],
       { encoding: 'utf8', env: { ...process.env, HOME: home } });
     assert.notEqual(cli.status, 0);

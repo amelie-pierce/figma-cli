@@ -780,8 +780,11 @@ describe('guarded Make override (fake Make and local git only)', () => {
     const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
       confirmOverride: plan.digest.slice(0, 12) }, s.deps);
     s.make.hooks.probeFailures = 2;
-    const verified = await deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps);
+    const lines = [];
+    const verified = await deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath },
+      { ...s.deps, progress: line => lines.push(line) });
     assert.equal(verified.stage, 'deployed');
+    assert.deepEqual(lines, ['verifying after reload', 'deployed', 'verified']);
     const afterReload = s.make.calls.slice(s.make.calls.findIndex(([kind]) => kind === 'reload') + 1);
     assert.deepEqual(afterReload.slice(0, 4).map(([kind]) => kind), ['probe-filesystem', 'probe-filesystem', 'probe-filesystem', 'status']);
   });

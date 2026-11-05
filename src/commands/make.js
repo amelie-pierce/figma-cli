@@ -461,9 +461,11 @@ deployCommand.command('status').description('Read local deploy progress from a r
   .option('--receipt <path>', 'Read this exact deploy receipt')
   .option('--file <key>', 'Read the newest local receipt for this Make file key')
   .option('--json', 'Print machine-readable JSON')
-  .action(options => {
+  .action((options, command) => {
     try {
-      const status = deployStatus({ receiptPath: options.receipt, fileKey: options.file });
+      // Commander can consume --file as the deploy parent's option even when
+      // it appears after "status". Accept that value for this subcommand too.
+      const status = deployStatus({ receiptPath: options.receipt, fileKey: options.file ?? command.parent.opts().file });
       if (options.json) report(status);
       else console.log(formatDeployStatus(status));
     } catch (error) { failure(error); }
