@@ -1,0 +1,19 @@
+tests/make-deploy-status.test.js
+  s_0f854e90ad24b9::t_52f39881e2c61b 32,69,73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4c9f8f09a93ab7d55cd21062d646942889352392",
+  "prompts": {},
+  "sessions": {
+    "s_0f854e90ad24b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1ad33-525d-7213-a484-51a4ff646de0",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
