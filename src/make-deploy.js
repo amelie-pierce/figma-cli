@@ -715,7 +715,7 @@ export async function deployPlan(client, { dir, overrideMake = false, deleteMake
 
 function newReceipt(plan, who, at, home) {
   const deployId = `${at.replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}-${plan.fileKey}-${short(plan.mainCommit)}`;
-  return { schema: RECEIPT_SCHEMA, deployId, who, at, repo: plan.repo, mainCommit: plan.mainCommit, mainTree: plan.mainTree,
+  return { schema: RECEIPT_SCHEMA, deployId, ...(process.env.FIGMA_CLI_DEPLOY_RUNNER_ID ? { runnerId: process.env.FIGMA_CLI_DEPLOY_RUNNER_ID } : {}), who, at, repo: plan.repo, mainCommit: plan.mainCommit, mainTree: plan.mainTree,
     fileKey: plan.fileKey, tag: { name: plan.tag, n: plan.n, pushed: false }, ...(plan.mode ? { mode: plan.mode } : {}),
     makeBefore: plan.makeBefore, makeAfter: null,
     planDigest: plan.digest, files: plan.files.map(({ path, op, beforeSha256, afterSha256 }) => ({ path, op, beforeSha256, afterSha256, backupPath: null })),

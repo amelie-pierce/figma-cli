@@ -18,7 +18,7 @@ export function deployStatus({ receiptPath, fileKey, home } = {}) {
   const receipt = receipts[0];
   const runner = readDeployRunner(fileKey || receipt?.fileKey, { home });
   if (!receipt && !runner) throw new Error(fileKey ? `No local deploy receipt or runner for ${fileKey}.` : 'No local deploy receipts found.');
-  if (!receipt || (!receiptPath && runner && Date.parse(runner.startedAt) > Date.parse(receipt.at))) return { fileKey: runner.fileKey, receiptPath: null, deployId: null, completedWrites: 0, totalWrites: null,
+  if (!receipt || (!receiptPath && runner && receipt.runnerId !== runner.id && Date.parse(runner.startedAt) > Date.parse(receipt.at))) return { fileKey: runner.fileKey, receiptPath: null, deployId: null, completedWrites: 0, totalWrites: null,
     stage: 'starting', outcome: 'uncertain', startedAt: runner.startedAt, lastWriteAt: null,
     averageSecondsPerFile: null, eta: null, runner };
   const completed = new Set((receipt.completedWrites || []).filter(write => !write.uncertain && !write.backupOnly).map(write => write.path)).size;
@@ -36,7 +36,7 @@ export function deployStatus({ receiptPath, fileKey, home } = {}) {
   return { receiptPath: receipt.receiptPath, deployId: receipt.deployId, fileKey: receipt.fileKey,
     completedWrites: completed, totalWrites: total, stage: receipt.stage, outcome: receipt.outcome,
     startedAt: receipt.at, lastWriteAt, averageSecondsPerFile, eta,
-    runner: runner?.fileKey === receipt.fileKey && Date.parse(runner.startedAt) >= Date.parse(receipt.at) ? runner : null };
+    runner: runner?.id && runner.id === receipt.runnerId ? runner : null };
 }
 
 export function formatDeployStatus(status) {

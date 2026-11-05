@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { program } from '../lib/cli-core.js';
 import { MakeTransport } from '../make-transport.js';
 import { MakeClient, timeoutHint } from '../make-client.js';
@@ -453,7 +454,7 @@ const deployCommand = make.command('deploy').description('Deploy GitHub main fro
       try {
         const args = process.argv.slice(2).filter(arg => arg !== '--detach');
         return report(await startDetachedDeploy(key, args, { clearStale: options.clearStaleLock,
-          cliEntry: new URL('../index.js', import.meta.url).pathname }));
+          cliEntry: fileURLToPath(new URL('../index.js', import.meta.url)) }));
       } catch (error) { return failure(error); }
     }
     let lock;
