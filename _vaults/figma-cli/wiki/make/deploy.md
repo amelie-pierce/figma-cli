@@ -15,9 +15,14 @@ Updated 2026-10-29: current-main override is documented in the command reference
 Updated 2026-10-29: saved-inventory fallback implementation and fake coverage.
 Updated 2026-10-29: status marks a missing saved commit even when Make claims a baseline; verify waits for the reloaded code panel and sandbox filesystem before reading.
 Updated 2026-11-04: tracked `.npmrc`, mode-only and reloaded Make-only override follow-ups; warn-only deploy reminders.
+Updated 2026-11-06: deploy progress and local status are documented in the command reference.
 
 # make deploy
 Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI files first (`DEPLOY_VENDOR_EDITED`); see [vendor-lock.md](vendor-lock.md).
+
+## Progress and local status
+
+See [Deploying main to Make](../../../../REFERENCE.md#deploying-main-to-make-make-deploy) for progress output and receipt status commands. The implementation is in `src/make-deploy.js` and `src/make-deploy-status.js`; fake receipt coverage is in `tests/make-deploy-status.test.js`.
 
 ## Current-main override
 

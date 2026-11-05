@@ -13,6 +13,7 @@ import { defaultRun } from '../src/make-team.js';
 import { listMakeFiles } from '../src/make-tree.js';
 import { isUninventoried } from '../src/make-unread.js';
 import { tagCommits, untaggedDeployNotice } from '../src/make-deploy-notices.js';
+import { deployStatus } from '../src/make-deploy-status.js';
 
 // Local git only: a bare "origin" stands in for GitHub, while gh, pnpm and the
 // Make client are faked. Nothing here reaches Figma, GitHub or a registry.
@@ -333,7 +334,7 @@ function setup(t, { files = BASE, marker = true, makeFiles, make: makeOptions, g
   const make = new FakeMake(makeFiles ?? files, makeOptions);
   const gh = fakeGh(ghOptions);
   const run = fakeRun(runOptions);
-  const deps = { run: run.run, gh: gh.gh, home: p.home, install: install ?? (() => {}), now: () => new Date('2026-10-15T01:02:03.000Z'),
+  const deps = { run: run.run, gh: gh.gh, home: p.home, install: install ?? (() => {}), now: () => new Date('2026-10-15T01:02:03.000Z'), progress: () => {},
     settle: { quietMs: 0, pollMs: 0, timeoutMs: 5000 }, sleep: async () => {} };
   return { p, make, gh, run, deps, opts: { dir: p.clone } };
 }
@@ -408,6 +409,19 @@ function checkUnopenedReadback(make) {
 }
 
 describe('make deploy unopened deep-file read-back', () => {
+  it('reports one progress line per completed planned write and stage changes', async t => {
+    const s = setup(t);
+    landChange(s);
+    const lines = [];
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, { ...s.deps, progress: line => lines.push(line) });
+    const writes = lines.filter(line => /^\d+\/\d+ /.test(line));
+    assert.equal(writes.length, plan.files.length);
+    assert.ok(writes.every((line, index) => line.startsWith(`${index + 1}/${plan.files.length} `)));
+    assert.match(lines[0], /^plan checked; writing 0\//);
+    assert.ok(lines.includes('saving'));
+    assert.ok(lines.includes('deployed'));
+  });
   it('applies and saves a deep file with three matching views', async t => {
     const s = setup(t, { files: { ...BASE, [DEEP_PATH]: 'old\n' } });
     landChange(s, { [DEEP_PATH]: 'new\n' });
@@ -435,6 +449,27 @@ describe('make deploy unopened deep-file read-back', () => {
     assert.equal(s.make.deepReadback, 'tree-vfs-sandbox-matched');
     assert.equal(resumed.stage, 'deployed');
     assert.equal(s.make.saved.get(DEEP_PATH).toString(), 'new\n');
+  });
+
+  it('confirms a timed-out write that landed before resuming', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.afterWrite = path => { if (path === 'src/App.tsx') throw new Error('Make operation timed out.'); };
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+    assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+    assert.equal(deployStatus({ receiptPath: error.receiptPath }).completedWrites, 0);
+    s.make.hooks.afterWrite = null;
+    const lines = [];
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath },
+      { ...s.deps, progress: line => lines.push(line) });
+    const receipt = readReceipt(error.receiptPath);
+    assert.equal(resumed.stage, 'deployed');
+    assert.equal(deployStatus({ receiptPath: error.receiptPath }).completedWrites, plan.files.length);
+    assert.ok(receipt.completedWrites.some(write => write.path === 'src/App.tsx' && write.confirmedOnResume));
+    assert.equal(receipt.writeRun.completedWrites, 1);
+    assert.ok(lines.includes(`resuming 1/${plan.files.length}`));
+    assert.ok(lines.some(line => line.startsWith(`${plan.files.length}/${plan.files.length} src/Card.tsx `)));
   });
 });
 
@@ -745,8 +780,11 @@ describe('guarded Make override (fake Make and local git only)', () => {
     const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath,
       confirmOverride: plan.digest.slice(0, 12) }, s.deps);
     s.make.hooks.probeFailures = 2;
-    const verified = await deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps);
+    const lines = [];
+    const verified = await deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath },
+      { ...s.deps, progress: line => lines.push(line) });
     assert.equal(verified.stage, 'deployed');
+    assert.deepEqual(lines, ['verifying after reload', 'deployed', 'verified']);
     const afterReload = s.make.calls.slice(s.make.calls.findIndex(([kind]) => kind === 'reload') + 1);
     assert.deepEqual(afterReload.slice(0, 4).map(([kind]) => kind), ['probe-filesystem', 'probe-filesystem', 'probe-filesystem', 'status']);
   });
