@@ -4,8 +4,11 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { deployDir, planDigest, RECEIPT_SCHEMA } from '../src/make-deploy.js';
 import { deployStatus, formatDeployStatus } from '../src/make-deploy-status.js';
+
+const cliEntry = fileURLToPath(new URL('../src/index.js', import.meta.url));
 
 describe('make deploy status (receipt only)', () => {
   it('reports completed writes, timing and ETA from a fixture receipt', t => {
@@ -25,7 +28,7 @@ describe('make deploy status (receipt only)', () => {
     assert.equal(status.eta, '2026-10-15T01:01:30.000Z');
     assert.match(formatDeployStatus(status), /2\/3 writing \(uncertain\)/);
     assert.deepEqual(deployStatus({ fileKey: 'key', home }), status);
-    const cli = spawnSync(process.execPath, ['src/index.js', 'make', 'deploy', 'status', '--receipt', receiptPath, '--json'],
+    const cli = spawnSync(process.execPath, [cliEntry, 'make', 'deploy', 'status', '--receipt', receiptPath, '--json'],
       { encoding: 'utf8', env: { ...process.env, HOME: home } });
     assert.equal(cli.status, 0, cli.stderr);
     assert.equal(JSON.parse(cli.stdout).completedWrites, 2);
@@ -62,11 +65,11 @@ describe('make deploy status (receipt only)', () => {
     }
     assert.throws(() => deployStatus({ home }), /requires --receipt/);
     assert.equal(deployStatus({ fileKey: 'key', home }).receiptPath, join(dir, 'selected.json'));
-    const byFile = spawnSync(process.execPath, ['src/index.js', 'make', 'deploy', 'status', '--file', 'key', '--json'],
+    const byFile = spawnSync(process.execPath, [cliEntry, 'make', 'deploy', 'status', '--file', 'key', '--json'],
       { encoding: 'utf8', env: { ...process.env, HOME: home } });
     assert.equal(byFile.status, 0, byFile.stderr);
     assert.equal(JSON.parse(byFile.stdout).receiptPath, join(dir, 'selected.json'));
-    const cli = spawnSync(process.execPath, ['src/index.js', 'make', 'deploy', 'status'],
+    const cli = spawnSync(process.execPath, [cliEntry, 'make', 'deploy', 'status'],
       { encoding: 'utf8', env: { ...process.env, HOME: home } });
     assert.notEqual(cli.status, 0);
     assert.match(cli.stderr, /requires --receipt/);
