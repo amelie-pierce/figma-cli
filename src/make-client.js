@@ -616,13 +616,18 @@ export class MakeClient {
         const prefetched = expectedContent === null && !expectedChange ? treeState?.prefetched : undefined;
         if (treeState) delete treeState.prefetched;
         let tree;
+        let renderedRows = [];
         if (prefetched?.tree) {
           tree = prefetched.tree;
           treeState.entries = prefetched.entries;
           treeState.rows = prefetched.rows;
         } else {
           tree = await this._sourceTree(deadline, expectedChange, treeState
-            ? snapshot => { treeState.entries = snapshot.entries; treeState.rows = snapshot.rows; } : undefined);
+            ? snapshot => {
+              treeState.entries = snapshot.entries;
+              treeState.rows = snapshot.rows;
+              renderedRows = snapshot.renderedRows ?? [];
+            } : undefined);
         }
         const inTree = tree.some(entry => entry.kind === 'file' && entry.path === path);
         if (expectedContent === null) {
@@ -647,14 +652,18 @@ export class MakeClient {
             // they fall back only while the mounted editor provably shows
             // another path.
             try {
-              // A verified pre-write selection can still be mounted after a
-              // replacement. The editor action validates its selected row and
-              // complete ancestry; if Make remounted it, select normally.
+              // The full tree scan may unmount the selected row or its parents.
+              // Use its final viewport snapshot to avoid a doomed cached read;
+              // the editor action still validates the entry against live DOM.
               let editor;
-              if (treeState?.editorEntry) {
+              const entry = treeState?.editorEntry;
+              if (entry && [entry, ...entry.ancestors].every(expected => renderedRows.some(row =>
+                row.name === expected.name && row.kind === expected.kind &&
+                row.level === expected.level && row.top === expected.top &&
+                (expected === entry ? row.selected : row.expanded && row.height === expected.height)))) {
                 try {
-                  const current = await this._editor({ type: 'read', entry: treeState.editorEntry }, deadline);
-                  editor = { content: current.content, entry: treeState.editorEntry };
+                  const current = await this._editor({ type: 'read', entry }, deadline);
+                  editor = { content: current.content, entry };
                 } catch { /* The selection changed; use the guarded path selection below. */ }
               }
               editor ??= await this._read(path, deadline, { editorWaitMs: EDITOR_WAIT_MS });

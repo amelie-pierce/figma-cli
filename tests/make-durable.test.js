@@ -60,7 +60,12 @@ test('replacement reuses a validated editor selection and reselects if it moved'
     const { client } = fakeClient({ original: 'old' });
     // Exercise the real agreement path instead of fakeClient's agreement stub.
     client._durableAgreement = MakeClient.prototype._durableAgreement;
-    client._sourceTree = async () => [{ kind: 'file', path: 'src/App.tsx' }];
+    client._sourceTree = async (_deadline, _expectedChange, onSnapshot) => {
+      const entries = [{ kind: 'file', path: 'src/App.tsx' }];
+      const rows = [...entry.ancestors, { ...entry, selected: true }];
+      onSnapshot?.({ entries, rows, renderedRows: rows });
+      return entries;
+    };
     client._fileBridge = async () => ({ dispose: async () => {} });
     let current = 'old';
     client._durable = async action => {
@@ -69,7 +74,8 @@ test('replacement reuses a validated editor selection and reselects if it moved'
     };
     client._bridgeRead = async () => ({ content: current });
     let selections = 0;
-    const entry = { path: 'src/App.tsx', name: 'App.tsx', level: 2, top: 32, ancestors: [] };
+    const entry = { path: 'src/App.tsx', name: 'App.tsx', kind: 'file', level: 2, top: 32,
+      ancestors: [{ name: 'src', kind: 'folder', level: 1, top: 0, height: 32, expanded: true }] };
     client._read = async () => { selections++; return { content: current, entry }; };
     client._editor = async () => {
       if (moved) throw new Error('Make selected source file changed before the editor operation.');
