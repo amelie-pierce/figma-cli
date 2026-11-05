@@ -1,0 +1,50 @@
+src/make-transport.js
+  s_1951762204c0d8::t_14e3dcaad39290 30
+src/make-deploy-status.js
+  s_1951762204c0d8::t_c26b15d7b56445 18,20
+  s_1951762204c0d8::t_434d9ff88179f4 36
+  s_1951762204c0d8::t_aab004f39e05bb 4
+  s_1951762204c0d8::t_b93f8a95a3d3af 19,21-22,35,40,43-44
+tests/make-deploy-runner.test.js
+  s_1951762204c0d8::t_be9eb3dde26b86 1-6,8-16,21-51,53
+  s_1951762204c0d8::t_caf2d0b69d6cfe 7,17-20
+  s_1951762204c0d8::t_50195a723073a0 52
+src/make-deploy.js
+  s_1951762204c0d8::t_b93f8a95a3d3af 35-36
+_vaults/figma-cli/wiki/make/deploy.md
+  s_1951762204c0d8::t_00fd0a9025abff 19,26-27,29-34
+  s_1951762204c0d8::t_d6829fced1c335 28
+  s_1951762204c0d8::t_c70c19eaa0bca4 35
+src/make-deploy-runner.js
+  s_1951762204c0d8::t_aab004f39e05bb 3,77-85
+  s_1951762204c0d8::t_7bcb7a0ae52f5c 1-2,4-53,63-68,70-74,86-95,98-112,114-120,125-126
+  s_1951762204c0d8::t_9d88e2ae645ef6 69
+  s_1951762204c0d8::t_19bdd45f4a4a6c 75-76
+  s_1951762204c0d8::t_f29932df24dbd9 113
+  s_1951762204c0d8::t_f58fb222780e96 54-62,96-97,121-124
+src/commands/make.js
+  s_1951762204c0d8::t_f58fb222780e96 15,449-450,455-456,461
+  s_1951762204c0d8::t_dcbdc74ef321f1 480-483
+  s_1951762204c0d8::t_aab004f39e05bb 448,462
+  s_1951762204c0d8::t_14e3dcaad39290 16,429-430,443,446-447,451-454,457-460,463,477-479,484
+  s_1951762204c0d8::t_5c2d0c0c5f067f 464-476
+REFERENCE.md
+  s_1951762204c0d8::t_d6829fced1c335 458-459
+  s_1951762204c0d8::t_00fd0a9025abff 442,453-457,460-463,470-472
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7ffadba31eb0ce4eb2ebc010605b239cda0d68ed",
+  "prompts": {},
+  "sessions": {
+    "s_1951762204c0d8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1acfa-18b9-7200-a0c1-e99ebd264c40",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
