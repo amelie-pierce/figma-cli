@@ -29,7 +29,7 @@ describe('make deploy status (receipt only)', () => {
     assert.match(formatDeployStatus(status), /2\/3 writing \(uncertain\)/);
     assert.deepEqual(deployStatus({ fileKey: 'key', home }), status);
     const cli = spawnSync(process.execPath, [cliEntry, 'make', 'deploy', 'status', '--receipt', receiptPath, '--json'],
-      { encoding: 'utf8', env: { ...process.env, HOME: home } });
+      { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home } });
     assert.equal(cli.status, 0, cli.stderr);
     assert.equal(JSON.parse(cli.stdout).completedWrites, 2);
   });
@@ -66,11 +66,11 @@ describe('make deploy status (receipt only)', () => {
     assert.throws(() => deployStatus({ home }), /requires --receipt/);
     assert.equal(deployStatus({ fileKey: 'key', home }).receiptPath, join(dir, 'selected.json'));
     const byFile = spawnSync(process.execPath, [cliEntry, 'make', 'deploy', 'status', '--file', 'key', '--json'],
-      { encoding: 'utf8', env: { ...process.env, HOME: home } });
+      { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home } });
     assert.equal(byFile.status, 0, byFile.stderr);
     assert.equal(JSON.parse(byFile.stdout).receiptPath, join(dir, 'selected.json'));
     const cli = spawnSync(process.execPath, [cliEntry, 'make', 'deploy', 'status'],
-      { encoding: 'utf8', env: { ...process.env, HOME: home } });
+      { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home } });
     assert.notEqual(cli.status, 0);
     assert.match(cli.stderr, /requires --receipt/);
   });
