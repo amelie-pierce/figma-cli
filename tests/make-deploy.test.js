@@ -13,6 +13,7 @@ import { defaultRun } from '../src/make-team.js';
 import { listMakeFiles } from '../src/make-tree.js';
 import { isUninventoried } from '../src/make-unread.js';
 import { tagCommits, untaggedDeployNotice } from '../src/make-deploy-notices.js';
+import { deployStatus } from '../src/make-deploy-status.js';
 
 // Local git only: a bare "origin" stands in for GitHub, while gh, pnpm and the
 // Make client are faked. Nothing here reaches Figma, GitHub or a registry.
@@ -448,6 +449,27 @@ describe('make deploy unopened deep-file read-back', () => {
     assert.equal(s.make.deepReadback, 'tree-vfs-sandbox-matched');
     assert.equal(resumed.stage, 'deployed');
     assert.equal(s.make.saved.get(DEEP_PATH).toString(), 'new\n');
+  });
+
+  it('confirms a timed-out write that landed before resuming', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.afterWrite = path => { if (path === 'src/App.tsx') throw new Error('Make operation timed out.'); };
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+    assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+    assert.equal(deployStatus({ receiptPath: error.receiptPath }).completedWrites, 0);
+    s.make.hooks.afterWrite = null;
+    const lines = [];
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath },
+      { ...s.deps, progress: line => lines.push(line) });
+    const receipt = readReceipt(error.receiptPath);
+    assert.equal(resumed.stage, 'deployed');
+    assert.equal(deployStatus({ receiptPath: error.receiptPath }).completedWrites, plan.files.length);
+    assert.ok(receipt.completedWrites.some(write => write.path === 'src/App.tsx' && write.confirmedOnResume));
+    assert.equal(receipt.writeRun.completedWrites, 1);
+    assert.ok(lines.includes(`resuming 1/${plan.files.length}`));
+    assert.ok(lines.some(line => line.startsWith(`${plan.files.length}/${plan.files.length} src/Card.tsx `)));
   });
 });
 

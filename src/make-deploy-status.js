@@ -3,8 +3,9 @@ import { join } from 'node:path';
 import { deployDir, readReceipt } from './make-deploy.js';
 
 // A receipt-only view. No Make client, git, or GitHub operation is involved.
-export function deployStatus({ receiptPath, fileKey, home, now = new Date() } = {}) {
+export function deployStatus({ receiptPath, fileKey, home } = {}) {
   if (receiptPath && fileKey) throw new Error('Choose --receipt or --file.');
+  if (!receiptPath && !fileKey) throw new Error('Deploy status requires --receipt <path> or --file <key>.');
   const dir = deployDir(home);
   const paths = receiptPath ? [receiptPath] : existsSync(dir)
     ? readdirSync(dir).filter(name => name.endsWith('.json')).map(name => join(dir, name)) : [];
@@ -20,11 +21,13 @@ export function deployStatus({ receiptPath, fileKey, home, now = new Date() } = 
   const startedMs = Date.parse(receipt.at);
   const lastWriteAt = receipt.lastWriteAt || null;
   const lastMs = Date.parse(lastWriteAt);
-  const averageSecondsPerFile = completed && Number.isFinite(lastMs) && Number.isFinite(startedMs) && lastMs >= startedMs
-    ? Math.round((lastMs - startedMs) / completed / 1000) : null;
+  const segmentMs = receipt.writeRun ? Date.parse(receipt.writeRun.startedAt) : startedMs;
+  const segmentWrites = receipt.writeRun ? receipt.writeRun.completedWrites : completed;
+  const averageSecondsPerFile = segmentWrites && Number.isFinite(lastMs) && Number.isFinite(segmentMs) && lastMs >= segmentMs
+    ? Math.round((lastMs - segmentMs) / segmentWrites / 1000) : null;
   const remaining = Math.max(0, total - completed);
   const eta = receipt.stage === 'writing' && receipt.outcome === 'uncertain' && remaining && averageSecondsPerFile != null
-    ? new Date(now.getTime() + remaining * averageSecondsPerFile * 1000).toISOString() : null;
+    ? new Date(lastMs + remaining * averageSecondsPerFile * 1000).toISOString() : null;
   return { receiptPath: receipt.receiptPath, deployId: receipt.deployId, fileKey: receipt.fileKey,
     completedWrites: completed, totalWrites: total, stage: receipt.stage, outcome: receipt.outcome,
     startedAt: receipt.at, lastWriteAt, averageSecondsPerFile, eta };

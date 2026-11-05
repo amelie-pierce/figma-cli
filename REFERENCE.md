@@ -444,17 +444,17 @@ figma-cli make deploy --file KEY [--dir CLONE] --resume RECEIPT
 figma-cli make deploy --file KEY --abort RECEIPT
 figma-cli make deploy --file KEY [--dir CLONE] --override-make [--delete-make-only] # reviewed dry run
 figma-cli make deploy --file KEY --apply PLAN --confirm-override DIGEST12
-figma-cli make deploy status [--receipt RECEIPT | --file KEY] [--json]
+figma-cli make deploy status (--receipt RECEIPT | --file KEY) [--json]
 ```
 
 During apply and resume, deploy prints a short `deploy: n/total path (seconds)` line
 on stderr after each completed write, plus plan, save and verification stages.
-The final JSON remains on stdout. `make deploy status` reads the newest local
-receipt (or the exact `--receipt` / newest receipt for `--file`) without any
+The final JSON remains on stdout. `make deploy status` reads the exact `--receipt`
+or newest local receipt for the exact `--file` key without any
 Make connection or GitHub request. It reports completed writes, stage, outcome,
 start and last-write time, average seconds per completed file and an estimated
-finish while writing. The estimate is based on elapsed time through the last
-write and excludes later save and verification time; an old receipt without a
+finish while writing. The estimate uses the current write segment on resume and
+is anchored to the last completed write; an old receipt without a
 last-write timestamp reports no estimate. `--json` prints the same fields for
 scripts. The command only reads local receipts; it cannot prove the writer is
 still alive or that Make has saved a version.

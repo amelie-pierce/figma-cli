@@ -798,7 +798,10 @@ function plannedState(receipt, status) {
 
 const recordWrite = (receipt, file, backupPath, extra = {}) => {
   receipt.completedWrites.push({ path: file.path, op: file.op, backupPath: backupPath ?? null, ...extra });
-  if (!extra.uncertain && !extra.backupOnly) receipt.lastWriteAt = new Date().toISOString();
+  if (!extra.uncertain && !extra.backupOnly && !extra.confirmedOnResume) {
+    receipt.lastWriteAt = new Date().toISOString();
+    receipt.writeRun.completedWrites++;
+  }
   const entry = receipt.files.find(item => item.path === file.path);
   if (entry && backupPath && !extra.uncertain) entry.backupPath = backupPath;
   saveReceipt(receipt);
@@ -809,6 +812,10 @@ const recordWrite = (receipt, file, backupPath, extra = {}) => {
 // When Make's state moves under a write, wait until it is idle, re-check
 // every unsaved path against the plan, then try that path again.
 async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
+  if (!receipt.writeRun) {
+    receipt.writeRun = { startedAt: new Date().toISOString(), completedWrites: 0 };
+    saveReceipt(receipt);
+  }
   for (const file of [...todo].sort(byWriteOrder)) {
     const writeStarted = Date.now();
     if (receipt.mode === 'override-make') {
@@ -1180,8 +1187,14 @@ export async function deployResume(client, { dir, receiptPath } = {}, deps = {})
   const { status, files } = await resumable(client, receipt, 'resume', deps.warn);
   const todo = files.filter(file => file.state === 'before' || file.state === 'saved' || file.state === 'regenerated' || (file.state === 'after' && isLockfile(file.path)))
     .map(file => ({ ...file, expectedSha256: status.workingSha256.get(file.path) ?? null }));
+  const confirmed = new Set(receipt.completedWrites.filter(write => !write.uncertain && !write.backupOnly).map(write => write.path));
+  for (const file of files.filter(item => item.state === 'after' && !isLockfile(item.path) && !confirmed.has(item.path))) {
+    recordWrite(receipt, file, null, { confirmedOnResume: true });
+  }
   receipt.resumedBy = access.login;
   receipt.stage = 'writing';
+  receipt.writeRun = { startedAt: new Date().toISOString(), completedWrites: 0 };
+  saveReceipt(receipt);
   deps.progress(`resuming ${new Set(receipt.completedWrites.filter(write => !write.uncertain && !write.backupOnly).map(write => write.path)).size}/${receipt.plan.files.length}`);
   const mainBytes = blob => deps.readBlob(ctx.root, blob);
   await backupLockfiles(client, receipt, deps.home);
