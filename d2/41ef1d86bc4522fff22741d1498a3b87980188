@@ -1,0 +1,39 @@
+src/make-deploy-runner.js
+  s_ba20d2ef060ef2::t_d166341268ba64 1,7,12,14,17-21,24-26,28-35,37-38,40-41,46,50-55,60,62,68,72,83-85,95-96,98,101,103-115,117-118,122-124,128,133-140,143-146,149,151-156,158,163-165,173-178,181-182,185,190,196
+  s_ba20d2ef060ef2::t_17b1547f6a1105 125
+  s_ba20d2ef060ef2::t_02c2d7875e5ee6 141-142
+  s_ba20d2ef060ef2::t_3427fadb3e2f2c 77-81,86-89,91-92
+  s_ba20d2ef060ef2::t_826eb53ba42af0 42-43,75-76,116
+src/make-deploy.js
+  s_ba20d2ef060ef2::t_9abb44f398c57d 12,718-721
+src/make-deploy-status.js
+  s_ba20d2ef060ef2::t_d2e9f83d04aa87 17,23-25
+  s_ba20d2ef060ef2::t_cdc950e476fb28 20-21
+  s_ba20d2ef060ef2::t_b79c9b0ddf9bbd 19
+tests/make-deploy-runner.test.js
+  s_ba20d2ef060ef2::t_17b1547f6a1105 124,128
+  s_ba20d2ef060ef2::t_92a59202c198d9 3,5,7-8,10,15-27,29-30,32-34,38-43,45,49,55,57,59,64-65,68,71-72,74-79,88,91-103,107,109-123,125-127,129-141,143-153
+  s_ba20d2ef060ef2::t_b79c9b0ddf9bbd 142
+tests/make-deploy-status.test.js
+  s_ba20d2ef060ef2::t_8262a7ae5623be 61-62,64
+REFERENCE.md
+  s_ba20d2ef060ef2::t_c207acf8465502 459-461,464
+src/commands/make.js
+  s_ba20d2ef060ef2::t_daed2df4bda649 16,461,463,465,483,486
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d241ef1d86bc4522fff22741d1498a3b87980188",
+  "prompts": {},
+  "sessions": {
+    "s_ba20d2ef060ef2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1ad5f-c9d2-7042-81e5-62f7826967a1",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
