@@ -17,6 +17,7 @@ Updated 2026-10-29: status marks a missing saved commit even when Make claims a 
 Updated 2026-11-04: tracked `.npmrc`, mode-only and reloaded Make-only override follow-ups; warn-only deploy reminders.
 Updated 2026-11-06: deploy progress and local status are documented in the command reference.
 Updated 2026-11-06: detached deploy details live in the command reference and runner modules.
+Updated 2026-11-06: durable CDP writes wait longer by default, with a configurable base wait.
 
 # make deploy
 Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI files first (`DEPLOY_VENDOR_EDITED`); see [vendor-lock.md](vendor-lock.md).
@@ -111,7 +112,7 @@ So the deploy (`src/make-deploy.js`):
 
 Paths outside the plan and unplanned content in other files still refuse. `--resume` and `--abort` accept a planned dependency file Make regenerated; abort restores it from its backup. Abort restores other files first, then `package.json`, then lockfiles, using the existing idle wait and whole-plan check after each dependency write or delete and after a pending-state race (`src/make-deploy.js:1120`). It persists the restored list after each path and carries it across retry runs, including recovery of paths an older retry omitted from that list (`src/make-deploy.js:1094`). Abort marks the receipt `aborted` only when the working tree equals the original saved tree for a normal deploy, or the original served working tree for an override; otherwise it reports the mismatch and leaves recovery open (`src/make-deploy.js:1238`). For a normal deploy, when only a lockfile Make's install changed before the deploy (no original backup) still differs, it names the path with its working sha256 and saved blob and stops without a rerun: let Make finish its install from `package.json`, check `make status`, and if the lockfile still differs restore the saved version from Make's version history (no hand edit); once it matches, one more `--abort` closes the receipt. Cross-run recovery does not count a path whose only apply write was uncertain as restored; when it is back at saved content it is listed apart as `restoredUncertain` in the receipt and the abort result. `--resume` also writes a lockfile that already holds main's content through the client again, so the version keeps it. A normal dry run accepts a lockfile that Make's install rewrote to exactly main's content (`requireMakeReady`).
 
-Each `Runtime.evaluate` call used the transport's fixed 5 s timeout, which large writes outlasted (the 377 KB Hinge stylesheet). A call now gets 100 ms more per KiB it sends, and a read may use the operation's remaining time (`payloadTimeout`, `src/make-client.js`).
+Durable writes and deletes use a 30 s base CDP wait plus 100 ms per KiB of the request (`payloadTimeout`, `src/make-client.js:49`; `_durable`, `src/make-client.js:546`). `make deploy --write-timeout` sets the base for each write in apply, resume or abort (`src/commands/make.js:429`); the operation's `--timeout` still caps each call. Durable reads may use the operation's remaining time. The existing receipt and uncertain-write recovery still applies (`src/make-client.js:751`, `src/make-deploy.js:818`). Fake slow and hung page coverage is in `tests/make-durable.test.js:930`.
 
 ## Save and tag
 

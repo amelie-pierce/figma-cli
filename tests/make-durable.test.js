@@ -912,11 +912,41 @@ test('a CDP call gets a timeout scaled to the file it carries, never past the op
   client.fileKey = 'ScratchKey';
   const deadline = Date.now() + 120000;
   await client._durable({ type: 'write', path: 'src/big.scss', content: 'x'.repeat(377 * 1024), expectedContent: null }, deadline);
+  await client._durable({ type: 'write', path: 'src/small.ts', content: 'x', expectedContent: null }, deadline);
   await client._durable({ type: 'read', path: 'src/big.scss' }, deadline);
   await client._durable({ type: 'write', path: 'src/big.scss', content: 'x'.repeat(2 * 1024 * 1024), expectedContent: null }, Date.now() + 30000);
-  assert.ok(seen[0] >= 5000 + 377 * 100 && seen[0] < 60000, `large write: ${seen[0]}`);
-  assert.ok(seen[1] > 110000 && seen[1] <= 120000, `read waits up to the deadline: ${seen[1]}`);
-  assert.ok(seen[2] <= 30000, `capped by the deadline: ${seen[2]}`);
+  await client._treeTransport(deadline, true).evaluate('true');
+  await client._editor({ type: 'inspect' }, deadline, true);
+  assert.ok(seen[0] >= 30000 + 377 * 100 && seen[0] < 85000, `large write: ${seen[0]}`);
+  assert.ok(seen[1] >= 30000 && seen[1] < 40000, `small write: ${seen[1]}`);
+  assert.ok(seen[2] > 110000 && seen[2] <= 120000, `read waits up to the deadline: ${seen[2]}`);
+  assert.ok(seen[3] <= 30000, `capped by the deadline: ${seen[3]}`);
+  assert.ok(seen[4] >= 30000 && seen[4] < 40000, `tree read-back: ${seen[4]}`);
+  assert.ok(seen[5] >= 30000 && seen[5] < 40000, `editor read-back: ${seen[5]}`);
+});
+
+test('a slow fake Make page completes a durable write within its configured per-call wait', async () => {
+  const client = new MakeClient({ transport: { close() {}, timeoutMs: 5000,
+    evaluate: async (_expression, { timeoutMs }) => {
+      assert.ok(timeoutMs >= 15000);
+      await new Promise(resolve => setTimeout(resolve, 10500));
+      return { accepted: true };
+    } }, timeoutMs: 30000, writeTimeoutMs: 15000 });
+  client.fileKey = 'ScratchKey';
+  assert.deepEqual(await client._durable({ type: 'write', path: 'src/App.tsx', content: 'x', expectedContent: null }, Date.now() + 30000),
+    { accepted: true });
+});
+
+test('a hung fake Make page stops at the configured write timeout', async () => {
+  const client = new MakeClient({ transport: { close() {}, timeoutMs: 0,
+    evaluate: (_expression, { timeoutMs }) => new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Make CDP Runtime.evaluate timed out')), timeoutMs);
+    }) }, timeoutMs: 30000, writeTimeoutMs: 1000 });
+  client.fileKey = 'ScratchKey';
+  const started = Date.now();
+  await assert.rejects(client._durable({ type: 'write', path: 'src/App.tsx', content: 'x', expectedContent: null }, Date.now() + 30000),
+    /Runtime.evaluate timed out/);
+  assert.ok(Date.now() - started < 5000);
 });
 
 // A deep existing file whose post-write read-back outlives the operation

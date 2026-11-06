@@ -44,10 +44,9 @@ function saveRequest(title, expectedPaths) {
   if (!Array.isArray(expectedPaths) || !expectedPaths.length || expectedPaths.length > 1000) throw new Error('Provide the exact expected changed-file set.');
   expectedPaths.forEach(sourcePath);
 }
-// Each CDP call has its own timeout (the transport's, 5 s by default), which a
-// call carrying a whole file into the page can outlast: a 377 KB stylesheet
-// write timed out live. Such a call gets 100 ms more per KiB it carries.
-const payloadTimeout = bytes => 5000 + Math.ceil(bytes / 1024) * 100;
+// A busy Make renderer can take much longer than the transport's 5 s default
+// to answer even a small durable write. Preserve the per-KiB allowance.
+const payloadTimeout = (bytes, baseMs = 5000) => baseMs + Math.ceil(bytes / 1024) * 100;
 // How long one filesystem request may wait for Make's reply: the
 // operation's remaining time, less a second so the request reports its own
 // timeout before the CDP call does. A short budget keeps it all.
@@ -227,12 +226,16 @@ async function writePrivateFile(path, content) {
 
 /** Source editing through the observed Make Code UI, isolated from Design. */
 export class MakeClient {
-  constructor({ transport = new MakeTransport(), timeoutMs = 15000, maxEntries = 10000 } = {}) {
+  constructor({ transport = new MakeTransport(), timeoutMs = 15000, writeTimeoutMs = 30000, maxEntries = 10000 } = {}) {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 120000) {
       throw new Error('Make timeoutMs must be between 1 and 120000.');
     }
+    if (!Number.isInteger(writeTimeoutMs) || writeTimeoutMs < 1 || writeTimeoutMs > 120000) {
+      throw new Error('Make writeTimeoutMs must be between 1 and 120000.');
+    }
     this.transport = transport;
     this.timeoutMs = timeoutMs;
+    this.writeTimeoutMs = writeTimeoutMs;
     this.maxEntries = maxEntries;
     this.fileKey = null;
     this._running = false;
@@ -271,16 +274,17 @@ export class MakeClient {
 
   // `bytes` is the size the call returns, when larger than what it sends;
   // never past the operation's deadline.
-  async _evaluate(expression, deadline, { bytes = 0 } = {}) {
-    const timeoutMs = Math.min(this._remaining(deadline), Math.max(this.transport.timeoutMs || 0, payloadTimeout(Math.max(expression.length, bytes))));
+  async _evaluate(expression, deadline, { bytes = 0, write = false } = {}) {
+    const timeoutMs = Math.min(this._remaining(deadline), Math.max(this.transport.timeoutMs || 0,
+      payloadTimeout(Math.max(expression.length, bytes), write ? this.writeTimeoutMs : 5000)));
     return this._bounded(() => this.transport.evaluate(guardExpression(this.fileKey, expression), { timeoutMs }), deadline);
   }
 
   // A read returns a whole file of unknown size, so it may take the
   // operation's remaining time; reads change nothing.
-  _editor(action, deadline) {
+  _editor(action, deadline, writeReadback = false) {
     return this._evaluate(`(${makeEditorAction.toString()})(${JSON.stringify(action)}, (${makeWorkspace.toString()}))`, deadline,
-      { bytes: action.type === 'read' ? Infinity : 0 });
+      { bytes: action.type === 'read' ? Infinity : 0, write: writeReadback });
   }
 
   async _operation(callback) {
@@ -349,13 +353,13 @@ export class MakeClient {
     return state;
   }
 
-  _treeTransport(deadline) {
-    return { evaluate: (expression) => this._evaluate(expression, deadline) };
+  _treeTransport(deadline, writeReadback = false) {
+    return { evaluate: (expression) => this._evaluate(expression, deadline, { write: writeReadback }) };
   }
 
-  async _select(path, deadline) {
+  async _select(path, deadline, writeReadback = false) {
     await this._ensureCode(deadline);
-    return this._bounded(() => selectMakeFile(this._treeTransport(deadline), path, {
+    return this._bounded(() => selectMakeFile(this._treeTransport(deadline, writeReadback), path, {
       timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
     }), deadline);
   }
@@ -363,10 +367,10 @@ export class MakeClient {
   // Make renders some files, such as Markdown, as a preview with no source
   // editor. With editorWaitMs, a selected file whose editor has not appeared
   // by then is reported as MAKE_NO_EDITOR instead of waiting for the deadline.
-  async _read(path, deadline, { editorWaitMs } = {}) {
-    const entry = await this._select(path, deadline);
+  async _read(path, deadline, { editorWaitMs, writeReadback = false } = {}) {
+    const entry = await this._select(path, deadline, writeReadback);
     const editorDeadline = editorWaitMs == null ? deadline : Math.min(deadline, Date.now() + editorWaitMs);
-    let state = await this._editor({ type: 'inspect' }, deadline);
+    let state = await this._editor({ type: 'inspect' }, deadline, writeReadback);
     while (state.editorCount === 0) {
       if (Date.now() >= editorDeadline && editorDeadline < deadline) {
         const error = new Error(`Make shows no source editor for ${path}.`);
@@ -374,9 +378,9 @@ export class MakeClient {
         throw error;
       }
       await this._bounded(() => new Promise(resolve => setTimeout(resolve, 50)), deadline);
-      state = await this._editor({ type: 'inspect' }, deadline);
+      state = await this._editor({ type: 'inspect' }, deadline, writeReadback);
     }
-    const { content } = await this._editor({ type: 'read', entry }, deadline);
+    const { content } = await this._editor({ type: 'read', entry }, deadline, writeReadback);
     return { entry, content, sha256: sha256(content) };
   }
 
@@ -541,11 +545,11 @@ export class MakeClient {
 
   _durable(action, deadline) {
     return this._evaluate(`(${makeDurablePageAction.toString()})(${JSON.stringify(action)})`, deadline,
-      { bytes: action.type === 'read' ? Infinity : 0 });
+      { bytes: action.type === 'read' ? Infinity : 0, write: action.type !== 'read' });
   }
 
-  _sourceTree(deadline, expectedChange, onSnapshot) {
-    return listMakeFiles(this._treeTransport(deadline), {
+  _sourceTree(deadline, expectedChange, onSnapshot, writeReadback = false) {
+    return listMakeFiles(this._treeTransport(deadline, writeReadback), {
       timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries, expectedChange, onSnapshot,
     });
   }
@@ -622,7 +626,7 @@ export class MakeClient {
           treeState.rows = prefetched.rows;
         } else {
           tree = await this._sourceTree(deadline, expectedChange, treeState
-            ? snapshot => { treeState.entries = snapshot.entries; treeState.rows = snapshot.rows; } : undefined);
+            ? snapshot => { treeState.entries = snapshot.entries; treeState.rows = snapshot.rows; } : undefined, true);
         }
         const inTree = tree.some(entry => entry.kind === 'file' && entry.path === path);
         if (expectedContent === null) {
@@ -647,14 +651,14 @@ export class MakeClient {
             // they fall back only while the mounted editor provably shows
             // another path.
             try {
-              const editor = await this._read(path, deadline, { editorWaitMs: EDITOR_WAIT_MS });
+              const editor = await this._read(path, deadline, { editorWaitMs: EDITOR_WAIT_MS, writeReadback: true });
               observed.editor = editor.content === expectedContent ? 'matched' : 'different';
               if (observed.editor === 'matched') return 'editor-tree-vfs-sandbox-matched';
               editorDisagreed = true;
             } catch (error) {
               if (!editorDisagreed && error.code === 'MAKE_NO_EDITOR') return 'tree-vfs-sandbox-matched';
               if (!editorDisagreed && error.code === 'MAKE_TREE_VIEWPORT') {
-                const editor = await this._editor({ type: 'inspect' }, deadline);
+                const editor = await this._editor({ type: 'inspect' }, deadline, true);
                 if (editor.editorCount === 0 || (editor.editorPath && editor.editorPath !== path)) {
                   return 'tree-vfs-sandbox-matched';
                 }
