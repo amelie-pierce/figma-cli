@@ -1,0 +1,23 @@
+src/make-client.js
+  s_b8c4cf770e2154::t_9b471a72ceda9f 274-275,548
+tests/make-durable.test.js
+  s_b8c4cf770e2154::t_c5fd243ca15d9a 909,934
+  s_b8c4cf770e2154::t_6844846a50e283 943
+  s_b8c4cf770e2154::t_260dd51f970cb2 911-912,914-922,927-933,935,939-940,942,948,953-955,958
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1c00a0f5e9e59aa733ea76ba199b65476967de7f",
+  "prompts": {},
+  "sessions": {
+    "s_b8c4cf770e2154": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1aec1-f07b-7002-a488-181fd32aeebc",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
