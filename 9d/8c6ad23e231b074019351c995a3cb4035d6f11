@@ -1,0 +1,19 @@
+tests/make-deploy-runner.test.js
+  s_a5ea14e1f350c0::t_784182174c6e51 4,261,263-269,271-279
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9d8c6ad23e231b074019351c995a3cb4035d6f11",
+  "prompts": {},
+  "sessions": {
+    "s_a5ea14e1f350c0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1ae61-c310-7e83-b017-14fe62661514",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}

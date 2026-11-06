@@ -1,0 +1,52 @@
+tests/make-deploy.test.js
+  s_16a7fa47f8eee4::t_37d0917461a761 337
+  s_16a7fa47f8eee4::t_7ee20272718d86 412-424
+tests/make-deploy-status.test.js
+  s_16a7fa47f8eee4::t_2b064a749a41ba 3,33-34
+  s_16a7fa47f8eee4::t_2d315ed3fa74e7 1-2,4-6,8-10,13-23,25-27,29,35-36,78-92
+src/make-deploy.js
+  s_16a7fa47f8eee4::t_05774524177e23 560,824,868-869,874,1012,1027,1035,1039,1063,1068,1079,1122,1128,1202,1207,1353,1401,1418,1420
+src/commands/make.js
+  s_16a7fa47f8eee4::t_643c439d61769a 423-425,446,494
+  s_16a7fa47f8eee4::t_6640c6d5fb10dc 15,495-499,501,505-508
+_vaults/figma-cli/wiki/make/deploy.md
+  s_16a7fa47f8eee4::t_a0c556d2496e8b 25-26
+  s_16a7fa47f8eee4::t_9f4054980410a7 38
+  s_7c8ff204fa1785::t_59eb7f2035d372 20,35-37
+  s_7c8ff204fa1785::t_98856b3006a773 38
+src/make-deploy-status.js
+  s_16a7fa47f8eee4::t_249d66fb18da6d 1-3,5,8,10-16,18,26-30,35-36,38-39,42-44,46-47,50
+REFERENCE.md
+  s_16a7fa47f8eee4::t_9f8121ab9c3062 451-452,482-483,486
+  s_16a7fa47f8eee4::t_155e78bea20813 490
+  s_7c8ff204fa1785::t_e1f4bb2a81f898 491-500
+tests/make-durable.test.js
+  s_7c8ff204fa1785::t_da766b9f27f9db 62
+  s_7c8ff204fa1785::t_7b09be5bc4d711 58-61,63-83
+src/make-client.js
+  s_7c8ff204fa1785::t_f171e718e27738 650-660,662-665,749
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e5580728d7e5183887d30187a6807ce829e42e1c",
+  "prompts": {},
+  "sessions": {
+    "s_16a7fa47f8eee4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1aced-fff1-71c3-b80d-29d5601d0d3a",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_7c8ff204fa1785": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1acfa-7305-7d12-8619-7f519fd9bf15",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
