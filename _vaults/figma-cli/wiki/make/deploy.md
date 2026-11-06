@@ -16,6 +16,7 @@ Updated 2026-10-29: saved-inventory fallback implementation and fake coverage.
 Updated 2026-10-29: status marks a missing saved commit even when Make claims a baseline; verify waits for the reloaded code panel and sandbox filesystem before reading.
 Updated 2026-11-04: tracked `.npmrc`, mode-only and reloaded Make-only override follow-ups; warn-only deploy reminders.
 Updated 2026-11-06: deploy progress and local status are documented in the command reference.
+Updated 2026-11-06: detached deploy details live in the command reference and runner modules.
 
 # make deploy
 Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI files first (`DEPLOY_VENDOR_EDITED`); see [vendor-lock.md](vendor-lock.md).
@@ -23,6 +24,12 @@ Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI fil
 ## Progress and local status
 
 See [Deploying main to Make](../../../../REFERENCE.md#deploying-main-to-make-make-deploy) for progress output and receipt status commands. The implementation is in `src/make-deploy.js` and `src/make-deploy-status.js`; fake receipt coverage is in `tests/make-deploy-status.test.js`.
+
+Detached startup, per-run records and terminal results are implemented in
+`src/make-deploy-runner.js`; lease publication and renewal are in
+`src/make-deploy-lock.js` and `src/make-deploy-heartbeat.js`. The offline coverage
+is in `tests/make-deploy-runner.test.js`. Windows execution and live Figma
+delivery are **UNVERIFIED**.
 
 ## Current-main override
 

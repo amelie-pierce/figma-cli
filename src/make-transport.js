@@ -27,7 +27,7 @@ function keyFromURL(value) {
   }
 }
 
-function requestedKey(value) {
+export function requestedKey(value) {
   if (typeof value !== 'string' || !value) {
     throw new Error('Provide an exact Figma Make file key or https://www.figma.com/make/ URL');
   }

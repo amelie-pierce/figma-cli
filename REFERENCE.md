@@ -439,6 +439,7 @@ written, the `receiptPath`.
 ```bash
 figma-cli make deploy --file KEY [--dir CLONE]   # dry run (default)
 figma-cli make deploy --file KEY [--dir CLONE] --apply PLAN
+figma-cli make deploy --file KEY [--dir CLONE] --apply PLAN --detach
 figma-cli make deploy --file KEY [--dir CLONE] --verify RECEIPT
 figma-cli make deploy --file KEY [--dir CLONE] --resume RECEIPT
 figma-cli make deploy --file KEY --abort RECEIPT
@@ -449,15 +450,43 @@ figma-cli make deploy status (--receipt RECEIPT | --file KEY) [--json]
 
 During apply and resume, deploy prints a short `deploy: n/total path (seconds)` line
 on stderr after each completed write, plus plan, save and verification stages.
-The final JSON remains on stdout. `make deploy status` reads the exact `--receipt`
-or newest local receipt for the exact `--file` key without any
+`--detach` starts the same guarded apply in a background process, then returns its
+run ID, PID and private log path after the child acknowledges startup. The child
+writes progress and its final JSON to that log. Startup failure is recorded and
+the child is stopped before the lock is released.
+`make deploy status --file KEY` reports the runner as running, finished, failed,
+or died alongside receipt progress. Apply, verify, resume and abort take a local
+writer lock for the exact Make file key before connecting. A second writer refuses.
+After a crash, inspect status and retry the intended operation with
+`--clear-stale-lock`; this clears only an expired writer lease. A running deploy
+renews its two-minute lease on a separate thread, including during synchronous
+install/build commands. Status uses the owner token and lease, not PID identity;
+a crashed process can therefore appear running until its lease expires; the first
+status read after expiry persists a died result. A live
+lease proves ownership, not that the deploy is making progress. Stale recovery
+compares the observed revision atomically, so concurrent retries cannot evict a
+new owner. If ownership is lost, subsequent client/transport calls refuse.
+
+Each run keeps its own record and log; `--receipt` associates the runner by run
+ID, and `--file` chooses the newest recorded operation by monotonic sequence, never by
+clock order. Until that run creates a receipt, status shows `starting` without
+borrowing progress from an older run. Runner records, logs and bounded lease
+records are private under `~/.figma-cli/deploys/`. Keep the lease records while
+writers may run; deleting lock files is not a recovery procedure. Publication
+requires a local filesystem with atomic hard-link support (including NTFS on
+Windows); unsupported filesystems fail closed. Locks coordinate this local state
+directory only, not deployments launched from another computer or home directory.
+
+The final JSON remains on stdout for a foreground deploy. `make deploy status`
+reads the exact `--receipt` or newest sequenced local receipt for the exact `--file` key without any
 Make connection or GitHub request. It reports completed writes, stage, outcome,
 start and last-write time, average seconds per completed file and an estimated
 finish while writing. The estimate uses the current write segment on resume and
 is anchored to the last completed write; an old receipt without a
 last-write timestamp reports no estimate. `--json` prints the same fields for
-scripts. The command only reads local receipts; it cannot prove the writer is
-still alive or that Make has saved a version.
+scripts. Status reads local receipts and runner records without connecting to Make.
+A live lease does not prove that Make has saved a version; use the receipt and
+fresh reload verification for that proof. Older receipts have no runner record.
 
 Normal deploy guards, each refusing with nothing written:
 - a release-installed AtomicAUI folder in the clone equals its VENDOR.json file

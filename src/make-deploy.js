@@ -9,6 +9,7 @@ import { requireLocalVendorUnedited } from './make-vendor-lock.js';
 import { isSizeChecked, sizeWarnings } from './make-size.js';
 import { notInventoried } from './make-unread.js';
 import { reloadReminder, staleSaveNotice, staleTabNotice, untaggedDeployNotice } from './make-deploy-notices.js';
+import { nextDeploySequence } from './make-deploy-runner.js';
 import { install as installProject } from './make-local.js';
 import { readRepoAccess } from './make-mode.js';
 import { detectMode, ghRunner, isRepoOnly, lfsMatcher, MAKE_MANAGED, parseMarker, PROJECT_EXCLUDES, PROJECT_MARKER, repoName } from './make-project.js';
@@ -32,7 +33,8 @@ export const DEPLOY_CODES = Object.freeze(['DEPLOY_SOLO', 'DEPLOY_NOT_TEAM', 'DE
   'DEPLOY_NOT_MAIN', 'DEPLOY_DIRTY', 'DEPLOY_VENDOR_EDITED', 'DEPLOY_NOT_CURRENT', 'DEPLOY_UNREVIEWED', 'DEPLOY_INSTALL_FAILED', 'DEPLOY_BUILD_FAILED',
   'DEPLOY_MAKE_BUSY', 'DEPLOY_MAKE_STATE', 'DEPLOY_MAKE_AHEAD', 'DEPLOY_UNFINISHED', 'DEPLOY_BINARY', 'DEPLOY_LFS',
   'DEPLOY_UNSUPPORTED_PATH', 'DEPLOY_IGNORE', 'DEPLOY_MARKER', 'DEPLOY_NOTHING', 'DEPLOY_STALE_PLAN', 'DEPLOY_MAIN_MOVED', 'DEPLOY_TAG_CLASH',
-  'DEPLOY_WRITE_FAILED', 'DEPLOY_SAVE_UNCERTAIN', 'DEPLOY_DRIFT', 'DEPLOY_TAG_FAILED', 'DEPLOY_RECEIPT', 'DEPLOY_VERIFY_FAILED']);
+  'DEPLOY_WRITE_FAILED', 'DEPLOY_SAVE_UNCERTAIN', 'DEPLOY_DRIFT', 'DEPLOY_TAG_FAILED', 'DEPLOY_RECEIPT', 'DEPLOY_VERIFY_FAILED',
+  'DEPLOY_WRITER_LOCKED', 'DEPLOY_STALE_LOCK']);
 
 // Receipt stages. A blocking stage must be finished (--verify, --resume or
 // --abort) before the next deploy of that file plans. After saved-drift or
@@ -713,8 +715,10 @@ export async function deployPlan(client, { dir, overrideMake = false, deleteMake
 // --- apply, resume and the shared finish ------------------------------------
 
 function newReceipt(plan, who, at, home) {
-  const deployId = `${at.replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}-${plan.fileKey}-${short(plan.mainCommit)}`;
-  return { schema: RECEIPT_SCHEMA, deployId, who, at, repo: plan.repo, mainCommit: plan.mainCommit, mainTree: plan.mainTree,
+  const runId = process.env.FIGMA_CLI_DEPLOY_RUNNER_ID;
+  const sequence = runId ? Number(process.env.FIGMA_CLI_DEPLOY_SEQUENCE) : nextDeploySequence(plan.fileKey, { home });
+  const deployId = `${at.replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}-${plan.fileKey}-${short(plan.mainCommit)}-${sequence}`;
+  return { schema: RECEIPT_SCHEMA, deployId, sequence, ...(runId ? { runnerId: runId } : {}), who, at, repo: plan.repo, mainCommit: plan.mainCommit, mainTree: plan.mainTree,
     fileKey: plan.fileKey, tag: { name: plan.tag, n: plan.n, pushed: false }, ...(plan.mode ? { mode: plan.mode } : {}),
     makeBefore: plan.makeBefore, makeAfter: null,
     planDigest: plan.digest, files: plan.files.map(({ path, op, beforeSha256, afterSha256 }) => ({ path, op, beforeSha256, afterSha256, backupPath: null })),

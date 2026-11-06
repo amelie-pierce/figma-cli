@@ -371,8 +371,10 @@ reviewable plan; a normal `--apply PLAN` re-plans, writes the planned files, sav
 version `deploy <sha7>`, checks the whole project against `main`, writes a private
 receipt under `~/.figma-cli/deploys/` and pushes the annotated tag
 `make-deploy/<n>`. `--verify RECEIPT` confirms it after a fresh reload;
-`--resume` and `--abort` finish or undo an interrupted deploy. Make cannot take
-new or deleted files at the project root or in a new top-level folder through
+`--resume` and `--abort` finish or undo an interrupted deploy. For long applies,
+`--apply PLAN --detach` starts a background runner; `make deploy status --file KEY`
+shows its local progress and result. Make cannot take new or deleted files at
+the project root or in a new top-level folder through
 figma-cli, so `main` may commit `.figma-cli/deploy-ignore` (gitignore syntax)
 naming paths the deploy leaves alone on both sides: repo-only files such as
 `/docs/`, `/tests/` or `/README.md` stay in GitHub, and Make-only files such as

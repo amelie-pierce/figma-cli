@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { program } from '../lib/cli-core.js';
 import { MakeTransport } from '../make-transport.js';
 import { MakeClient, timeoutHint } from '../make-client.js';
@@ -12,6 +13,8 @@ import { buildStatus, checkWriteMode, linkedRepo, MODE_CODES, parseMarker, readG
 import { CONFIRM_FLAG, runModeChange } from '../make-mode.js';
 import { DEPLOY_CODES, deployAbort, deployApply, deployPlan, deployResume, deployVerify } from '../make-deploy.js';
 import { deployStatus, formatDeployStatus } from '../make-deploy-status.js';
+import { acquireDeployLock, acknowledgeDetachedStart, awaitDetachedStart, guardDeployClient, finishDeployRunner, releaseDeployLock, requireDetachedOwner, startDeployHeartbeat, startDetachedDeploy } from '../make-deploy-runner.js';
+import { requestedKey } from '../make-transport.js';
 import { cloneProject, install, LOCAL_CODES, noticeStore, pullProject, repoRoot, resolveCloneRepo, runDev } from '../make-local.js';
 import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, planSync, syncReceipt, validatePlanDigest, VENDOR_ROOT,
   writeApplyOutputs } from '../make-sync.js';
@@ -74,12 +77,13 @@ function sessionWrite(command) {
   return modeGated(target(command).option('--session-only', 'Accept that the write is lost when the file is reopened unless saved in Make'));
 }
 // `readOnly` commands add a --timeout hint to a timeout error.
-async function withClient(options, fn, write, paths = [], { readOnly = false, wallBudget = false } = {}) {
+async function withClient(options, fn, write, paths = [], { readOnly = false, wallBudget = false, assertOwner } = {}) {
   let client;
   try {
     refuseMarkerPaths(paths);
     if (write && write !== 'mode') requireSessionOnly(write, options);
     client = new MakeClient({ timeoutMs: Math.min(120000, options.timeout) });
+    if (assertOwner) client.transport = guardDeployClient(client.transport, assertOwner);
     const run = async () => {
       if (write) {
         const { warning, note } = await checkWriteMode(client, options);
@@ -424,6 +428,8 @@ const deployCommand = make.command('deploy').description('Deploy GitHub main fro
   .option('--verify <receipt>', 'Reload Make, confirm the deployed version and tree, and finalise an uncertain receipt (pushes a missing tag)')
   .option('--resume <receipt>', 'Finish an interrupted deploy that saved no version: write the remaining paths, then save')
   .option('--abort <receipt>', 'Undo an interrupted deploy that saved no version: restore the written paths from backups')
+  .option('--detach', 'Run --apply in a detached local process and return its PID and log path')
+  .option('--clear-stale-lock', 'After inspecting status, take over an expired writer lease')
   .option('--override-make', 'Plan against Make\'s served working tree, including Make edits; requires per-plan confirmation to apply')
   .option('--delete-make-only', 'With --override-make, delete eligible Make-only files (backed up first)')
   .option('--confirm-override <digest-prefix>', 'Required with an override apply: first 12 characters of its reviewed plan digest')
@@ -436,25 +442,55 @@ const deployCommand = make.command('deploy').description('Deploy GitHub main fro
     '\nwritten, created or deleted on either side, so repo-only files stay in GitHub and Make-only files stay in Make.' +
     '\n--override-make keeps Make-only files by default, backs up every overwritten/deleted path, and requires --verify' +
     '\nafter a fresh reload before the tag is pushed. --delete-make-only is included in the reviewed digest.')
-  .action(options => {
+  .action(async options => {
     if (!options.file) return failure(new Error('Deploy requires --file <key-or-url>.'));
-    return withClient(options, async client => {
     const chosen = ['apply', 'verify', 'resume', 'abort'].filter(name => options[name]);
-    if (chosen.length > 1) throw new Error(`Choose one of --apply, --verify, --resume or --abort, not ${chosen.map(name => `--${name}`).join(' and ')}.`);
-    const deps = { warn: message => console.error(`warning: ${message}`), progress: message => console.error(`deploy: ${message}`) };
-    const dir = options.dir ? resolve(options.dir) : undefined;
-    if (options.apply) return report(await deployApply(client, { dir, planPath: options.apply, confirmOverride: options.confirmOverride,
-      overrideMake: options.overrideMake === true, deleteMakeOnly: options.deleteMakeOnly === true }, deps));
-    if (options.confirmOverride) throw new Error('--confirm-override requires --apply.');
-    if ((options.verify || options.resume || options.abort) && (options.overrideMake || options.deleteMakeOnly)) {
-      throw new Error('Override planning flags do not apply to receipt recovery; the receipt records the mode.');
+    if (chosen.length > 1) return failure(new Error(`Choose one of --apply, --verify, --resume or --abort, not ${chosen.map(name => `--${name}`).join(' and ')}.`));
+    if (options.detach && !options.apply) return failure(new Error('--detach requires --apply.'));
+    if (options.clearStaleLock && !chosen.length) return failure(new Error('--clear-stale-lock requires --apply, --verify, --resume or --abort.'));
+    let key;
+    try { key = requestedKey(options.file); } catch (error) { return failure(error); }
+    const runnerToken = process.env.FIGMA_CLI_DEPLOY_RUNNER_TOKEN;
+    if (options.detach) {
+      try {
+        const args = process.argv.slice(2).filter(arg => arg !== '--detach');
+        return report(await startDetachedDeploy(key, args, { clearStale: options.clearStaleLock,
+          cliEntry: fileURLToPath(new URL('../index.js', import.meta.url)) }));
+      } catch (error) { return failure(error); }
     }
-    if (options.verify) return report(await deployVerify(client, { dir, receiptPath: options.verify }, deps));
-    if (options.resume) return report(await deployResume(client, { dir, receiptPath: options.resume }, deps));
-    if (options.abort) return report(await deployAbort(client, { receiptPath: options.abort }, deps));
-    report(await deployPlan(client, { dir, overrideMake: options.overrideMake === true,
-      deleteMakeOnly: options.deleteMakeOnly === true }, deps));
-    });
+    let lock;
+    let stopHeartbeat;
+    try {
+      if (runnerToken) { await awaitDetachedStart(); lock = requireDetachedOwner(key, runnerToken); }
+      else if (chosen.length) lock = acquireDeployLock(key, { clearStale: options.clearStaleLock });
+      if (lock) stopHeartbeat = await startDeployHeartbeat(lock);
+      if (runnerToken) await acknowledgeDetachedStart();
+      stopHeartbeat?.assert();
+      await withClient(options, async client => {
+        if (lock) client = guardDeployClient(client, stopHeartbeat.assert);
+        const deps = { warn: message => console.error(`warning: ${message}`), progress: message => console.error(`deploy: ${message}`) };
+        const dir = options.dir ? resolve(options.dir) : undefined;
+        if (options.apply) return report(await deployApply(client, { dir, planPath: options.apply, confirmOverride: options.confirmOverride,
+          overrideMake: options.overrideMake === true, deleteMakeOnly: options.deleteMakeOnly === true }, deps));
+        if (options.confirmOverride) throw new Error('--confirm-override requires --apply.');
+        if ((options.verify || options.resume || options.abort) && (options.overrideMake || options.deleteMakeOnly)) {
+          throw new Error('Override planning flags do not apply to receipt recovery; the receipt records the mode.');
+        }
+        if (options.verify) return report(await deployVerify(client, { dir, receiptPath: options.verify }, deps));
+        if (options.resume) return report(await deployResume(client, { dir, receiptPath: options.resume }, deps));
+        if (options.abort) return report(await deployAbort(client, { receiptPath: options.abort }, deps));
+        report(await deployPlan(client, { dir, overrideMake: options.overrideMake === true,
+          deleteMakeOnly: options.deleteMakeOnly === true }, deps));
+      }, undefined, [], { assertOwner: stopHeartbeat?.assert });
+    } catch (error) { failure(error); }
+    finally {
+      await stopHeartbeat?.();
+      if (runnerToken) {
+        try { finishDeployRunner(key, runnerToken, process.exitCode || 0); }
+        finally { if (lock) releaseDeployLock(lock); }
+      }
+      else if (lock) releaseDeployLock(lock);
+    }
   });
 
 deployCommand.command('status').description('Read local deploy progress from a receipt; no Make connection')
