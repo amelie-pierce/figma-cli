@@ -92,14 +92,17 @@ Reply in Lavish with what you posted. A general remark goes in as-is.
 Merged `main` reaches the Make file only through `make deploy`, run in the clone
 on an up-to-date `main` (`figma-cli make pull` first). `KEY` is the Make file key.
 
+For long deploys and recovery, follow the [long-deploy recipe](../figma-make/SKILL.md#long-team-mode-deploys-all-agents-including-codex).
+For AtomicAUI vendor restrictions, see [Good habits to nudge](#good-habits-to-nudge).
+
 | The person says | Run | Then tell them |
 |---|---|---|
 | "What would deploy change?" | `figma-cli make deploy --file KEY` | The `summary` and files; nothing changed yet. Keep the `planPath` |
-| "Deploy" / "deploy to Make" | First the dry run above, show it, then on their yes `figma-cli make deploy --file KEY --apply <planPath>` | The version saved and the `make-deploy/<n>` tag; that a check after a reload comes next |
-| "Is the deploy done?" | `figma-cli make deploy --file KEY --verify <receiptPath>` | Whether Make holds that `main` after a fresh reload (`fresh-sandbox-verified`) |
-| "Use current main to override Make" | First `figma-cli make deploy --file KEY --override-make` (add `--delete-make-only` only when requested); show counts, kept/deleted Make-only paths, overwritten-path hashes and digest. On their approval run `--apply <planPath> --confirm-override <first 12 digest>`, then `--verify <receiptPath>` after a fresh reload | The override backs up replaced/deleted paths before writing; the tag is pushed only after verification. A failed save can be aborted or resumed once; a created but unconfirmed version needs verify |
-| … a deploy stopped part-way (`DEPLOY_WRITE_FAILED`) | Ask, then `--resume <receiptPath>` to finish, or `--abort <receiptPath>` to put Make back | Which; never run both |
-| … the save outcome is unknown (`DEPLOY_SAVE_UNCERTAIN`) | `--verify <receiptPath>` only | Never save or deploy again before verify answers |
+| "Deploy" / "deploy to Make" | First the dry run above, show it, then on their yes `figma-cli make deploy --file KEY --apply <planPath> --detach` | The PID and log path; follow local status for the receipt, saved version and tag, then verify after the writer exits |
+| "Is the deploy done?" | `figma-cli make deploy status --file KEY`; once the writer exits, `figma-cli make deploy --file KEY --verify <receiptPath>` | Local progress first, then whether Make holds that `main` after a fresh reload (`fresh-sandbox-verified`) |
+| "Use current main to override Make" | First `figma-cli make deploy --file KEY --override-make` (add `--delete-make-only` only when requested); show counts, kept/deleted Make-only paths, overwritten-path hashes and digest. On their approval run `figma-cli make deploy --file KEY --apply <planPath> --confirm-override <first 12 digest> --detach`, then `--verify <receiptPath>` after the writer exits | The override backs up replaced/deleted paths before writing; the tag is pushed only after fresh-reload verification. A refused pre-save attempt follows the recovery recipe; a created but unconfirmed version needs verify |
+| … a deploy stopped part-way (`DEPLOY_WRITE_FAILED`) | After confirming the old writer exited, `figma-cli make deploy --file KEY --resume <receiptPath>` once for a transient pre-save failure within the authorized deploy; otherwise stop and ask | A crash can leave pending writes intact. Use the same receipt; ask before aborting, never automatically run both |
+| … the save outcome is unknown (`DEPLOY_SAVE_UNCERTAIN`) | After the writer exits, `figma-cli make deploy --file KEY --verify <receiptPath>` only | Never save or deploy again before verify answers |
 
 `DEPLOY_NOT_ADMIN`: only repo admins deploy; name who to ask. `DEPLOY_MAKE_AHEAD`:
 someone edited Make directly; a normal deploy overwrites nothing. Bring those

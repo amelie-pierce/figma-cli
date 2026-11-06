@@ -213,6 +213,60 @@ For exact commands and safe in-memory examples, read
    Keep publishing, sharing changes, installing elsewhere, and creating a fork
    separate from ordinary source editing unless the user requested them.
 
+## Long team-mode deploys (all agents, including Codex)
+
+Run in the team clone on clean, current `main`, as a repo admin. Check
+`make deploy --help` for `--detach` and `make deploy status --help` first;
+if unavailable, stop and update to an approved CLI that includes them.
+`KEY` is the exact Make file key; `PLAN`, `RECEIPT` and `LOG` below stand for
+the returned paths (quote them). Use the existing launcher and environment.
+
+```sh
+figma-cli make deploy --file KEY
+# Review planPath and obtain any required approval before applying it.
+figma-cli make deploy --file KEY --apply "PLAN" --detach
+figma-cli make deploy status --file KEY --json
+# Once receiptPath is present, pin subsequent polls to it:
+figma-cli make deploy status --receipt "RECEIPT" --json
+```
+
+Record the exact key, `planPath`, returned `runId`, `pid` and `logPath`, then
+`receiptPath` when available. Poll local status every 30–60 seconds with short
+tool calls; inspect only a bounded log tail (for example `tail -n 30 "LOG"`).
+Status uses no Make connection. Keep `completedWrites`/`totalWrites`, `stage`,
+`outcome`, `runner.id`, `runner.state` and `runner.exitCode` in the handoff so another turn
+can follow the same job. A quiet pane, old `lastWriteAt` or slipping ETA is
+not failure; the timeout applies per operation, not to the whole deploy.
+
+| Status | Action |
+|---|---|
+| `runner.state: running`, including `stage: starting` with no receipt yet | Keep polling the existing run ID; never launch another apply. |
+| `runner.state: finished` / `failed` | The apply process exited (zero / nonzero); inspect the receipt and bounded log before choosing verification or recovery. `finished` alone is not fresh-reload proof. |
+| `runner.state: died` or no runner | Inspect the run ID, log, receipt and writer lease; a crashed process can appear `running` until its two-minute lease expires. Receipt progress or PID alone cannot prove a writer stopped. |
+| `writing` / `written`, `outcome: uncertain` | No save is recorded; while the writer lives, wait. After it stops, use the guarded recovery below. |
+| `saving`, `save-uncertain`, `saved-unverified`, `saved`, `tag-pending` | A save may exist: after the writer exits, use `figma-cli make deploy --file KEY --verify "RECEIPT"` only. Never replay apply/save. |
+| `deployed`, `outcome: ok` | After the writer exits, run the same `--verify` command and require `fresh-sandbox-verified`; publication remains separate. |
+| `aborted`, `saved-drift`, `tag-clash`, or an unexplained state | Stop and report the receipt/error; do not auto-retry. |
+
+For a terminal, transient `DEPLOY_WRITE_FAILED` before saving, recover the
+exact Make tab, confirm the old writer exited, then resume **once** within
+the authorized deploy: `figma-cli make deploy --file KEY --resume "RECEIPT"`.
+A tab crash/reload can preserve pending writes; do not discard them or start
+a fresh plan. Resume rechecks the saved version, every planned path and
+unrelated pending changes before writing. Run resume/verify as tracked
+background jobs with PID, log and exit result, keeping the same short status
+polls; `--detach` currently accepts **apply only**, and the old apply runner
+record does not track these recovery jobs. If resume refuses or fails again,
+stop and ask the operator; `--abort` restores/deletes paths and needs a
+separate recovery decision. An uncertain save always goes to `--verify`.
+
+**One Figma writer at a time.** The local per-key lease guards apply, resume,
+verify and abort; coordinate other agents/devices too. Never delete lock files
+or clear a live lease. Only after inspecting status, the run ID, log and receipt
+and waiting for the lease to expire, add `--clear-stale-lock` to the chosen
+receipt recovery command, never to a blind re-apply. For AtomicAUI vendor
+restrictions, see [Choose the saving mode](#choose-the-saving-mode).
+
 ## When something fails
 
 Do not replay a timed-out write or entire failed import. Files listed in
