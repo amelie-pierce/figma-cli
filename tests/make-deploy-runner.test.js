@@ -1,7 +1,7 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -258,18 +258,25 @@ it('a killed runner becomes died after lease expiry, regardless of its recorded 
 });
 
 
-it('the real CLI handshake records a fake-client failure without connecting', async t => {
+it('public detached CLI starts from a path with spaces using an offline client', async t => {
   const home = temporary(t);
-  const clientUrl = pathToFileURL(resolve('src/make-client.js')).href;
-  const cliUrl = pathToFileURL(resolve('src/index.js')).href;
-  const path = childFixture(home, `
-    import { MakeClient } from ${JSON.stringify(clientUrl)};
-    process.env.HOME = ${JSON.stringify(home)}; process.env.USERPROFILE = ${JSON.stringify(home)};
+  const cliRoot = join(home, 'CLI with spaces');
+  mkdirSync(cliRoot);
+  cpSync(resolve('src'), join(cliRoot, 'src'), { recursive: true });
+  cpSync(resolve('package.json'), join(cliRoot, 'package.json'));
+  symlinkSync(resolve('node_modules'), join(cliRoot, 'node_modules'), 'dir');
+  const preload = childFixture(cliRoot, `
+    import { MakeClient } from './src/make-client.js';
     MakeClient.prototype.connect = async () => { throw new Error('offline fake client failure'); };
-    await import(${JSON.stringify(cliUrl)});
-  `);
-  const result = await startDetachedDeploy('key', ['make', 'deploy', '--file', 'key', '--apply', 'unused'], { home, cliEntry: path });
-  const record = await waitFor(() => { const value = readDeployRunner('key', { home }); return value?.finishedAt && value; });
+  `, 'offline-client.mjs');
+  const cli = spawnSync(process.execPath, [join(cliRoot, 'src/index.js'), 'make', 'deploy', '--file', 'key', '--apply', 'unused', '--detach'], {
+    encoding: 'utf8',
+    env: { ...process.env, HOME: home, USERPROFILE: home, CI: '1', NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` },
+  });
+  assert.equal(cli.status, 0, cli.stderr);
+  const result = JSON.parse(cli.stdout);
+  const record = await waitFor(() => { const value = readDeployRunner('key', { home, runId: result.runId }); return value?.finishedAt && value; });
+  assert.equal(record.pid, result.pid);
   assert.equal(record.state, 'failed');
   assert.equal(record.exitCode, 1);
   assert.match(readFileSync(result.logPath, 'utf8'), /offline fake client failure/);
