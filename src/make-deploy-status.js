@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { deployDir, readReceipt } from './make-deploy.js';
 import { readDeployRunner } from './make-deploy-runner.js';
 
-// A receipt-only view. No Make client, git, or GitHub operation is involved.
+// A local receipt and runner view. No Make client, git, or GitHub operation is involved.
 export function deployStatus({ receiptPath, fileKey, home } = {}) {
   if (receiptPath && fileKey) throw new Error('Choose --receipt or --file.');
   if (!receiptPath && !fileKey) throw new Error('Deploy status requires --receipt <path> or --file <key>.');
