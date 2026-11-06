@@ -13,7 +13,7 @@ import { buildStatus, checkWriteMode, linkedRepo, MODE_CODES, parseMarker, readG
 import { CONFIRM_FLAG, runModeChange } from '../make-mode.js';
 import { DEPLOY_CODES, deployAbort, deployApply, deployPlan, deployResume, deployVerify } from '../make-deploy.js';
 import { deployStatus, formatDeployStatus } from '../make-deploy-status.js';
-import { acquireDeployLock, awaitDetachedStart, finishDeployRunner, releaseDeployLock, requireDetachedOwner, startDeployHeartbeat, startDetachedDeploy } from '../make-deploy-runner.js';
+import { acquireDeployLock, acknowledgeDetachedStart, awaitDetachedStart, guardDeployClient, finishDeployRunner, releaseDeployLock, requireDetachedOwner, startDeployHeartbeat, startDetachedDeploy } from '../make-deploy-runner.js';
 import { requestedKey } from '../make-transport.js';
 import { cloneProject, install, LOCAL_CODES, noticeStore, pullProject, repoRoot, resolveCloneRepo, runDev } from '../make-local.js';
 import { afterManifestPath, applySync, exportDelta, parsePackage, parseRequest, planSync, syncReceipt, validatePlanDigest, VENDOR_ROOT,
@@ -77,12 +77,13 @@ function sessionWrite(command) {
   return modeGated(target(command).option('--session-only', 'Accept that the write is lost when the file is reopened unless saved in Make'));
 }
 // `readOnly` commands add a --timeout hint to a timeout error.
-async function withClient(options, fn, write, paths = [], { readOnly = false, wallBudget = false } = {}) {
+async function withClient(options, fn, write, paths = [], { readOnly = false, wallBudget = false, assertOwner } = {}) {
   let client;
   try {
     refuseMarkerPaths(paths);
     if (write && write !== 'mode') requireSessionOnly(write, options);
     client = new MakeClient({ timeoutMs: Math.min(120000, options.timeout) });
+    if (assertOwner) client.transport = guardDeployClient(client.transport, assertOwner);
     const run = async () => {
       if (write) {
         const { warning, note } = await checkWriteMode(client, options);
@@ -428,7 +429,7 @@ const deployCommand = make.command('deploy').description('Deploy GitHub main fro
   .option('--resume <receipt>', 'Finish an interrupted deploy that saved no version: write the remaining paths, then save')
   .option('--abort <receipt>', 'Undo an interrupted deploy that saved no version: restore the written paths from backups')
   .option('--detach', 'Run --apply in a detached local process and return its PID and log path')
-  .option('--clear-stale-lock', 'After inspecting status, clear a lock whose owner process died')
+  .option('--clear-stale-lock', 'After inspecting status, take over an expired writer lease')
   .option('--override-make', 'Plan against Make\'s served working tree, including Make edits; requires per-plan confirmation to apply')
   .option('--delete-make-only', 'With --override-make, delete eligible Make-only files (backed up first)')
   .option('--confirm-override <digest-prefix>', 'Required with an override apply: first 12 characters of its reviewed plan digest')
@@ -462,8 +463,11 @@ const deployCommand = make.command('deploy').description('Deploy GitHub main fro
     try {
       if (runnerToken) { await awaitDetachedStart(); lock = requireDetachedOwner(key, runnerToken); }
       else if (chosen.length) lock = acquireDeployLock(key, { clearStale: options.clearStaleLock });
-      if (lock) stopHeartbeat = startDeployHeartbeat(lock);
+      if (lock) stopHeartbeat = await startDeployHeartbeat(lock);
+      if (runnerToken) await acknowledgeDetachedStart();
+      stopHeartbeat?.assert();
       await withClient(options, async client => {
+        if (lock) client = guardDeployClient(client, stopHeartbeat.assert);
         const deps = { warn: message => console.error(`warning: ${message}`), progress: message => console.error(`deploy: ${message}`) };
         const dir = options.dir ? resolve(options.dir) : undefined;
         if (options.apply) return report(await deployApply(client, { dir, planPath: options.apply, confirmOverride: options.confirmOverride,
@@ -477,10 +481,10 @@ const deployCommand = make.command('deploy').description('Deploy GitHub main fro
         if (options.abort) return report(await deployAbort(client, { receiptPath: options.abort }, deps));
         report(await deployPlan(client, { dir, overrideMake: options.overrideMake === true,
           deleteMakeOnly: options.deleteMakeOnly === true }, deps));
-      });
+      }, undefined, [], { assertOwner: stopHeartbeat?.assert });
     } catch (error) { failure(error); }
     finally {
-      stopHeartbeat?.();
+      await stopHeartbeat?.();
       if (runnerToken) {
         try { finishDeployRunner(key, runnerToken, process.exitCode || 0); }
         finally { if (lock) releaseDeployLock(lock); }

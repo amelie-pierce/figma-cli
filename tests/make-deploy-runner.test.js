@@ -1,154 +1,277 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { acquireDeployLock, finishDeployRunner, readDeployRunner, releaseDeployLock, renewDeployLock, startDetachedDeploy } from '../src/make-deploy-runner.js';
+import { acquireDeployLock, readDeployRunner, releaseDeployLock, renewDeployLock, startDetachedDeploy, startDeployHeartbeat, guardDeployClient } from '../src/make-deploy-runner.js';
+import { assertDeployLock, deployLockPath, readDeployLease } from '../src/make-deploy-lock.js';
 import { deployStatus } from '../src/make-deploy-status.js';
 import { deployDir, planDigest, RECEIPT_SCHEMA } from '../src/make-deploy.js';
 
-const lockPath = home => join(deployDir(home), 'locks', createHash('sha256').update('key').digest('hex'));
 const moduleUrl = pathToFileURL(resolve('src/make-deploy-runner.js')).href;
 const waitFor = async read => {
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 250; i++) {
     const value = read();
     if (value) return value;
     await delay(20);
   }
   assert.fail('Timed out waiting for the offline child');
 };
-const expire = home => {
-  const path = join(lockPath(home), 'owner.json');
-  writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), leaseUntil: Date.now() - 1 }));
+const temporary = t => {
+  const home = mkdtempSync(join(tmpdir(), 'deploy-runner-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  return home;
+};
+const childFixture = (home, body, name = 'child with spaces.mjs') => {
+  const path = join(home, name);
+  writeFileSync(path, body);
+  return path;
+};
+const childRun = (t, path) => {
+  const child = spawn(process.execPath, [path], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let output = '', errors = '';
+  child.stdout.on('data', bytes => { output += bytes; });
+  child.stderr.on('data', bytes => { errors += bytes; });
+  const closed = new Promise(resolve => child.once('close', code => resolve({ code, output, errors })));
+  t.after(async () => { if (child.exitCode === null) child.kill('SIGKILL'); await closed; });
+  return { child, closed, output: () => output };
 };
 
-it('refuses a second writer during a live lease and recovers after expiry', t => {
-  const home = mkdtempSync(join(tmpdir(), 'deploy-lease-'));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
+it('refuses apply, verify, resume and abort before connecting when a live lease exists', t => {
+  const home = temporary(t);
   const first = acquireDeployLock('key', { home });
+  for (const action of ['apply', 'verify', 'resume', 'abort']) {
+    const cli = spawnSync(process.execPath, ['src/index.js', 'make', 'deploy', '--file', 'key', `--${action}`, 'unused'],
+      { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home } });
+    assert.equal(cli.status, 1);
+    assert.match(cli.stderr, /DEPLOY_WRITER_LOCKED/);
+  }
   assert.throws(() => acquireDeployLock('key', { home, clearStale: true }), { code: 'DEPLOY_WRITER_LOCKED' });
-  const cli = spawnSync(process.execPath, ['src/index.js', 'make', 'deploy', '--file', 'key', '--apply', 'unused-plan'],
-    { encoding: 'utf8', env: { ...process.env, HOME: home } });
-  assert.equal(cli.status, 1);
-  assert.match(cli.stderr, /DEPLOY_WRITER_LOCKED/);
-  const before = JSON.parse(readFileSync(join(lockPath(home), 'owner.json'), 'utf8')).leaseUntil;
+  const before = readDeployLease('key', { home });
   renewDeployLock(first);
-  assert.ok(JSON.parse(readFileSync(join(lockPath(home), 'owner.json'), 'utf8')).leaseUntil >= before);
-  expire(home);
+  assert.notEqual(readDeployLease('key', { home }).revision, before.revision);
+  releaseDeployLock(first);
+});
+
+it('recovers expired ownership explicitly and rejects old owner renew/release', async t => {
+  const home = temporary(t);
+  const first = acquireDeployLock('key', { home, leaseMs: 100 });
+  await delay(150);
   assert.throws(() => acquireDeployLock('key', { home }), { code: 'DEPLOY_STALE_LOCK' });
-  const recovered = acquireDeployLock('key', { home, clearStale: true });
+  const replacement = acquireDeployLock('key', { home, clearStale: true });
   releaseDeployLock(first);
-  assert.throws(() => acquireDeployLock('key', { home, clearStale: true }), { code: 'DEPLOY_WRITER_LOCKED' });
-  releaseDeployLock(recovered);
+  assert.throws(() => renewDeployLock(first), { code: 'DEPLOY_WRITER_LOCKED' });
+  assertDeployLock(replacement);
+  releaseDeployLock(replacement);
 });
 
-it('recovers ownerless and partial locks only after the lease window', t => {
-  const home = mkdtempSync(join(tmpdir(), 'deploy-ownerless-'));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  const lock = lockPath(home);
-  mkdirSync(lock, { recursive: true });
-  assert.throws(() => acquireDeployLock('key', { home, clearStale: true }), { code: 'DEPLOY_WRITER_LOCKED' });
-  const old = new Date(Date.now() - 300000);
-  utimesSync(lock, old, old);
-  const first = acquireDeployLock('key', { home, clearStale: true });
-  assert.ok(statSync(join(lock, 'owner.json')).isFile());
-  releaseDeployLock(first);
-  mkdirSync(lock);
-  writeFileSync(join(lock, 'owner.json'), '{"fileKey":');
-  utimesSync(join(lock, 'owner.json'), old, old);
-  utimesSync(lock, old, old);
-  const second = acquireDeployLock('key', { home, clearStale: true });
-  releaseDeployLock(second);
-});
-
-it('two stale clearers cannot remove the replacement lease', async t => {
-  const home = mkdtempSync(join(tmpdir(), 'deploy-race-'));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  acquireDeployLock('key', { home });
-  expire(home);
-  const fixture = join(home, 'contender.mjs');
-  writeFileSync(fixture, [
-    `import { acquireDeployLock, releaseDeployLock } from ${JSON.stringify(moduleUrl)};`,
-    `process.stdin.once('data', () => { try { const owner = acquireDeployLock('key', { home: ${JSON.stringify(home)}, clearStale: true });`,
-    "process.stdout.write('acquired\\n'); setTimeout(() => { releaseDeployLock(owner); process.exit(0); }, 500); }",
-    "catch (error) { process.stdout.write(error.code + '\\n'); process.exit(0); } });",
-  ].join('\n'));
-  const run = () => new Promise((resolveRun, reject) => {
-    const child = spawn(process.execPath, [fixture], { stdio: ['pipe', 'pipe', 'pipe'] });
-    let output = '';
-    child.stdout.on('data', bytes => { output += bytes; });
-    child.once('error', reject);
-    child.once('close', () => resolveRun(output.trim()));
-    child.stdin.write('go\n');
-  });
-  assert.deepEqual((await Promise.all([run(), run()])).sort(), ['DEPLOY_WRITER_LOCKED', 'acquired']);
-});
-
-it('uses leases without ps or PID identity', t => {
-  const home = mkdtempSync(join(tmpdir(), 'deploy-no-ps-'));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  const fixture = join(home, 'no-ps.mjs');
-  writeFileSync(fixture, `import { acquireDeployLock, releaseDeployLock } from ${JSON.stringify(moduleUrl)};\n` +
-    `const owner = acquireDeployLock('key', { home: ${JSON.stringify(home)} }); releaseDeployLock(owner); process.stdout.write('ok');\n`);
-  const child = spawnSync(process.execPath, [fixture], { encoding: 'utf8', env: { ...process.env, PATH: '' } });
-  assert.equal(child.status, 0, child.stderr);
-  assert.equal(child.stdout, 'ok');
-});
-
-it('retains two detached runner records and selects by sequence despite clock rollback', async t => {
-  const home = mkdtempSync(join(tmpdir(), 'deploy-history-'));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  const dir = deployDir(home);
+it('a crash before publication leaves no blocking ownerless or partial lock', t => {
+  const home = temporary(t);
+  const dir = deployLockPath('key', home);
   mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, '.unpublished.tmp'), '{"token":');
+  const owner = acquireDeployLock('key', { home });
+  assertDeployLock(owner);
+  releaseDeployLock(owner);
+  // Corruption of published state must fail closed, unlike an ignored temp file.
+  writeFileSync(join(dir, `${readDeployLease('key', { home }).revision}.json`), '{');
+  assert.throws(() => acquireDeployLock('key', { home, clearStale: true }), /Unreadable deploy lease/);
+});
+
+for (const stale of [false, true]) it(`${stale ? 'stale takeover' : 'initial acquire'} races publish only one owner`, async t => {
+  const home = temporary(t);
+  if (stale) { acquireDeployLock('key', { home, leaseMs: 100 }); await delay(150); }
+  const path = childFixture(home, `
+    import fs from 'node:fs';
+    import { acquireDeployLock } from ${JSON.stringify(moduleUrl)};
+    process.stdout.write('ready\\n');
+    fs.readSync(0, Buffer.alloc(1), 0, 1, null);
+    try {
+      acquireDeployLock('key', { home: ${JSON.stringify(home)}, clearStale: true });
+      process.stdout.write('acquired\\n');
+      fs.readSync(0, Buffer.alloc(1), 0, 1, null);
+    } catch (error) { process.stdout.write(error.code + '\\n'); }
+  `);
+  const runs = [childRun(t, path), childRun(t, path)];
+  await waitFor(() => runs.every(run => run.output().includes('ready')));
+  for (const run of runs) run.child.stdin.write('g');
+  await waitFor(() => runs.every(run => /acquired|DEPLOY_WRITER_LOCKED/.test(run.output())));
+  assert.equal(runs.filter(run => run.output().includes('acquired')).length, 1);
+  assert.equal(runs.filter(run => run.output().includes('DEPLOY_WRITER_LOCKED')).length, 1);
+  for (const run of runs) if (run.output().includes('acquired')) run.child.stdin.write('q');
+  for (const run of runs) assert.equal((await run.closed).code, 0);
+});
+
+it('a stale clearer paused at CAS cannot replace the next live lease', async t => {
+  const home = temporary(t);
+  acquireDeployLock('key', { home, leaseMs: 100 });
+  await delay(150);
+  const path = childFixture(home, `
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const link = fs.linkSync;
+    fs.linkSync = (...args) => {
+      process.stdout.write('observed\\n');
+      fs.readSync(0, Buffer.alloc(1), 0, 1, null);
+      return link(...args);
+    };
+    syncBuiltinESMExports();
+    const { acquireDeployLock } = await import(${JSON.stringify(moduleUrl)});
+    try { acquireDeployLock('key', { home: ${JSON.stringify(home)}, clearStale: true }); }
+    catch (error) { process.stdout.write(error.code); }
+  `);
+  const run = childRun(t, path);
+  await waitFor(() => run.output().includes('observed'));
+  const replacement = acquireDeployLock('key', { home, clearStale: true });
+  run.child.stdin.write('g');
+  const result = await run.closed;
+  assert.equal(result.code, 0, result.errors);
+  assert.match(result.output, /DEPLOY_WRITER_LOCKED/);
+  assertDeployLock(replacement);
+  releaseDeployLock(replacement);
+});
+
+it('renews during a synchronous command longer than the lease, without ps or PID identity', async t => {
+  const home = temporary(t);
+  const owner = acquireDeployLock('key', { home, leaseMs: 1000 });
+  const stop = await startDeployHeartbeat(owner);
+  try {
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { acquireDeployLock } from ${JSON.stringify(moduleUrl)};
+      await new Promise(resolve => setTimeout(resolve, 2200));
+      try { acquireDeployLock('key', { home: ${JSON.stringify(home)}, clearStale: true }); process.exitCode = 2; }
+      catch (error) { process.stdout.write(error.code); }
+    `], { encoding: 'utf8', env: { ...process.env, PATH: '' } });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, 'DEPLOY_WRITER_LOCKED');
+    stop.assert();
+  } finally { await stop(); releaseDeployLock(owner); }
+});
+
+it('lost ownership fences later client operations while still allowing close', async t => {
+  const home = temporary(t);
+  const owner = acquireDeployLock('key', { home, leaseMs: 100 });
+  let writes = 0, closed = false;
+  const client = guardDeployClient({ write() { writes++; }, close() { closed = true; } }, () => assertDeployLock(owner));
+  client.write();
+  await delay(150);
+  const replacement = acquireDeployLock('key', { home, clearStale: true });
+  assert.throws(() => client.write(), /ownership changed/);
+  client.close();
+  assert.equal(writes, 1);
+  assert.equal(closed, true);
+  releaseDeployLock(replacement);
+});
+
+const readyChild = (home, body = '', before = '') => childFixture(home, `
+  import { awaitDetachedStart, acknowledgeDetachedStart, requireDetachedOwner, startDeployHeartbeat, finishDeployRunner, releaseDeployLock } from ${JSON.stringify(moduleUrl)};
+  import { writeFileSync, existsSync } from 'node:fs';
+  import { join } from 'node:path';
+  ${before}
+  await awaitDetachedStart();
+  const owner = requireDetachedOwner('key', process.env.FIGMA_CLI_DEPLOY_RUNNER_TOKEN, { home: ${JSON.stringify(home)} });
+  const stop = await startDeployHeartbeat(owner);
+  await acknowledgeDetachedStart();
+  ${body}
+  await stop();
+  finishDeployRunner('key', owner.token, 0, { home: owner.home, runId: owner.runId });
+  releaseDeployLock(owner);
+`);
+
+it('retains per-run history and associates receipts by ID despite clock rollback', async t => {
+  const home = temporary(t);
+  const dir = deployDir(home);
   const plan = { files: [{ path: 'src/a.ts' }] };
   const base = { schema: RECEIPT_SCHEMA, plan, planDigest: planDigest(plan), fileKey: 'key',
     stage: 'writing', outcome: 'uncertain', completedWrites: [{ path: 'src/a.ts' }] };
-  const fixture = join(home, 'receipt child with spaces.mjs');
-  writeFileSync(fixture, [
-    "import { writeFileSync } from 'node:fs';",
-    `import { join } from 'node:path'; import { finishDeployRunner, releaseDeployLock } from ${JSON.stringify(moduleUrl)};`,
-    `process.once('message', () => { const runId = process.env.FIGMA_CLI_DEPLOY_RUNNER_ID;`,
-    `const sequence = Number(process.env.FIGMA_CLI_DEPLOY_SEQUENCE); const receipt = { ...${JSON.stringify(base)},`,
-    "runnerId: runId, sequence, at: sequence === 1 ? '2030-01-01T00:00:00.000Z' : '2000-01-01T00:00:00.000Z' };",
-    `writeFileSync(join(${JSON.stringify(dir)}, runId + '.json'), JSON.stringify(receipt));`,
-    `finishDeployRunner('key', process.env.FIGMA_CLI_DEPLOY_RUNNER_TOKEN, 0, { home: ${JSON.stringify(home)} });`,
-    `releaseDeployLock({ key: 'key', token: process.env.FIGMA_CLI_DEPLOY_RUNNER_TOKEN, runId, home: ${JSON.stringify(home)} }); process.disconnect(); });`,
-  ].join('\n'));
-  const first = await startDetachedDeploy('key', [], { home, cliEntry: fixture });
-  const firstRunner = readDeployRunner('key', { home });
-  const firstReceipt = join(dir, firstRunner.id + '.json');
-  await waitFor(() => existsSync(firstReceipt) && readDeployRunner('key', { home, runId: firstRunner.id })?.finishedAt && !existsSync(lockPath(home)));
-  const second = await startDetachedDeploy('key', [], { home, cliEntry: fixture });
-  const secondRunner = readDeployRunner('key', { home });
-  const secondReceipt = join(dir, secondRunner.id + '.json');
-  await waitFor(() => existsSync(secondReceipt) && readDeployRunner('key', { home, runId: secondRunner.id })?.finishedAt && !existsSync(lockPath(home)));
-  assert.notEqual(firstRunner.id, secondRunner.id);
+  const path = readyChild(home, `
+    const sequence = Number(process.env.FIGMA_CLI_DEPLOY_SEQUENCE);
+    const receipt = { ...${JSON.stringify(base)}, runnerId: owner.runId, sequence,
+      at: sequence === 1 ? '2030-01-01T00:00:00.000Z' : '2000-01-01T00:00:00.000Z' };
+    while (!existsSync(join(${JSON.stringify(home)}, 'release-' + sequence))) await new Promise(resolve => setTimeout(resolve, 20));
+    writeFileSync(join(${JSON.stringify(dir)}, owner.runId + '.json'), JSON.stringify(receipt));
+  `);
+  const first = await startDetachedDeploy('key', [], { home, cliEntry: path });
+  const firstReceipt = join(dir, first.runId + '.json');
+  writeFileSync(join(home, 'release-1'), 'go');
+  await waitFor(() => readDeployRunner('key', { home, runId: first.runId })?.finishedAt && !readDeployLease('key', { home }).token);
+  const firstRecord = readDeployRunner('key', { home, runId: first.runId });
+  const second = await startDetachedDeploy('key', [], { home, cliEntry: path });
+  const starting = deployStatus({ fileKey: 'key', home });
+  assert.equal(starting.receiptPath, null);
+  assert.equal(starting.runner.id, second.runId);
+  const secondReceipt = join(dir, second.runId + '.json');
+  writeFileSync(join(home, 'release-2'), 'go');
+  await waitFor(() => readDeployRunner('key', { home, runId: second.runId })?.finishedAt && !readDeployLease('key', { home }).token);
+  assert.notEqual(first.runId, second.runId);
   assert.notEqual(first.logPath, second.logPath);
-  assert.equal(deployStatus({ receiptPath: firstReceipt, home }).runner.id, firstRunner.id);
-  assert.equal(deployStatus({ receiptPath: secondReceipt, home }).runner.id, secondRunner.id);
+  assert.equal(deployStatus({ receiptPath: firstReceipt, home }).runner.id, first.runId);
+  assert.equal(deployStatus({ receiptPath: secondReceipt, home }).runner.id, second.runId);
   assert.equal(deployStatus({ fileKey: 'key', home }).receiptPath, secondReceipt);
-  assert.equal(readDeployRunner('key', { home, runId: firstRunner.id }).state, 'finished');
+  assert.deepEqual(readDeployRunner('key', { home, runId: first.runId }), firstRecord);
 });
 
-it('starts the public CLI child from a path containing spaces', async t => {
-  const root = mkdtempSync(join(process.cwd(), 'tests', 'deploy cli with spaces-'));
-  const home = mkdtempSync(join(tmpdir(), 'deploy-cli-space-'));
-  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
-  symlinkSync(resolve('src'), join(root, 'src'), 'dir');
-  symlinkSync(resolve('package.json'), join(root, 'package.json'));
-  const entry = join(root, 'src', 'index.js');
-  const cli = spawnSync(process.execPath, ['--preserve-symlinks', '--preserve-symlinks-main', entry,
-    'make', 'deploy', '--file', 'key', '--apply', 'missing-plan', '--detach', '--timeout', '500'],
-  { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home, FIGMA_PORT: '65534' } });
-  assert.equal(cli.status, 0, cli.stderr);
-  const runner = await waitFor(() => {
-    const value = readDeployRunner('key', { home });
-    return value?.finishedAt && value;
-  });
-  assert.equal(runner.state, 'failed');
-  assert.equal(runner.exitCode, 1);
+it('waits for child readiness across delayed initialization and paths with spaces', async t => {
+  const home = temporary(t);
+  const path = readyChild(home, '', 'await new Promise(resolve => setTimeout(resolve, 300));');
+  const result = await startDetachedDeploy('key', [], { home, cliEntry: path });
+  const record = await waitFor(() => { const value = readDeployRunner('key', { home }); return value?.finishedAt && value; });
+  assert.equal(record.id, result.runId);
+  assert.equal(record.state, 'finished');
+  assert.equal(record.exitCode, 0);
+  await waitFor(() => !readDeployLease('key', { home }).token);
+});
+
+for (const [name, body, pattern] of [
+  ['early exit', 'process.exit(7);', /(?:exited|disconnected) before startup/],
+  ['never ready', 'setInterval(() => {}, 1000);', /startup timed out/],
+]) it(`records ${name} as failure and releases only after the child stops`, async t => {
+  const home = temporary(t);
+  await assert.rejects(startDetachedDeploy('key', [], { home, cliEntry: childFixture(home, body), startupMs: 500 }), pattern);
+  assert.equal(readDeployRunner('key', { home }).state, 'failed');
+  const record = readDeployRunner('key', { home });
+  assert.match(record.error, pattern);
+  assert.ok(Number.isInteger(record.pid));
+  if (name === 'early exit') assert.equal(record.exitCode, 7);
+  else { assert.equal(record.exitCode, null); assert.equal(record.signal, 'SIGKILL'); }
+  assert.equal(readDeployLease('key', { home }).token, null);
+});
+
+it('a killed runner becomes died after lease expiry, regardless of its recorded PID', async t => {
+  const home = temporary(t);
+  const path = childFixture(home, `
+    import { awaitDetachedStart, acknowledgeDetachedStart } from ${JSON.stringify(moduleUrl)};
+    await awaitDetachedStart(); await acknowledgeDetachedStart(); process.exit(9);
+  `);
+  const result = await startDetachedDeploy('key', [], { home, cliEntry: path });
+  const dir = join(deployDir(home), 'runners');
+  const recordPath = join(dir, readdirSync(dir)[0], result.runId + '.json');
+  const record = JSON.parse(readFileSync(recordPath, 'utf8'));
+  writeFileSync(recordPath, JSON.stringify({ ...record, pid: process.pid }));
+  const now = Date.now;
+  t.mock.method(Date, 'now', () => now() + 180000);
+  assert.equal(readDeployRunner('key', { home }).state, 'died');
+  assert.equal(readDeployRunner('key', { home }).alive, false);
+});
+
+
+it('the real CLI handshake records a fake-client failure without connecting', async t => {
+  const home = temporary(t);
+  const clientUrl = pathToFileURL(resolve('src/make-client.js')).href;
+  const cliUrl = pathToFileURL(resolve('src/index.js')).href;
+  const path = childFixture(home, `
+    import { MakeClient } from ${JSON.stringify(clientUrl)};
+    process.env.HOME = ${JSON.stringify(home)}; process.env.USERPROFILE = ${JSON.stringify(home)};
+    MakeClient.prototype.connect = async () => { throw new Error('offline fake client failure'); };
+    await import(${JSON.stringify(cliUrl)});
+  `);
+  const result = await startDetachedDeploy('key', ['make', 'deploy', '--file', 'key', '--apply', 'unused'], { home, cliEntry: path });
+  const record = await waitFor(() => { const value = readDeployRunner('key', { home }); return value?.finishedAt && value; });
+  assert.equal(record.state, 'failed');
+  assert.equal(record.exitCode, 1);
+  assert.match(readFileSync(result.logPath, 'utf8'), /offline fake client failure/);
+  await waitFor(() => !readDeployLease('key', { home }).token);
 });

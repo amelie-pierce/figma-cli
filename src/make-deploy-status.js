@@ -46,5 +46,5 @@ export function formatDeployStatus(status) {
     `started: ${status.startedAt}\nlast write: ${status.lastWriteAt || 'none'}\n` +
     `average: ${status.averageSecondsPerFile == null ? 'unknown' : `${status.averageSecondsPerFile}s/file`}\n` +
     `expected finish: ${status.eta || 'unknown'}\nreceipt: ${status.receiptPath || 'pending'}\n` +
-    `runner: ${status.runner ? `${status.runner.state} (PID ${status.runner.pid}, exit ${status.runner.exitCode ?? 'pending'})\nlog: ${status.runner.logPath}` : 'none'}`;
+    `runner: ${status.runner ? `${status.runner.state} (run ${status.runner.id}, PID ${status.runner.pid}, exit ${status.runner.exitCode ?? status.runner.signal ?? 'pending'})\nlog: ${status.runner.logPath}` : 'none'}`;
 }

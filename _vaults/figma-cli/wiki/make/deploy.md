@@ -16,7 +16,7 @@ Updated 2026-10-29: saved-inventory fallback implementation and fake coverage.
 Updated 2026-10-29: status marks a missing saved commit even when Make claims a baseline; verify waits for the reloaded code panel and sandbox filesystem before reading.
 Updated 2026-11-04: tracked `.npmrc`, mode-only and reloaded Make-only override follow-ups; warn-only deploy reminders.
 Updated 2026-11-06: deploy progress and local status are documented in the command reference.
-Updated 2026-11-06: detached apply, local writer lock and runner status.
+Updated 2026-11-06: detached apply, immutable lease CAS, independent heartbeat, startup handshake and per-run status.
 
 # make deploy
 Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI files first (`DEPLOY_VENDOR_EDITED`); see [vendor-lock.md](vendor-lock.md).
@@ -25,15 +25,37 @@ Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI fil
 
 See [Deploying main to Make](../../../../REFERENCE.md#deploying-main-to-make-make-deploy) for progress output and receipt status commands. The implementation is in `src/make-deploy.js` and `src/make-deploy-status.js`; fake receipt coverage is in `tests/make-deploy-status.test.js`.
 
-`--apply PLAN --detach` starts a child for the guarded apply and returns its PID
-and private log path. A writer lock keyed by the exact Make file key is taken
-before connecting, so apply, verify, resume and abort refuse a concurrent writer.
-A dead owner leaves a stale lock; an inspected retry can clear it with
-`--clear-stale-lock` (`src/make-deploy-runner.js:27`,
-`src/commands/make.js:447`). Runner records and logs live beside receipts, and
-status reports running, finished, failed or died from the runner record and PID
-without a Make connection (`src/make-deploy-status.js:7`). The fake child and
-lock tests are in `tests/make-deploy-runner.test.js:12`.
+`--apply PLAN --detach` records the run before sending `start`, waits for a
+child readiness/started handshake, then returns its run ID, PID and private log
+path. Startup failures stop the child before releasing ownership
+(`src/make-deploy-runner.js:71`, `src/make-deploy-runner.js:139`).
+
+Apply, verify, resume and abort take a local lease keyed by the exact Make file
+key before connecting (`src/commands/make.js:464`). Each immutable lock state has
+a random revision; exclusive hard-link publication installs one successor for
+that observed revision. Acquisition, renewal, stale takeover and release share
+this CAS protocol. A delayed stale clearer cannot delete the next owner; a crash
+before publication leaves an inert temporary file rather than a blocking
+ownerless lock (`src/make-deploy-lock.js:12`, `src/make-deploy-lock.js:31`). The
+journal is retained, and unsupported filesystems fail closed.
+
+Renewal runs in a separate worker thread even when install/build blocks the main
+thread. The CLI checks ownership before client and transport calls, but close
+remains allowed for cleanup (`src/make-deploy-lock.js:75`,
+`src/make-deploy-lock.js:99`, `src/commands/make.js:87`). Status uses the lease and
+random owner/run identity, never PID or `ps`; after a crash it can report running
+until the lease expires. Inspected recovery uses `--clear-stale-lock` only after
+expiry (`src/make-deploy-lock.js:43`, `src/make-deploy-runner.js:48`). This is a
+local-state lock, not coordination across machines.
+
+Run records/logs are keyed by random run ID and retained across subsequent runs.
+Receipts resolve their runner by ID; a monotonic sequence selects the newest
+recorded local operation without timestamp ordering (`src/make-deploy-runner.js:26`,
+`src/make-deploy-status.js:17`). Fake-only tests cover concurrent acquisition,
+paused stale-CAS takeover, renewal across a blocking command, failed/delayed IPC
+startup, lost-owner fencing and run history under clock rollback
+(`tests/make-deploy-runner.test.js:50`). Windows uses portable Node filesystem and
+worker primitives; a Windows execution and live Figma delivery are **UNVERIFIED**.
 
 ## Current-main override
 
