@@ -4,15 +4,16 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { acquireDeployLock, readDeployRunner, releaseDeployLock, renewDeployLock, startDetachedDeploy, startDeployHeartbeat, guardDeployClient } from '../src/make-deploy-runner.js';
 import { assertDeployLock, deployLockPath, readDeployLease } from '../src/make-deploy-lock.js';
 import { deployStatus } from '../src/make-deploy-status.js';
 import { deployDir, planDigest, RECEIPT_SCHEMA } from '../src/make-deploy.js';
 
-const moduleUrl = pathToFileURL(resolve('src/make-deploy-runner.js')).href;
+const projectFile = path => fileURLToPath(new URL(`../${path}`, import.meta.url));
+const moduleUrl = new URL('../src/make-deploy-runner.js', import.meta.url).href;
 const waitFor = async read => {
   for (let i = 0; i < 250; i++) {
     const value = read();
@@ -45,7 +46,7 @@ it('refuses apply, verify, resume and abort before connecting when a live lease 
   const home = temporary(t);
   const first = acquireDeployLock('key', { home });
   for (const action of ['apply', 'verify', 'resume', 'abort']) {
-    const cli = spawnSync(process.execPath, ['src/index.js', 'make', 'deploy', '--file', 'key', `--${action}`, 'unused'],
+    const cli = spawnSync(process.execPath, [projectFile('src/index.js'), 'make', 'deploy', '--file', 'key', `--${action}`, 'unused'],
       { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home } });
     assert.equal(cli.status, 1);
     assert.match(cli.stderr, /DEPLOY_WRITER_LOCKED/);
@@ -156,7 +157,7 @@ it('does not persist death when a paused renewal wins the lease revision', async
   mkdirSync(runners, { recursive: true });
   writeFileSync(join(runners, `${owner.runId}.json`), JSON.stringify({ fileKey: 'key', id: owner.runId,
     sequence: 1, token: owner.token, state: 'running', exitCode: null, finishedAt: null }));
-  const lockUrl = pathToFileURL(resolve('src/make-deploy-lock.js')).href;
+  const lockUrl = new URL('../src/make-deploy-lock.js', import.meta.url).href;
   const renewal = childRun(t, childFixture(home, `
     import fs from 'node:fs';
     import { syncBuiltinESMExports } from 'node:module';
@@ -333,9 +334,9 @@ it('public detached CLI starts from a path with spaces using an offline client',
   const home = temporary(t);
   const cliRoot = join(home, 'CLI with spaces');
   mkdirSync(cliRoot);
-  cpSync(resolve('src'), join(cliRoot, 'src'), { recursive: true });
-  cpSync(resolve('package.json'), join(cliRoot, 'package.json'));
-  symlinkSync(resolve('node_modules'), join(cliRoot, 'node_modules'), 'dir');
+  cpSync(projectFile('src'), join(cliRoot, 'src'), { recursive: true });
+  cpSync(projectFile('package.json'), join(cliRoot, 'package.json'));
+  symlinkSync(projectFile('node_modules'), join(cliRoot, 'node_modules'), 'junction');
   const preload = childFixture(cliRoot, `
     import { MakeClient } from './src/make-client.js';
     MakeClient.prototype.connect = async () => { throw new Error('offline fake client failure'); };

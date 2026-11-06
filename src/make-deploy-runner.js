@@ -158,7 +158,7 @@ export async function startDetachedDeploy(key, argv, { home, clearStale = false,
       await new Promise((resolveExit, rejectExit) => {
         child.once('exit', resolveExit);
         child.once('error', rejectExit);
-        if (!child.kill('SIGKILL')) rejectExit(new Error('Could not stop detached deploy; writer lease retained.'));
+        child.kill('SIGKILL');
       });
     }
     finishDeployRunner(key, owner.token, child?.signalCode ? null : child?.exitCode ?? 1,
