@@ -264,10 +264,8 @@ separate recovery decision. An uncertain save always goes to `--verify`.
 verify and abort; coordinate other agents/devices too. Never delete lock files
 or clear a live lease. Only after inspecting status, the run ID, log and receipt
 and waiting for the lease to expire, add `--clear-stale-lock` to the chosen
-receipt recovery command, never to a blind re-apply. In team mode,
-AtomicAUI vendor files reach Make **only through `make deploy`** after the
-official release upgrade and merge; never hand-write or copy vendor files
-into Make to bypass a failed deploy.
+receipt recovery command, never to a blind re-apply. For AtomicAUI vendor
+restrictions, see [Choose the saving mode](#choose-the-saving-mode).
 
 ## When something fails
 

@@ -98,8 +98,7 @@ start apply with `--detach`, record PID/log/plan/receipt, and poll local
 failure. Keep one writer at a time, including during recovery; after a
 transient pre-save failure, resume the same receipt once within the deploy's
 authorization, then stop and ask if it fails again. `--detach` is apply-only.
-Release-installed AtomicAUI vendor files reach Make only through this deploy
-flow after the official upgrade and merge, never by direct writes.
+For AtomicAUI vendor restrictions, see [Good habits to nudge](#good-habits-to-nudge).
 
 | The person says | Run | Then tell them |
 |---|---|---|
