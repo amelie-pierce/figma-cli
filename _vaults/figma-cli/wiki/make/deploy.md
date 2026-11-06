@@ -17,7 +17,6 @@ Updated 2026-10-29: status marks a missing saved commit even when Make claims a 
 Updated 2026-11-04: tracked `.npmrc`, mode-only and reloaded Make-only override follow-ups; warn-only deploy reminders.
 Updated 2026-11-06: deploy progress and local status are documented in the command reference.
 Updated 2026-11-06: detached deploy details live in the command reference and runner modules.
-Updated 2026-11-06: agent-neutral long-deploy recipe and bounded recovery guidance.
 
 # make deploy
 Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI files first (`DEPLOY_VENDOR_EDITED`); see [vendor-lock.md](vendor-lock.md).
@@ -31,11 +30,6 @@ Detached startup, per-run records and terminal results are implemented in
 `src/make-deploy-lock.js` and `src/make-deploy-heartbeat.js`. The offline coverage
 is in `tests/make-deploy-runner.test.js`. Windows execution and live Figma
 delivery are **UNVERIFIED**.
-
-The agent procedure lives in the [Make skill's long-deploy recipe](../../../../skills/figma-make/SKILL.md#long-team-mode-deploys-all-agents-including-codex),
-linked from the team skill. It requires checking installed command availability
-before starting and distinguishes apply's runner record from recovery jobs
-(`skills/figma-make/SKILL.md:216`).
 
 ## Current-main override
 

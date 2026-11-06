@@ -92,12 +92,7 @@ Reply in Lavish with what you posted. A general remark goes in as-is.
 Merged `main` reaches the Make file only through `make deploy`, run in the clone
 on an up-to-date `main` (`figma-cli make pull` first). `KEY` is the Make file key.
 
-For long deploys, follow the [long-deploy recipe](../figma-make/SKILL.md#long-team-mode-deploys-all-agents-including-codex):
-start apply with `--detach`, record PID/log/plan/receipt, and poll local
-`make deploy status` every 30–60 seconds in short calls. A quiet pane is not
-failure. Keep one writer at a time, including during recovery; after a
-transient pre-save failure, resume the same receipt once within the deploy's
-authorization, then stop and ask if it fails again. `--detach` is apply-only.
+For long deploys and recovery, follow the [long-deploy recipe](../figma-make/SKILL.md#long-team-mode-deploys-all-agents-including-codex).
 For AtomicAUI vendor restrictions, see [Good habits to nudge](#good-habits-to-nudge).
 
 | The person says | Run | Then tell them |
