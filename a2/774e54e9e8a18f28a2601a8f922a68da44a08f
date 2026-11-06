@@ -14,6 +14,7 @@ _vaults/figma-cli/wiki/make/deploy.md
   s_16a7fa47f8eee4::t_9f4054980410a7 39
   s_1951762204c0d8::t_c70c19eaa0bca4 28
   s_db510feb968a18::t_f2248007f66c32 20
+  s_88e925441b3161::t_5af1e71d93586b 35-38
 src/make-deploy-status.js
   s_16a7fa47f8eee4::t_249d66fb18da6d 1-3,5,8,10-16,18,26-30,35-36,38-39,42-44,46-47,50
 REFERENCE.md
@@ -24,6 +25,7 @@ skills/figma-make-team/SKILL.md
   s_db510feb968a18::t_42e247776f0cdf 95-103,107-108,110
 skills/figma-make/SKILL.md
   s_db510feb968a18::t_42e247776f0cdf 216-232,234-236,238-242,244,246-262,268-271
+  s_88e925441b3161::t_b2b1a7036cf37e 233,237,243,245,263-267
 ---
 {
   "schema_version": "authorship/3.0.0",
@@ -43,6 +45,14 @@ skills/figma-make/SKILL.md
       "agent_id": {
         "tool": "codex",
         "id": "01a1acfa-18b9-7200-a0c1-e99ebd264c40",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_88e925441b3161": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1aeb0-91d2-7b43-a064-ea0a6749a4e6",
         "model": "gpt-6-sol"
       },
       "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
