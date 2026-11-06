@@ -157,10 +157,9 @@ client VFS, sandbox and tree must agree instead
 tree takes the same fallback only while no editor, or another file's editor, is
 mounted. A mounted editor of the file must still match.
 If the views still disagree at the timeout, the error names each view's state.
-Each durable write or delete gets a 30000 ms base CDP wait plus 100 ms per KiB
-of its request. `--write-timeout MS` changes that base on `make write`,
-`make delete`, and `make deploy` (1–120000 ms). The operation's `--timeout`
-still caps every call, including its read-backs. Durable reads may use the
+Each durable write or delete, including its preflight and read-back, gets a
+30000 ms base CDP wait plus 100 ms per KiB of its request. `--timeout` may
+raise that wait and still caps the whole operation. Durable reads may use the
 remaining operation time. A timeout leaves the existing uncertain-outcome
 checks and receipt recovery in force; it never replays the write automatically.
 `--vendor-tree-fallback` (only for `src/vendor/atomic-aui/` paths, as `make sync`
@@ -445,7 +444,6 @@ written, the `receiptPath`.
 ```bash
 figma-cli make deploy --file KEY [--dir CLONE]   # dry run (default)
 figma-cli make deploy --file KEY [--dir CLONE] --apply PLAN
-figma-cli make deploy --file KEY [--dir CLONE] --apply PLAN --write-timeout 45000
 figma-cli make deploy --file KEY [--dir CLONE] --apply PLAN --detach
 figma-cli make deploy --file KEY [--dir CLONE] --verify RECEIPT
 figma-cli make deploy --file KEY [--dir CLONE] --resume RECEIPT

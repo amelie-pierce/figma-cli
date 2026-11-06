@@ -915,38 +915,62 @@ test('a CDP call gets a timeout scaled to the file it carries, never past the op
   await client._durable({ type: 'write', path: 'src/small.ts', content: 'x', expectedContent: null }, deadline);
   await client._durable({ type: 'read', path: 'src/big.scss' }, deadline);
   await client._durable({ type: 'write', path: 'src/big.scss', content: 'x'.repeat(2 * 1024 * 1024), expectedContent: null }, Date.now() + 30000);
-  await client._treeTransport(deadline, true).evaluate('true');
-  await client._editor({ type: 'inspect' }, deadline, true);
-  assert.ok(seen[0] >= 30000 + 377 * 100 && seen[0] < 85000, `large write: ${seen[0]}`);
-  assert.ok(seen[1] >= 30000 && seen[1] < 40000, `small write: ${seen[1]}`);
+  await client._treeTransport(deadline).evaluate('true');
+  await client._editor({ type: 'inspect' }, deadline);
+  assert.ok(seen[0] > 110000 && seen[0] <= 120000, `large write: ${seen[0]}`);
+  assert.ok(seen[1] > 110000 && seen[1] <= 120000, `small write: ${seen[1]}`);
   assert.ok(seen[2] > 110000 && seen[2] <= 120000, `read waits up to the deadline: ${seen[2]}`);
   assert.ok(seen[3] <= 30000, `capped by the deadline: ${seen[3]}`);
-  assert.ok(seen[4] >= 30000 && seen[4] < 40000, `tree read-back: ${seen[4]}`);
-  assert.ok(seen[5] >= 30000 && seen[5] < 40000, `editor read-back: ${seen[5]}`);
+  assert.ok(seen[4] >= 5000 && seen[4] < 30000, `ordinary tree read: ${seen[4]}`);
+  assert.ok(seen[5] >= 5000 && seen[5] < 30000, `ordinary editor read: ${seen[5]}`);
 });
 
-test('a slow fake Make page completes a durable write within its configured per-call wait', async () => {
+test('a slow fake Make page completes a durable write within its operation deadline', async () => {
   const client = new MakeClient({ transport: { close() {}, timeoutMs: 5000,
     evaluate: async (_expression, { timeoutMs }) => {
-      assert.ok(timeoutMs >= 15000);
+      assert.ok(timeoutMs >= 30000);
       await new Promise(resolve => setTimeout(resolve, 10500));
       return { accepted: true };
-    } }, timeoutMs: 30000, writeTimeoutMs: 15000 });
+    } }, timeoutMs: 30000 });
   client.fileKey = 'ScratchKey';
   assert.deepEqual(await client._durable({ type: 'write', path: 'src/App.tsx', content: 'x', expectedContent: null }, Date.now() + 30000),
     { accepted: true });
 });
 
-test('a hung fake Make page stops at the configured write timeout', async () => {
+test('a hung fake Make page stops at the operation deadline', async () => {
   const client = new MakeClient({ transport: { close() {}, timeoutMs: 0,
-    evaluate: (_expression, { timeoutMs }) => new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Make CDP Runtime.evaluate timed out')), timeoutMs);
-    }) }, timeoutMs: 30000, writeTimeoutMs: 1000 });
+    evaluate: () => new Promise(() => {}) }, timeoutMs: 30000 });
   client.fileKey = 'ScratchKey';
   const started = Date.now();
-  await assert.rejects(client._durable({ type: 'write', path: 'src/App.tsx', content: 'x', expectedContent: null }, Date.now() + 30000),
-    /Runtime.evaluate timed out/);
+  await assert.rejects(client._durable({ type: 'write', path: 'src/App.tsx', content: 'x', expectedContent: null }, Date.now() + 1000),
+    /Make operation timed out/);
   assert.ok(Date.now() - started < 5000);
+});
+
+test('durable write and delete keep the busy-page wait through preflight and read-back', async () => {
+  const { client } = fakeClient({ original: 'old' });
+  client._operation = async (fn, options) => {
+    assert.deepEqual(options, { durable: true });
+    return fn(Date.now() + 30000);
+  };
+  await client.writeDurable('src/App.tsx', 'new', { expectedSha256: hash('old') });
+  await client.deleteDurable('src/App.tsx', { expectedSha256: hash('new') });
+
+  const waits = [];
+  const scoped = new MakeClient({ transport: { close() {}, timeoutMs: 5000,
+    send: async () => ({}), evaluate: async (_expression, { timeoutMs }) => {
+      waits.push(timeoutMs);
+      return { codeReady: true, needsFilesTab: false, state: state(), editorCount: 1, content: 'new' };
+    } }, timeoutMs: 30000 });
+  scoped.fileKey = 'ScratchKey';
+  await scoped._operation(async deadline => {
+    await scoped._ensureCode(deadline);
+    await scoped._driftState(deadline);
+    await scoped._treeTransport(deadline).evaluate('true');
+    await scoped._editor({ type: 'inspect' }, deadline);
+  }, { durable: true });
+  assert.ok(waits.every(wait => wait >= 28000), `durable waits: ${waits}`);
+  assert.equal(scoped._durableOperation, false);
 });
 
 // A deep existing file whose post-write read-back outlives the operation

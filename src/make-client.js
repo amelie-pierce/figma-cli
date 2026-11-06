@@ -226,19 +226,16 @@ async function writePrivateFile(path, content) {
 
 /** Source editing through the observed Make Code UI, isolated from Design. */
 export class MakeClient {
-  constructor({ transport = new MakeTransport(), timeoutMs = 15000, writeTimeoutMs = 30000, maxEntries = 10000 } = {}) {
+  constructor({ transport = new MakeTransport(), timeoutMs = 15000, maxEntries = 10000 } = {}) {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 120000) {
       throw new Error('Make timeoutMs must be between 1 and 120000.');
     }
-    if (!Number.isInteger(writeTimeoutMs) || writeTimeoutMs < 1 || writeTimeoutMs > 120000) {
-      throw new Error('Make writeTimeoutMs must be between 1 and 120000.');
-    }
     this.transport = transport;
     this.timeoutMs = timeoutMs;
-    this.writeTimeoutMs = writeTimeoutMs;
     this.maxEntries = maxEntries;
     this.fileKey = null;
     this._running = false;
+    this._durableOperation = false;
     // Optional absolute deadline shared by every operation (status budget).
     this.deadline = Infinity;
   }
@@ -275,22 +272,24 @@ export class MakeClient {
   // `bytes` is the size the call returns, when larger than what it sends;
   // never past the operation's deadline.
   async _evaluate(expression, deadline, { bytes = 0, write = false } = {}) {
+    const durable = write || this._durableOperation;
     const timeoutMs = Math.min(this._remaining(deadline), Math.max(this.transport.timeoutMs || 0,
-      payloadTimeout(Math.max(expression.length, bytes), write ? this.writeTimeoutMs : 5000)));
+      payloadTimeout(Math.max(expression.length, bytes), durable ? 30000 : 5000), durable ? this.timeoutMs : 0));
     return this._bounded(() => this.transport.evaluate(guardExpression(this.fileKey, expression), { timeoutMs }), deadline);
   }
 
   // A read returns a whole file of unknown size, so it may take the
   // operation's remaining time; reads change nothing.
-  _editor(action, deadline, writeReadback = false) {
+  _editor(action, deadline) {
     return this._evaluate(`(${makeEditorAction.toString()})(${JSON.stringify(action)}, (${makeWorkspace.toString()}))`, deadline,
-      { bytes: action.type === 'read' ? Infinity : 0, write: writeReadback });
+      { bytes: action.type === 'read' ? Infinity : 0 });
   }
 
-  async _operation(callback) {
+  async _operation(callback, { durable = false } = {}) {
     if (!this.fileKey) throw new Error('Make client is not connected.');
     if (this._running) throw new Error('A Make operation is already running on this client.');
     this._running = true;
+    this._durableOperation = durable;
     const deadline = Math.min(Date.now() + this.timeoutMs, this.deadline);
     // Hidden Desktop tabs do not update their virtualized tree. Temporarily
     // emulate focus in this renderer and reserve time to restore it, without
@@ -337,6 +336,7 @@ export class MakeClient {
         }
       } finally {
         this._running = false;
+        this._durableOperation = false;
       }
     }
     if (operationError) throw operationError;
@@ -353,13 +353,13 @@ export class MakeClient {
     return state;
   }
 
-  _treeTransport(deadline, writeReadback = false) {
-    return { evaluate: (expression) => this._evaluate(expression, deadline, { write: writeReadback }) };
+  _treeTransport(deadline) {
+    return { evaluate: (expression) => this._evaluate(expression, deadline) };
   }
 
-  async _select(path, deadline, writeReadback = false) {
+  async _select(path, deadline) {
     await this._ensureCode(deadline);
-    return this._bounded(() => selectMakeFile(this._treeTransport(deadline, writeReadback), path, {
+    return this._bounded(() => selectMakeFile(this._treeTransport(deadline), path, {
       timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
     }), deadline);
   }
@@ -367,10 +367,10 @@ export class MakeClient {
   // Make renders some files, such as Markdown, as a preview with no source
   // editor. With editorWaitMs, a selected file whose editor has not appeared
   // by then is reported as MAKE_NO_EDITOR instead of waiting for the deadline.
-  async _read(path, deadline, { editorWaitMs, writeReadback = false } = {}) {
-    const entry = await this._select(path, deadline, writeReadback);
+  async _read(path, deadline, { editorWaitMs } = {}) {
+    const entry = await this._select(path, deadline);
     const editorDeadline = editorWaitMs == null ? deadline : Math.min(deadline, Date.now() + editorWaitMs);
-    let state = await this._editor({ type: 'inspect' }, deadline, writeReadback);
+    let state = await this._editor({ type: 'inspect' }, deadline);
     while (state.editorCount === 0) {
       if (Date.now() >= editorDeadline && editorDeadline < deadline) {
         const error = new Error(`Make shows no source editor for ${path}.`);
@@ -378,9 +378,9 @@ export class MakeClient {
         throw error;
       }
       await this._bounded(() => new Promise(resolve => setTimeout(resolve, 50)), deadline);
-      state = await this._editor({ type: 'inspect' }, deadline, writeReadback);
+      state = await this._editor({ type: 'inspect' }, deadline);
     }
-    const { content } = await this._editor({ type: 'read', entry }, deadline, writeReadback);
+    const { content } = await this._editor({ type: 'read', entry }, deadline);
     return { entry, content, sha256: sha256(content) };
   }
 
@@ -548,8 +548,8 @@ export class MakeClient {
       { bytes: action.type === 'read' ? Infinity : 0, write: action.type !== 'read' });
   }
 
-  _sourceTree(deadline, expectedChange, onSnapshot, writeReadback = false) {
-    return listMakeFiles(this._treeTransport(deadline, writeReadback), {
+  _sourceTree(deadline, expectedChange, onSnapshot) {
+    return listMakeFiles(this._treeTransport(deadline), {
       timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries, expectedChange, onSnapshot,
     });
   }
@@ -626,7 +626,7 @@ export class MakeClient {
           treeState.rows = prefetched.rows;
         } else {
           tree = await this._sourceTree(deadline, expectedChange, treeState
-            ? snapshot => { treeState.entries = snapshot.entries; treeState.rows = snapshot.rows; } : undefined, true);
+            ? snapshot => { treeState.entries = snapshot.entries; treeState.rows = snapshot.rows; } : undefined);
         }
         const inTree = tree.some(entry => entry.kind === 'file' && entry.path === path);
         if (expectedContent === null) {
@@ -651,14 +651,14 @@ export class MakeClient {
             // they fall back only while the mounted editor provably shows
             // another path.
             try {
-              const editor = await this._read(path, deadline, { editorWaitMs: EDITOR_WAIT_MS, writeReadback: true });
+              const editor = await this._read(path, deadline, { editorWaitMs: EDITOR_WAIT_MS });
               observed.editor = editor.content === expectedContent ? 'matched' : 'different';
               if (observed.editor === 'matched') return 'editor-tree-vfs-sandbox-matched';
               editorDisagreed = true;
             } catch (error) {
               if (!editorDisagreed && error.code === 'MAKE_NO_EDITOR') return 'tree-vfs-sandbox-matched';
               if (!editorDisagreed && error.code === 'MAKE_TREE_VIEWPORT') {
-                const editor = await this._editor({ type: 'inspect' }, deadline, true);
+                const editor = await this._editor({ type: 'inspect' }, deadline);
                 if (editor.editorCount === 0 || (editor.editorPath && editor.editorPath !== path)) {
                   return 'tree-vfs-sandbox-matched';
                 }
@@ -746,7 +746,7 @@ export class MakeClient {
         throw error;
       }
       return { ...written, verification, persistence: 'pending-version' };
-    });
+    }, { durable: true });
   }
 
   // writeDurable, then, when its outcome is uncertain (most often a read-back
@@ -852,7 +852,7 @@ export class MakeClient {
       }
       return { fileKey: this.fileKey, path, beforeSha256: sha256(original.content), backupPath,
         verification: 'tree-vfs-sandbox-delete-matched', persistence: 'pending-version' };
-    });
+    }, { durable: true });
   }
 
   // Make does not list these paths as pending, so their bytes are captured

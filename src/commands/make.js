@@ -62,11 +62,6 @@ function timeout(value) {
   if (!Number.isInteger(n) || n < 500 || n > 120000) throw new Error('Timeout must be 500–120000 milliseconds');
   return n;
 }
-function writeTimeout(value) {
-  const n = Number(value);
-  if (!Number.isInteger(n) || n < 1 || n > 120000) throw new Error('Write timeout must be 1–120000 milliseconds');
-  return n;
-}
 function target(command, timeoutDefault = 15000, timeoutDescription = 'Maximum operation time') {
   return command.requiredOption('--file <key-or-url>', 'Exact open Make file key or URL')
     .option('--timeout <ms>', timeoutDescription, timeout, timeoutDefault);
@@ -87,7 +82,7 @@ async function withClient(options, fn, write, paths = [], { readOnly = false, wa
   try {
     refuseMarkerPaths(paths);
     if (write && write !== 'mode') requireSessionOnly(write, options);
-    client = new MakeClient({ timeoutMs: Math.min(120000, options.timeout), writeTimeoutMs: options.writeTimeout });
+    client = new MakeClient({ timeoutMs: Math.min(120000, options.timeout) });
     if (assertOwner) client.transport = guardDeployClient(client.transport, assertOwner);
     const run = async () => {
       if (write) {
@@ -266,7 +261,6 @@ target(make.command('status').description('Read-only project status: Make saved 
   }, undefined, [], { readOnly: true, wallBudget: true }));
 
 modeGated(target(make.command('write <path>').description('Write one git-mode Make file through Make client VFS; save-version is required to persist it'), 120000)
-  .option('--write-timeout <ms>', 'Base CDP wait for each durable write (default: 30000 ms; capped by --timeout)', writeTimeout)
   .requiredOption('--from <source>', 'Existing UTF-8 file, or - for stdin')
   .option('--expected-sha256 <hash>', 'Required for an existing file; omit for a new file')
   .option('--backup-dir <directory>', 'Private backup directory for replaced content')
@@ -282,7 +276,6 @@ modeGated(target(make.command('write <path>').description('Write one git-mode Ma
   }, 'mode', [path])));
 
 modeGated(target(make.command('delete <path>').description('Delete one git-mode Make file through Make client VFS after backup; save-version is required'), 120000)
-  .option('--write-timeout <ms>', 'Base CDP wait for the durable delete (default: 30000 ms; capped by --timeout)', writeTimeout)
   .requiredOption('--expected-sha256 <hash>', 'Current SHA-256 of the file to remove')
   .option('--backup-dir <directory>', 'Private backup directory')
   .option('--first-version', 'Only for a git-mode file with no saved version yet; refused once it has one')
@@ -430,7 +423,6 @@ modeCommand(mode.command('solo').description('Remove the team marker, save that 
 const deployCommand = make.command('deploy').description('Deploy GitHub main from a local clone into a team-mode Make file (repo admins only). Dry run by default')
   .option('--file <key-or-url>', 'Exact open Make file key or URL (required for deploy writes)')
   .option('--timeout <ms>', 'Maximum operation time', timeout, 120000)
-  .option('--write-timeout <ms>', 'Base CDP wait for each durable write (default: 30000 ms; capped by --timeout)', writeTimeout)
   .option('--dir <path>', 'Local clone of the repo, on a clean main equal to GitHub\'s (default: current folder)')
   .option('--apply <plan>', 'Re-plan, check the reviewed plan, then write and save; normal deploy tags now, override requires --verify first')
   .option('--verify <receipt>', 'Reload Make, confirm the deployed version and tree, and finalise an uncertain receipt (pushes a missing tag)')

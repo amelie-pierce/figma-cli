@@ -6,7 +6,7 @@ date: 2026-11-04
 
 # Large source files, size warnings and filesystem timeouts
 
-Updated 2026-11-06: durable CDP writes now use a 30 s base wait and an optional `--write-timeout` setting (`src/make-client.js:49`, `src/commands/make.js:429`). Their read-backs still have the operation's remaining time, and the operation deadline remains authoritative (`src/make-client.js:275`).
+Updated 2026-11-06: durable write and delete operations use a 30 s base CDP wait plus 100 ms per KiB, raised by `--timeout` and bounded by the operation deadline (`src/make-client.js:275`). This includes preflight and read-back evaluations.
 
 Make reads and saves every file whole over its filesystem socket ([filesystem-bridge.md](filesystem-bridge.md)). One huge module is therefore the slowest request in any status, deploy or read. The ADC prototype's `Workspace.tsx` (about 493 KB, about 372 KB of it inline base64 PNGs) made `make status` fail with "Make filesystem request timed out; outcome is unknown."
 
