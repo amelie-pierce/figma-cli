@@ -1,0 +1,39 @@
+tests/make-deploy-runner.test.js
+  s_ba62e2a9c628de::t_abdad7b9a7b04b 171-185,190-209,211-212,214,217-239
+  s_ba62e2a9c628de::t_c79c09ad719266 4,9-10,16,23-40,43-44,46-51,53,55,59-64,66-68,71-81,84-105,108-170,240-276
+src/commands/make.js
+  s_ba62e2a9c628de::t_f00abadadb46f1 16,80,86,432,466-468,470,484,487
+src/make-deploy-status.js
+  s_ba62e2a9c628de::t_8ebf4a0091dfb4 49
+src/make-deploy-heartbeat.js
+  s_ba62e2a9c628de::t_7c4d4ade0bcde7 1-16
+_vaults/figma-cli/wiki/make/deploy.md
+  s_ba62e2a9c628de::t_8ebf4a0091dfb4 53
+  s_ba62e2a9c628de::t_ba7ed65f4c6913 19,28-52,54-58
+src/make-deploy-lock.js
+  s_ba62e2a9c628de::t_7c4d4ade0bcde7 1-101,103-104
+  s_ba62e2a9c628de::t_8b135e93616cd9 102
+REFERENCE.md
+  s_ba62e2a9c628de::t_8ebf4a0091dfb4 470
+  s_ba62e2a9c628de::t_440757235bb862 454-456,462-469,471-477,487
+src/make-deploy-runner.js
+  s_ba62e2a9c628de::t_abdad7b9a7b04b 62,67,132-133
+  s_ba62e2a9c628de::t_f00abadadb46f1 7,71,77,79,82-83,85,87-119,122-131,134-136,140-147,149-152
+  s_ba62e2a9c628de::t_7c4d4ade0bcde7 3,8,13,26-29,40,45,50,56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "416eb2ea2f34d240fbebff40405f77e672eb2a95",
+  "prompts": {},
+  "sessions": {
+    "s_ba62e2a9c628de": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1ae4f-0c49-7902-a9e4-4b90d143d015",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
