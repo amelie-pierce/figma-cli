@@ -1,10 +1,12 @@
 ---
 title: Large source files, size warnings and filesystem timeouts
-description: Why one huge Make source file times out, the 5 s per-request cap that caused the ADC status timeouts, and the warn-only size rule on make status and make deploy.
+description: Make filesystem request timeouts and the warn-only size rule on make status and make deploy.
 date: 2026-11-04
 ---
 
 # Large source files, size warnings and filesystem timeouts
+
+Durable CDP waits are separate from the filesystem request cap below; see [the command reference](../../../../REFERENCE.md#make-saving-modes-and-write-commands).
 
 Make reads and saves every file whole over its filesystem socket ([filesystem-bridge.md](filesystem-bridge.md)). One huge module is therefore the slowest request in any status, deploy or read. The ADC prototype's `Workspace.tsx` (about 493 KB, about 372 KB of it inline base64 PNGs) made `make status` fail with "Make filesystem request timed out; outcome is unknown."
 

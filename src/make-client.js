@@ -44,10 +44,9 @@ function saveRequest(title, expectedPaths) {
   if (!Array.isArray(expectedPaths) || !expectedPaths.length || expectedPaths.length > 1000) throw new Error('Provide the exact expected changed-file set.');
   expectedPaths.forEach(sourcePath);
 }
-// Each CDP call has its own timeout (the transport's, 5 s by default), which a
-// call carrying a whole file into the page can outlast: a 377 KB stylesheet
-// write timed out live. Such a call gets 100 ms more per KiB it carries.
-const payloadTimeout = bytes => 5000 + Math.ceil(bytes / 1024) * 100;
+// A busy Make renderer can take much longer than the transport's 5 s default
+// to answer even a small durable write. Preserve the per-KiB allowance.
+const payloadTimeout = (bytes, baseMs = 5000) => baseMs + Math.ceil(bytes / 1024) * 100;
 // How long one filesystem request may wait for Make's reply: the
 // operation's remaining time, less a second so the request reports its own
 // timeout before the CDP call does. A short budget keeps it all.
@@ -236,6 +235,7 @@ export class MakeClient {
     this.maxEntries = maxEntries;
     this.fileKey = null;
     this._running = false;
+    this._durableOperation = false;
     // Optional absolute deadline shared by every operation (status budget).
     this.deadline = Infinity;
   }
@@ -272,7 +272,9 @@ export class MakeClient {
   // `bytes` is the size the call returns, when larger than what it sends;
   // never past the operation's deadline.
   async _evaluate(expression, deadline, { bytes = 0 } = {}) {
-    const timeoutMs = Math.min(this._remaining(deadline), Math.max(this.transport.timeoutMs || 0, payloadTimeout(Math.max(expression.length, bytes))));
+    const durable = this._durableOperation;
+    const timeoutMs = Math.min(this._remaining(deadline), Math.max(this.transport.timeoutMs || 0,
+      payloadTimeout(Math.max(expression.length, bytes), durable ? 30000 : 5000), durable ? this.timeoutMs : 0));
     return this._bounded(() => this.transport.evaluate(guardExpression(this.fileKey, expression), { timeoutMs }), deadline);
   }
 
@@ -283,10 +285,11 @@ export class MakeClient {
       { bytes: action.type === 'read' ? Infinity : 0 });
   }
 
-  async _operation(callback) {
+  async _operation(callback, { durable = false } = {}) {
     if (!this.fileKey) throw new Error('Make client is not connected.');
     if (this._running) throw new Error('A Make operation is already running on this client.');
     this._running = true;
+    this._durableOperation = durable;
     const deadline = Math.min(Date.now() + this.timeoutMs, this.deadline);
     // Hidden Desktop tabs do not update their virtualized tree. Temporarily
     // emulate focus in this renderer and reserve time to restore it, without
@@ -333,6 +336,7 @@ export class MakeClient {
         }
       } finally {
         this._running = false;
+        this._durableOperation = false;
       }
     }
     if (operationError) throw operationError;
@@ -742,7 +746,7 @@ export class MakeClient {
         throw error;
       }
       return { ...written, verification, persistence: 'pending-version' };
-    });
+    }, { durable: true });
   }
 
   // writeDurable, then, when its outcome is uncertain (most often a read-back
@@ -848,7 +852,7 @@ export class MakeClient {
       }
       return { fileKey: this.fileKey, path, beforeSha256: sha256(original.content), backupPath,
         verification: 'tree-vfs-sandbox-delete-matched', persistence: 'pending-version' };
-    });
+    }, { durable: true });
   }
 
   // Make does not list these paths as pending, so their bytes are captured
