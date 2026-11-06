@@ -271,8 +271,8 @@ export class MakeClient {
 
   // `bytes` is the size the call returns, when larger than what it sends;
   // never past the operation's deadline.
-  async _evaluate(expression, deadline, { bytes = 0, write = false } = {}) {
-    const durable = write || this._durableOperation;
+  async _evaluate(expression, deadline, { bytes = 0 } = {}) {
+    const durable = this._durableOperation;
     const timeoutMs = Math.min(this._remaining(deadline), Math.max(this.transport.timeoutMs || 0,
       payloadTimeout(Math.max(expression.length, bytes), durable ? 30000 : 5000), durable ? this.timeoutMs : 0));
     return this._bounded(() => this.transport.evaluate(guardExpression(this.fileKey, expression), { timeoutMs }), deadline);
@@ -545,7 +545,7 @@ export class MakeClient {
 
   _durable(action, deadline) {
     return this._evaluate(`(${makeDurablePageAction.toString()})(${JSON.stringify(action)})`, deadline,
-      { bytes: action.type === 'read' ? Infinity : 0, write: action.type !== 'read' });
+      { bytes: action.type === 'read' ? Infinity : 0 });
   }
 
   _sourceTree(deadline, expectedChange, onSnapshot) {

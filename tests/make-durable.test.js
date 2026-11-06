@@ -906,43 +906,56 @@ test('reload waits for a new document and its Make state', async () => {
   assert.equal(result.persistence.savedVersion, base);
 });
 
-test('a CDP call gets a timeout scaled to the file it carries, never past the operation deadline', async () => {
+test('durable CDP calls use the operation budget while saves keep ordinary waits', async () => {
   const seen = [];
-  const client = new MakeClient({ transport: { timeoutMs: 5000, close() {}, evaluate: async (expression, options) => { seen.push(options.timeoutMs); return { exists: false }; } }, timeoutMs: 120000 });
+  const client = new MakeClient({ transport: { timeoutMs: 5000, close() {}, send: async () => ({}),
+    evaluate: async (expression, options) => { seen.push(options.timeoutMs); return { exists: false }; } }, timeoutMs: 120000 });
   client.fileKey = 'ScratchKey';
-  const deadline = Date.now() + 120000;
-  await client._durable({ type: 'write', path: 'src/big.scss', content: 'x'.repeat(377 * 1024), expectedContent: null }, deadline);
-  await client._durable({ type: 'write', path: 'src/small.ts', content: 'x', expectedContent: null }, deadline);
-  await client._durable({ type: 'read', path: 'src/big.scss' }, deadline);
-  await client._durable({ type: 'write', path: 'src/big.scss', content: 'x'.repeat(2 * 1024 * 1024), expectedContent: null }, Date.now() + 30000);
-  await client._treeTransport(deadline).evaluate('true');
-  await client._editor({ type: 'inspect' }, deadline);
+  await client._operation(async deadline => {
+    seen.length = 0;
+    await client._durable({ type: 'write', path: 'src/big.scss', content: 'x'.repeat(377 * 1024), expectedContent: null }, deadline);
+    await client._durable({ type: 'write', path: 'src/small.ts', content: 'x', expectedContent: null }, deadline);
+    await client._durable({ type: 'read', path: 'src/big.scss' }, deadline);
+    await client._durable({ type: 'write', path: 'src/big.scss', content: 'x'.repeat(2 * 1024 * 1024), expectedContent: null }, Date.now() + 30000);
+    await client._treeTransport(deadline).evaluate('true');
+    await client._editor({ type: 'inspect' }, deadline);
+  }, { durable: true });
   assert.ok(seen[0] > 110000 && seen[0] <= 120000, `large write: ${seen[0]}`);
   assert.ok(seen[1] > 110000 && seen[1] <= 120000, `small write: ${seen[1]}`);
   assert.ok(seen[2] > 110000 && seen[2] <= 120000, `read waits up to the deadline: ${seen[2]}`);
   assert.ok(seen[3] <= 30000, `capped by the deadline: ${seen[3]}`);
-  assert.ok(seen[4] >= 5000 && seen[4] < 30000, `ordinary tree read: ${seen[4]}`);
-  assert.ok(seen[5] >= 5000 && seen[5] < 30000, `ordinary editor read: ${seen[5]}`);
+  assert.ok(seen[4] > 110000 && seen[4] <= 120000, `tree read-back: ${seen[4]}`);
+  assert.ok(seen[5] > 110000 && seen[5] <= 120000, `editor read-back: ${seen[5]}`);
+  await client._operation(async deadline => {
+    seen.length = 0;
+    await client._durable({ type: 'save', title: 'Version', expectedPaths: ['src/small.ts'] }, deadline);
+    await client._treeTransport(deadline).evaluate('true');
+  });
+  assert.equal(seen.length, 2);
+  assert.ok(seen.every(wait => wait >= 5000 && wait < 30000), `ordinary waits: ${seen}`);
 });
 
 test('a slow fake Make page completes a durable write within its operation deadline', async () => {
-  const client = new MakeClient({ transport: { close() {}, timeoutMs: 5000,
+  let calls = 0;
+  const client = new MakeClient({ transport: { close() {}, send: async () => ({}), timeoutMs: 5000,
     evaluate: async (_expression, { timeoutMs }) => {
-      assert.ok(timeoutMs >= 30000);
+      if (++calls === 1) return { accepted: true };
+      assert.ok(timeoutMs >= 28000);
       await new Promise(resolve => setTimeout(resolve, 10500));
       return { accepted: true };
     } }, timeoutMs: 30000 });
   client.fileKey = 'ScratchKey';
-  assert.deepEqual(await client._durable({ type: 'write', path: 'src/App.tsx', content: 'x', expectedContent: null }, Date.now() + 30000),
+  assert.deepEqual(await client._operation(deadline => client._durable({ type: 'write', path: 'src/App.tsx', content: 'x', expectedContent: null }, deadline), { durable: true }),
     { accepted: true });
 });
 
 test('a hung fake Make page stops at the operation deadline', async () => {
-  const client = new MakeClient({ transport: { close() {}, timeoutMs: 0,
-    evaluate: () => new Promise(() => {}) }, timeoutMs: 30000 });
+  let calls = 0;
+  const client = new MakeClient({ transport: { close() {}, send: async () => ({}), timeoutMs: 0,
+    evaluate: () => ++calls === 1 ? { accepted: true } : new Promise(() => {}) }, timeoutMs: 1500 });
   client.fileKey = 'ScratchKey';
   const started = Date.now();
-  await assert.rejects(client._durable({ type: 'write', path: 'src/App.tsx', content: 'x', expectedContent: null }, Date.now() + 1000),
+  await assert.rejects(client._operation(deadline => client._durable({ type: 'write', path: 'src/App.tsx', content: 'x', expectedContent: null }, deadline), { durable: true }),
     /Make operation timed out/);
   assert.ok(Date.now() - started < 5000);
 });
