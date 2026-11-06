@@ -157,10 +157,11 @@ client VFS, sandbox and tree must agree instead
 tree takes the same fallback only while no editor, or another file's editor, is
 mounted. A mounted editor of the file must still match.
 If the views still disagree at the timeout, the error names each view's state.
-Each durable write or delete, including its preflight and read-back, gets a
-30000 ms base CDP wait plus 100 ms per KiB of its request. `--timeout` may
-raise that wait and still caps the whole operation. Durable reads may use the
-remaining operation time. A timeout leaves the existing uncertain-outcome
+Each durable write or delete, including its preflight and read-back, uses a
+CDP wait based on 30000 ms plus 100 ms per KiB of the request. The operation
+timeout (120000 ms by default for `write`, `delete` and `deploy`) may raise that
+wait, while the remaining operation time caps every call. Durable reads may use
+the remaining operation time. A timeout leaves the existing uncertain-outcome
 checks and receipt recovery in force; it never replays the write automatically.
 `--vendor-tree-fallback` (only for `src/vendor/atomic-aui/` paths, as `make sync`
 and solo AtomicAUI installs use internally) also accepts client VFS, sandbox and
