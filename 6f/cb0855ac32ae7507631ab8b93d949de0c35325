@@ -1,0 +1,32 @@
+src/make-deploy-runner.js
+  s_a5ea14e1f350c0::t_b7a8be943cd687 7,75,77-81
+src/make-deploy-lock.js
+  s_a5ea14e1f350c0::t_b7a8be943cd687 74-78
+tests/make-deploy-runner.test.js
+  s_a5ea14e1f350c0::t_1dbbcb7f71304f 4,152-198
+  s_bdc26a09187350::t_381e8d5d0440e3 199-200
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6fcb0855ac32ae7507631ab8b93d949de0c35325",
+  "prompts": {},
+  "sessions": {
+    "s_a5ea14e1f350c0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1ae61-c310-7e83-b017-14fe62661514",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_bdc26a09187350": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "faca22d3-0722-424f-b934-15d7175721bf",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
