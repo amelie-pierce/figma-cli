@@ -77,8 +77,22 @@ it('a crash before publication leaves no blocking ownerless or partial lock', t 
   assertDeployLock(owner);
   releaseDeployLock(owner);
   // Corruption of published state must fail closed, unlike an ignored temp file.
-  writeFileSync(join(dir, `${readDeployLease('key', { home }).revision}.json`), '{');
+  writeFileSync(join(dir, `${readDeployLease('key', { home }).sequence}.json`), '{');
   assert.throws(() => acquireDeployLock('key', { home, clearStale: true }), /Unreadable deploy lease/);
+});
+
+it('keeps the lease journal bounded through renewal and replacement', t => {
+  const home = temporary(t);
+  const dir = deployLockPath('key', home);
+  const first = acquireDeployLock('key', { home });
+  for (let i = 0; i < 100; i++) renewDeployLock(first);
+  assert.ok(readdirSync(dir).filter(name => name.endsWith('.json')).length <= 2);
+  assertDeployLock(first);
+  releaseDeployLock(first);
+  const second = acquireDeployLock('key', { home });
+  assertDeployLock(second);
+  assert.ok(readdirSync(dir).filter(name => name.endsWith('.json')).length <= 2);
+  releaseDeployLock(second);
 });
 
 for (const stale of [false, true]) it(`${stale ? 'stale takeover' : 'initial acquire'} races publish only one owner`, async t => {
@@ -240,21 +254,28 @@ for (const [name, body, pattern] of [
   assert.equal(readDeployLease('key', { home }).token, null);
 });
 
-it('a killed runner becomes died after lease expiry, regardless of its recorded PID', async t => {
+it('a killed runner persists a terminal result after lease expiry', async t => {
   const home = temporary(t);
   const path = childFixture(home, `
     import { awaitDetachedStart, acknowledgeDetachedStart } from ${JSON.stringify(moduleUrl)};
-    await awaitDetachedStart(); await acknowledgeDetachedStart(); process.exit(9);
+    await awaitDetachedStart(); await acknowledgeDetachedStart(); setInterval(() => {}, 1000);
   `);
   const result = await startDetachedDeploy('key', [], { home, cliEntry: path });
   const dir = join(deployDir(home), 'runners');
   const recordPath = join(dir, readdirSync(dir)[0], result.runId + '.json');
   const record = JSON.parse(readFileSync(recordPath, 'utf8'));
   writeFileSync(recordPath, JSON.stringify({ ...record, pid: process.pid }));
+  process.kill(result.pid, 'SIGKILL');
   const now = Date.now;
   t.mock.method(Date, 'now', () => now() + 180000);
-  assert.equal(readDeployRunner('key', { home }).state, 'died');
-  assert.equal(readDeployRunner('key', { home }).alive, false);
+  const died = readDeployRunner('key', { home });
+  assert.equal(died.state, 'died');
+  assert.equal(died.alive, false);
+  assert.equal(died.exitCode, null);
+  assert.equal(died.reason, 'lease-expired');
+  assert.ok(died.observedAt);
+  assert.equal(JSON.parse(readFileSync(recordPath, 'utf8')).state, 'died');
+  assert.deepEqual(readDeployRunner('key', { home }), died);
 });
 
 

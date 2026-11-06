@@ -17,6 +17,7 @@ Updated 2026-10-29: status marks a missing saved commit even when Make claims a 
 Updated 2026-11-04: tracked `.npmrc`, mode-only and reloaded Make-only override follow-ups; warn-only deploy reminders.
 Updated 2026-11-06: deploy progress and local status are documented in the command reference.
 Updated 2026-11-06: detached apply, immutable lease CAS, independent heartbeat, startup handshake and per-run status.
+Updated 2026-11-06: bounded lease history and durable terminal results after lease expiry.
 
 # make deploy
 Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI files first (`DEPLOY_VENDOR_EDITED`); see [vendor-lock.md](vendor-lock.md).
@@ -32,20 +33,22 @@ path. Startup failures stop the child before releasing ownership
 
 Apply, verify, resume and abort take a local lease keyed by the exact Make file
 key before connecting (`src/commands/make.js:464`). Each immutable lock state has
-a random revision; exclusive hard-link publication installs one successor for
-that observed revision. Acquisition, renewal, stale takeover and release share
-this CAS protocol. A delayed stale clearer cannot delete the next owner; a crash
-before publication leaves an inert temporary file rather than a blocking
-ownerless lock (`src/make-deploy-lock.js:12`, `src/make-deploy-lock.js:31`). The
-journal is retained, and unsupported filesystems fail closed.
+a random revision and monotonic sequence; exclusive hard-link publication installs
+one successor for the observed sequence. Acquisition, renewal, stale takeover and
+release share this CAS protocol. Older successors are removed after a successful
+publication, leaving a bounded history; delayed stale clearers cannot replace the
+current owner. A crash before publication leaves an inert temporary file rather
+than a blocking ownerless lock (`src/make-deploy-lock.js`). Unsupported filesystems
+fail closed.
 
 Renewal runs in a separate worker thread even when install/build blocks the main
 thread. The CLI checks ownership before client and transport calls, but close
 remains allowed for cleanup (`src/make-deploy-lock.js:75`,
 `src/make-deploy-lock.js:99`, `src/commands/make.js:87`). Status uses the lease and
 random owner/run identity, never PID or `ps`; after a crash it can report running
-until the lease expires. Inspected recovery uses `--clear-stale-lock` only after
-expiry (`src/make-deploy-lock.js:43`, `src/make-deploy-runner.js:48`). This is a
+until the lease expires. The first status read or lock acquisition after expiry
+persists one terminal died result (`src/make-deploy-runner.js`). Inspected recovery
+uses `--clear-stale-lock` only after expiry (`src/make-deploy-lock.js`). This is a
 local-state lock, not coordination across machines.
 
 Run records/logs are keyed by random run ID and retained across subsequent runs.

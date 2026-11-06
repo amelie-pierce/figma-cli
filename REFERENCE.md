@@ -461,7 +461,8 @@ After a crash, inspect status and retry the intended operation with
 `--clear-stale-lock`; this clears only an expired writer lease. A running deploy
 renews its two-minute lease on a separate thread, including during synchronous
 install/build commands. Status uses the owner token and lease, not PID identity;
-a crashed process can therefore appear running until its lease expires. A live
+a crashed process can therefore appear running until its lease expires; the first
+status read after expiry persists a died result. A live
 lease proves ownership, not that the deploy is making progress. Stale recovery
 compares the observed revision atomically, so concurrent retries cannot evict a
 new owner. If ownership is lost, subsequent client/transport calls refuse.
@@ -469,8 +470,8 @@ new owner. If ownership is lost, subsequent client/transport calls refuse.
 Each run keeps its own record and log; `--receipt` associates the runner by run
 ID, and `--file` chooses the newest recorded operation by monotonic sequence, never by
 clock order. Until that run creates a receipt, status shows `starting` without
-borrowing progress from an older run. Runner records, logs and immutable lock
-journal entries are private under `~/.figma-cli/deploys/`. Keep the journal while
+borrowing progress from an older run. Runner records, logs and bounded lease
+records are private under `~/.figma-cli/deploys/`. Keep the lease records while
 writers may run; deleting lock files is not a recovery procedure. Publication
 requires a local filesystem with atomic hard-link support (including NTFS on
 Windows); unsupported filesystems fail closed. Locks coordinate this local state

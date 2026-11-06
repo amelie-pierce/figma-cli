@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
@@ -9,22 +9,23 @@ export const deployLockPath = (key, home = homedir()) => join(home, '.figma-cli'
 const locked = (message, code = 'DEPLOY_WRITER_LOCKED') => Object.assign(new Error(message), { code });
 const expired = state => state.leaseUntil <= Date.now();
 
-// Each revision has exactly one successor. Publishing a complete temporary file
-// with link(2) is an exclusive CAS on that revision, including on Windows NTFS.
-// Never rename/delete a live lock path: a delayed stale clearer cannot touch a
-// replacement. Unpublished temporary files left by a crash are inert.
 export function readDeployLease(key, { home } = {}) {
   const dir = deployLockPath(key, home);
-  let state = { revision: 'root', token: null, runId: null, fileKey: key, leaseUntil: 0 };
   while (true) {
-    let next;
-    try { next = JSON.parse(readFileSync(join(dir, `${state.revision}.json`), 'utf8')); }
-    catch (error) { if (error.code === 'ENOENT') return state; throw locked(`Unreadable deploy lease for ${key}: ${error.message}`); }
-    if (next.fileKey !== key || !/^[a-f0-9-]{36}$/.test(next.revision) || next.revision === state.revision ||
-      !Number.isFinite(next.leaseUntil) || (next.token !== null && (typeof next.token !== 'string' || typeof next.runId !== 'string'))) {
+    let names;
+    try { names = readdirSync(dir).filter(name => /^(0|[1-9]\d*)\.json$/.test(name)); }
+    catch (error) { if (error.code === 'ENOENT') return { sequence: 0, revision: 'root', token: null, runId: null, fileKey: key, leaseUntil: 0 }; throw error; }
+    if (!names.length) return { sequence: 0, revision: 'root', token: null, runId: null, fileKey: key, leaseUntil: 0 };
+    const latest = names.reduce((a, b) => Number(a.slice(0, -5)) > Number(b.slice(0, -5)) ? a : b);
+    let state;
+    try { state = JSON.parse(readFileSync(join(dir, latest), 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') continue; throw locked(`Unreadable deploy lease for ${key}: ${error.message}`); }
+    if (state.fileKey !== key || state.sequence !== Number(latest.slice(0, -5)) + 1 ||
+      !/^[a-f0-9-]{36}$/.test(state.revision) || !Number.isFinite(state.leaseUntil) ||
+      (state.token !== null && (typeof state.token !== 'string' || typeof state.runId !== 'string'))) {
       throw locked(`Invalid deploy lease for ${key}; inspect local lock records.`);
     }
-    state = next;
+    return state;
   }
 }
 
@@ -32,10 +33,18 @@ function compareAndSwap(key, home, observed, next) {
   const dir = deployLockPath(key, home);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const temp = join(dir, `.${randomUUID()}.tmp`);
+  const candidate = { ...next, fileKey: key, sequence: observed.sequence + 1, revision: randomUUID() };
   try {
-    writeFileSync(temp, JSON.stringify({ ...next, fileKey: key, revision: randomUUID() }), { flag: 'wx', mode: 0o600 });
-    try { linkSync(temp, join(dir, `${observed.revision}.json`)); return true; }
+    writeFileSync(temp, JSON.stringify(candidate), { flag: 'wx', mode: 0o600 });
+    try { linkSync(temp, join(dir, `${observed.sequence}.json`)); }
     catch (error) { if (error.code === 'EEXIST') return false; throw error; }
+    if (readDeployLease(key, { home }).revision !== candidate.revision) return false;
+    try {
+      for (const name of readdirSync(dir)) {
+        if (/^(0|[1-9]\d*)\.json$/.test(name) && Number(name.slice(0, -5)) < candidate.sequence - 1) rmSync(join(dir, name), { force: true });
+      }
+    } catch {}
+    return true;
   } finally { rmSync(temp, { force: true }); }
 }
 

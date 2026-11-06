@@ -1,11 +1,11 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { deployDir } from './make-deploy.js';
 
-import { acquireDeployLock, DEPLOY_LEASE_MS, readDeployLease, releaseDeployLock, startDeployHeartbeat } from './make-deploy-lock.js';
-export { acquireDeployLock, releaseDeployLock, renewDeployLock, startDeployHeartbeat, guardDeployClient } from './make-deploy-lock.js';
+import { acquireDeployLock as acquireLease, DEPLOY_LEASE_MS, readDeployLease, releaseDeployLock, startDeployHeartbeat } from './make-deploy-lock.js';
+export { releaseDeployLock, renewDeployLock, startDeployHeartbeat, guardDeployClient } from './make-deploy-lock.js';
 const keyHash = key => createHash('sha256').update(key).digest('hex');
 const paths = (key, home) => {
   const dir = deployDir(home);
@@ -27,6 +27,25 @@ const runnerPath = (key, runId, home) => {
   if (!/^[a-zA-Z0-9_-]+$/.test(runId)) throw new Error('Invalid deploy run ID.');
   return join(paths(key, home).runners, `${runId}.json`);
 };
+const finalPath = (key, runId, home) => join(paths(key, home).runners, `${runId}.final`);
+const readFinal = path => {
+  try { return JSON.parse(readFileSync(path, 'utf8')); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+};
+const publishFinal = (key, runId, home, result) => {
+  const path = finalPath(key, runId, home);
+  const temp = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temp, JSON.stringify(result), { flag: 'wx', mode: 0o600 });
+    try { linkSync(temp, path); return true; }
+    catch (error) { if (error.code === 'EEXIST') return false; throw error; }
+  } finally { rmSync(temp, { force: true }); }
+};
+
+export function acquireDeployLock(key, options = {}) {
+  readDeployRunner(key, { home: options.home });
+  return acquireLease(key, options);
+}
 
 export function nextDeploySequence(key, { home } = {}) {
   const { sequence } = paths(key, home);
@@ -54,18 +73,26 @@ export function readDeployRunner(key, { home, runId } = {}) {
     .sort((a, b) => b.sequence - a.sequence)[0];
   if (!value) return null;
   const owner = readDeployLease(key, { home });
-  const alive = owner?.token === value.token && owner.runId === value.id && !expired(owner);
+  let final = readFinal(finalPath(key, value.id, home));
+  const alive = !value.finishedAt && !final && owner?.token === value.token && owner.runId === value.id && !expired(owner);
+  if (!value.finishedAt && !final && !alive) {
+    const observedAt = new Date(Date.now()).toISOString();
+    const result = { state: 'died', exitCode: null, reason: 'lease-expired', observedAt, finishedAt: observedAt };
+    if (publishFinal(key, value.id, home, result)) atomicJson(runnerPath(key, value.id, home), { ...value, ...result });
+    final = readFinal(finalPath(key, value.id, home));
+  }
   const { token, ...publicValue } = value;
-  return { ...publicValue, state: value.finishedAt ? value.state : alive ? 'running' : 'died', alive: !!alive };
+  return { ...publicValue, ...final, state: final?.state || (value.finishedAt ? value.state : 'running'), alive: !!alive };
 }
 
 export function finishDeployRunner(key, token, exitCode, { home, runId = process.env.FIGMA_CLI_DEPLOY_RUNNER_ID, signal = null, error = null } = {}) {
   if (!runId) return;
   const record = runnerPath(key, runId, home);
   const value = json(record);
-  if (value?.token !== token) return;
-  atomicJson(record, { ...value, state: exitCode === 0 && !signal && !error ? 'finished' : 'failed', exitCode, signal, error,
-    finishedAt: new Date().toISOString() });
+  if (value?.token !== token || value.finishedAt) return;
+  const result = { state: exitCode === 0 && !signal && !error ? 'finished' : 'failed', exitCode, signal, error,
+    finishedAt: new Date().toISOString() };
+  if (publishFinal(key, runId, home, result)) atomicJson(record, { ...value, ...result });
 }
 
 export async function startDetachedDeploy(key, argv, { home, clearStale = false, cliEntry = resolve('src/index.js'), node = process.execPath, startupMs = 30000 } = {}) {
