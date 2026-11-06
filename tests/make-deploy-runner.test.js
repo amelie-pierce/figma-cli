@@ -1,6 +1,7 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -146,6 +147,55 @@ it('a stale clearer paused at CAS cannot replace the next live lease', async t =
   assert.match(result.output, /DEPLOY_WRITER_LOCKED/);
   assertDeployLock(replacement);
   releaseDeployLock(replacement);
+});
+
+it('does not persist death when a paused renewal wins the lease revision', async t => {
+  const home = temporary(t);
+  const owner = acquireDeployLock('key', { home, leaseMs: 3000 });
+  const runners = join(deployDir(home), 'runners', createHash('sha256').update('key').digest('hex'));
+  mkdirSync(runners, { recursive: true });
+  writeFileSync(join(runners, `${owner.runId}.json`), JSON.stringify({ fileKey: 'key', id: owner.runId,
+    sequence: 1, token: owner.token, state: 'running', exitCode: null, finishedAt: null }));
+  const lockUrl = pathToFileURL(resolve('src/make-deploy-lock.js')).href;
+  const renewal = childRun(t, childFixture(home, `
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const link = fs.linkSync;
+    fs.linkSync = (...args) => {
+      process.stdout.write('renew-observed\\n');
+      fs.readSync(0, Buffer.alloc(1), 0, 1, null);
+      return link(...args);
+    };
+    syncBuiltinESMExports();
+    const { renewDeployLock } = await import(${JSON.stringify(lockUrl)});
+    renewDeployLock(${JSON.stringify({ ...owner, leaseMs: 10000 })});
+    process.stdout.write('renewed\\n');
+  `));
+  await waitFor(() => renewal.output().includes('renew-observed'));
+  await delay(Math.max(0, readDeployLease('key', { home }).leaseUntil - Date.now() + 20));
+  const status = childRun(t, childFixture(home, `
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const link = fs.linkSync;
+    fs.linkSync = (...args) => {
+      process.stdout.write('status-observed\\n');
+      fs.readSync(0, Buffer.alloc(1), 0, 1, null);
+      return link(...args);
+    };
+    syncBuiltinESMExports();
+    const { readDeployRunner } = await import(${JSON.stringify(moduleUrl)});
+    const runner = readDeployRunner('key', { home: ${JSON.stringify(home)} });
+    process.stdout.write(JSON.stringify({ state: runner.state, alive: runner.alive }));
+  `, 'status with spaces.mjs'));
+  await waitFor(() => status.output().includes('status-observed'));
+  renewal.child.stdin.write('g');
+  assert.equal((await renewal.closed).code, 0);
+  status.child.stdin.write('g');
+  const result = await status.closed;
+  assert.equal(result.code, 0, result.errors);
+  assert.match(result.output, /"state":"running","alive":true/);
+  assert.equal(readdirSync(runners).some(name => name.endsWith('.final')), false);
+  releaseDeployLock(owner);
 });
 
 it('renews during a synchronous command longer than the lease, without ps or PID identity', async t => {

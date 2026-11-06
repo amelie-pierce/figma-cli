@@ -71,6 +71,11 @@ export function renewDeployLock(owner) {
   }
 }
 
+export function fenceExpiredDeployLock(key, observed, { home } = {}) {
+  return !!observed.token && expired(observed) &&
+    compareAndSwap(key, home, observed, { token: observed.token, runId: observed.runId, leaseUntil: 0 });
+}
+
 export function releaseDeployLock(owner) {
   while (true) {
     const observed = readDeployLease(owner.key, { home: owner.home });

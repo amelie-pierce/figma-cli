@@ -4,7 +4,7 @@ import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, rea
 import { join, resolve } from 'node:path';
 import { deployDir } from './make-deploy.js';
 
-import { acquireDeployLock as acquireLease, DEPLOY_LEASE_MS, readDeployLease, releaseDeployLock, startDeployHeartbeat } from './make-deploy-lock.js';
+import { acquireDeployLock as acquireLease, DEPLOY_LEASE_MS, fenceExpiredDeployLock, readDeployLease, releaseDeployLock, startDeployHeartbeat } from './make-deploy-lock.js';
 export { releaseDeployLock, renewDeployLock, startDeployHeartbeat, guardDeployClient } from './make-deploy-lock.js';
 const keyHash = key => createHash('sha256').update(key).digest('hex');
 const paths = (key, home) => {
@@ -72,8 +72,13 @@ export function readDeployRunner(key, { home, runId } = {}) {
   const value = records.map(json).filter(item => item?.fileKey === key && item.id && (!runId || item.id === runId))
     .sort((a, b) => b.sequence - a.sequence)[0];
   if (!value) return null;
-  const owner = readDeployLease(key, { home });
+  let owner = readDeployLease(key, { home });
   let final = readFinal(finalPath(key, value.id, home));
+  while (!value.finishedAt && !final && owner.token === value.token && owner.runId === value.id && expired(owner)) {
+    if (fenceExpiredDeployLock(key, owner, { home })) break;
+    owner = readDeployLease(key, { home });
+    final = readFinal(finalPath(key, value.id, home));
+  }
   const alive = !value.finishedAt && !final && owner?.token === value.token && owner.runId === value.id && !expired(owner);
   if (!value.finishedAt && !final && !alive) {
     const observedAt = new Date(Date.now()).toISOString();
