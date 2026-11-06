@@ -1,0 +1,21 @@
+skills/figma-make-team/SKILL.md
+  s_eeaeb18039f773::t_bd519f55f76b3e 101
+skills/figma-make/SKILL.md
+  s_eeaeb18039f773::t_bd519f55f76b3e 267-268
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1a8c782d52bc19ca47bbfd20b77c46843019a398",
+  "prompts": {},
+  "sessions": {
+    "s_eeaeb18039f773": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1aeb7-b0b1-7a42-a30d-0c2414373c71",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
