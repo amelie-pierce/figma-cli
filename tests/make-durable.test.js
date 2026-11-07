@@ -795,7 +795,7 @@ test('a deploy save (listed) passes exactly Make\'s listed paths and still check
   const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
   const pending = state(['src/App.tsx']);
   const { client, calls } = checkedClient({ before: savedStatus({ persistence: pending, workingFlat: edited }),
-    drift: [pending, { ...state(), savedVersion: next }] });
+    drift: [pending, pending, { ...state(), savedVersion: next }] });
   const queue = [savedStatus({ persistence: pending, workingFlat: edited }), { ...afterStatus(), makeFlat: edited, workingFlat: edited }];
   client.projectStatus = async () => (queue.length > 1 ? queue.shift() : queue[0]);
   const result = await client.saveCheckedVersion('deploy abc1234', ['src/App.tsx', '.figma-cli/project.json'], { listed: true });
@@ -804,21 +804,26 @@ test('a deploy save (listed) passes exactly Make\'s listed paths and still check
   assert.deepEqual(result.changedFiles, ['.figma-cli/project.json', 'src/App.tsx']);
   assert.equal(result.verification, 'saved-version-clean-baseline; saved-content-matched');
   const stray = checkedClient({ before: savedStatus({ persistence: state(['src/App.tsx', 'src/x.ts']), workingFlat: edited }) });
-  await assert.rejects(stray.client.saveCheckedVersion('deploy', ['src/App.tsx', '.figma-cli/project.json'], { listed: true }), /other pending changes.*src\/x\.ts/);
+  await assert.rejects(stray.client.saveCheckedVersion('deploy', ['src/App.tsx', '.figma-cli/project.json'], { listed: true }), { code: 'MAKE_TRACKER_CHANGED' });
   assert.equal(stray.calls.some(call => call[0] === 'action'), false);
 });
 
 test('a deploy resume save waits for a lagging tracker, but refuses foreign pending paths', async () => {
   const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
-  const run = drift => {
+  const listed = state(['src/App.tsx']);
+  const run = (drift, fresh = savedStatus({ persistence: listed, workingFlat: edited })) => {
     const { client, calls } = checkedClient({ before: savedStatus({ persistence: state(), workingFlat: edited }), drift });
-    const queue = [savedStatus({ persistence: state(), workingFlat: edited }), { ...afterStatus(), makeFlat: edited, workingFlat: edited }];
+    const queue = [savedStatus({ persistence: state(), workingFlat: edited }), fresh, { ...afterStatus(), makeFlat: edited, workingFlat: edited }];
     client.projectStatus = async () => (queue.length > 1 ? queue.shift() : queue[0]);
     return { calls, save: client.saveCheckedVersion('deploy abc1234', ['src/App.tsx', '.figma-cli/project.json'], { listed: true }) };
   };
-  const lagging = run([state(), state(), state(['src/App.tsx']), { ...state(), savedVersion: next }]);
+  const lagging = run([state(), state(), listed, listed, { ...state(), savedVersion: next }]);
   await lagging.save;
   assert.deepEqual(lagging.calls.find(call => call[0] === 'action')[1].expectedPaths, ['src/App.tsx']);
+  const lockfile = new Map([...edited, ['pnpm-lock.yaml', { mode: '100644', blob: '7'.repeat(40) }]]);
+  const rewritten = run([state(), listed], savedStatus({ persistence: listed, workingFlat: lockfile, workingTree: 'f'.repeat(40) }));
+  await assert.rejects(rewritten.save, { code: 'MAKE_CONTENT_CHANGED' });
+  assert.equal(rewritten.calls.some(call => call[0] === 'action'), false);
   const foreign = run([state(), state(['src/App.tsx', 'src/x.ts'])]);
   await assert.rejects(foreign.save, /changed/);
   assert.equal(foreign.calls.some(call => call[0] === 'action'), false);
@@ -847,8 +852,12 @@ test('an override without the saved commit object derives Make\'s pending list f
   const status = savedStatus({ persistence: state(), workingFlat: edited, treeSource: 'sandbox-head',
     workingSha256: new Map([['src/App.tsx', hash('new')]]) });
   const savedFiles = [{ path: 'src/App.tsx', sha256: hash('old') }, { path: 'package.json', blob: '2'.repeat(40) }];
-  const settle = drift => checkedClient({ before: status, drift }).client.settleListedPending(status, { overrideMake: { ...pin, savedFiles } });
-  assert.deepEqual((await settle([state(), state(['src/App.tsx'])])).pendingPaths, ['src/App.tsx']);
+  const settle = drift => {
+    const { client } = checkedClient({ before: status, drift });
+    client.projectStatus = async () => ({ ...status, persistence: state(['src/App.tsx']) });
+    return client.settleCheckedStatus(status, { overrideMake: { ...pin, savedFiles } });
+  };
+  assert.deepEqual((await settle([state(), state(['src/App.tsx'])])).persistence.pendingPaths, ['src/App.tsx']);
   await assert.rejects(settle([state(['src/App.tsx', 'src/x.ts'])]), { code: 'MAKE_TRACKER_CHANGED' });
   await assert.rejects(settle([{ ...state(['src/App.tsx']), savedVersion: next }]), { code: 'MAKE_TRACKER_CHANGED' });
 });
@@ -862,18 +871,46 @@ test('the live tracker runner refuses a scratch file with any unsaved content, l
   assert.match(scratchBaselineProblem(savedStatus({ workingFlat: sinceFlat, treeSource: 'sandbox-head' })), /no readable saved version/);
 });
 
+test('a confirmed write fails when Make changes its content while the tracker settles, without writing again', async () => {
+  for (const path of ['pnpm-lock.yaml', 'src/App.tsx']) {
+    const { client, calls } = fakeClient({ original: 'old' });
+    const durable = client._durable;
+    const drift = client._driftState;
+    let written = false;
+    let regenerated = false;
+    client._durable = async action => {
+      if (action.type === 'write') written = true;
+      if (action.type === 'read' && regenerated) return { exists: true, content: 'regenerated by Make' };
+      return durable(action);
+    };
+    client._driftState = async deadline => {
+      const result = await drift(deadline);
+      if (!written || regenerated) return result;
+      regenerated = true;
+      return { state: { ...result.state, isLoading: true } };
+    };
+    const error = await client.writeDurable(path, 'new', { expectedSha256: hash('old') }).catch(cause => cause);
+    assert.equal(error.code, 'MAKE_CONTENT_CHANGED', path);
+    assert.equal(error.confirmedWrite.sha256, hash('new'));
+    assert.equal(calls.filter(call => call[0] === 'write').length, 1);
+  }
+});
+
 test('settling a checked status waits for a lagging listed path, but refuses foreign or version changes', async () => {
   const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
   const status = savedStatus({ persistence: state(), workingFlat: edited });
-  const run = drift => {
+  const run = (drift, fresh = { ...status, persistence: state(['src/App.tsx']) }) => {
     const { client } = checkedClient({ before: status, drift });
-    return client.settleListedPending(status);
+    client.projectStatus = async () => fresh;
+    return client.settleCheckedStatus(status);
   };
-  assert.deepEqual((await run([state(), state(), state(['src/App.tsx'])])).pendingPaths, ['src/App.tsx']);
+  assert.deepEqual((await run([state(), state(), state(['src/App.tsx'])])).persistence.pendingPaths, ['src/App.tsx']);
+  await assert.rejects(run([state(), state(['src/App.tsx'])], { ...status, persistence: state(['src/App.tsx']), workingTree: 'f'.repeat(40) }),
+    { code: 'MAKE_CONTENT_CHANGED' });
   await assert.rejects(run([state(['src/App.tsx', 'src/x.ts'])]), { code: 'MAKE_TRACKER_CHANGED' });
   await assert.rejects(run([{ ...state(['src/App.tsx']), savedVersion: next }]), { code: 'MAKE_TRACKER_CHANGED' });
   const headBase = savedStatus({ persistence: state(), workingFlat: edited, treeSource: 'sandbox-head' });
-  assert.equal(await checkedClient({ before: headBase, drift: [state(['src/x.ts'])] }).client.settleListedPending(headBase), headBase.persistence);
+  assert.equal(await checkedClient({ before: headBase, drift: [state(['src/x.ts'])] }).client.settleCheckedStatus(headBase), headBase);
 });
 
 test('a deploy save accepts a saved file mode Make kept, but not different content', async () => {
@@ -881,7 +918,7 @@ test('a deploy save accepts a saved file mode Make kept, but not different conte
   const pending = state(['src/App.tsx']);
   const kept = new Map([...edited, ['src/App.tsx', { mode: '100755', blob: '5'.repeat(40) }]]);
   const run = after => {
-    const { client } = checkedClient({ before: savedStatus({ persistence: pending, workingFlat: edited }), drift: [pending, { ...state(), savedVersion: next }] });
+    const { client } = checkedClient({ before: savedStatus({ persistence: pending, workingFlat: edited }), drift: [pending, pending, { ...state(), savedVersion: next }] });
     const queue = [savedStatus({ persistence: pending, workingFlat: edited }), after];
     client.projectStatus = async () => (queue.length > 1 ? queue.shift() : queue[0]);
     return client.saveCheckedVersion('deploy', ['src/App.tsx', '.figma-cli/project.json'], { listed: true });

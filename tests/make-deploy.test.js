@@ -149,10 +149,10 @@ class FakeMake {
   // Like live Make, root lockfiles are never listed.
   pending() { return this.changed().filter(path => !path.split('/').some(part => part.startsWith('.')) && !['pnpm-lock.yaml', 'package-lock.json'].includes(path)); }
   async inspect() { return { fileKey: KEY, ...this.ui }; }
-  async settleListedPending(status) {
+  async settleCheckedStatus(status) {
     this.calls.push(['settle', [...status.persistence.pendingPaths]]);
     await this.hooks.settle?.(status);
-    return status.persistence;
+    return status;
   }
   async projectMarker() { return this.working.get(PROJECT_MARKER) ?? null; }
   async projectStatus({ classifyText = false, savedInventory = false, savedProtected = () => false } = {}) {

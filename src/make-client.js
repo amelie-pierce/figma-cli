@@ -39,6 +39,12 @@ function pendingChanged(what) {
   return error;
 }
 
+function contentChanged() {
+  const error = new Error('Make content or pending files changed while its pending list settled. Inspect state before retrying.');
+  error.code = 'MAKE_CONTENT_CHANGED';
+  return error;
+}
+
 function trackerChanged() {
   const error = new Error('Make version or unrelated pending files changed while settling the pending tracker. Inspect state before retrying.');
   // Unlike MAKE_PENDING_CHANGED, a mutation may already be confirmed. Deploy
@@ -588,7 +594,7 @@ export class MakeClient {
   // isLoading is false. Wait for the exact expected set under the same saved
   // version. Only the known old set may remain temporarily; foreign paths,
   // disappearing unrelated paths and version changes still fail closed.
-  async _settleTracker(before, expectedPaths, deadline, { optionalPaths = [], modeOptions = {}, initial } = {}) {
+  async _settleTracker(before, expectedPaths, deadline, { optionalPaths = [], modeOptions = {}, initial, onWait } = {}) {
     const expected = [...new Set(expectedPaths)].sort();
     const allowed = new Set([...before.pendingPaths, ...expected]);
     const required = before.pendingPaths.filter(path => expected.includes(path));
@@ -609,6 +615,7 @@ export class MakeClient {
           const listed = expected.filter(path => !optionalPaths.includes(path) || current.pendingPaths.includes(path));
           if (JSON.stringify(current.pendingPaths) === JSON.stringify(listed)) return current;
         }
+        onWait?.();
         await this._bounded(() => new Promise(resolve => setTimeout(resolve, 100)), deadline);
       }
     } catch (error) {
@@ -624,14 +631,14 @@ export class MakeClient {
     // These paths have separate tree/content verification because Make does
     // not list them. A never-saved/override file may have no usable baseline.
     if (!before.hasBaseline || treeHidden(path) || UNLISTED_PERSISTED_PATHS.includes(path)) {
-      return { before, expectedPaths: before.pendingPaths, modeOptions };
+      return { before, path, content, expectedPaths: before.pendingPaths, modeOptions };
     }
     const targetBlob = content === null ? null : gitBlobSha(Buffer.from(content));
     const expectedPaths = before.pendingPaths.filter(item => item !== path);
     if (modeOptions.overrideMake?.savedFiles) {
       const item = modeOptions.overrideMake.savedFiles.find(file => file.path === path);
       if (!savedMatches(item, content === null ? null : sha256(content), targetBlob)) expectedPaths.push(path);
-      return { before, expectedPaths: expectedPaths.sort(), modeOptions };
+      return { before, path, content, expectedPaths: expectedPaths.sort(), modeOptions };
     }
     if (this._savedVersionEntries?.version !== before.savedVersion) {
       this._savedVersionEntries = null;
@@ -644,20 +651,33 @@ export class MakeClient {
     }
     const savedBlob = this._savedVersionEntries.entries.get(path)?.blob ?? null;
     if (targetBlob !== savedBlob) expectedPaths.push(path);
-    return { before, expectedPaths: expectedPaths.sort(), modeOptions };
+    return { before, path, content, expectedPaths: expectedPaths.sort(), modeOptions };
   }
 
+  // After any wait, the confirmed content must still be in place.
   async _settleMutation(tracker, deadline) {
-    return this._settleTracker(tracker.before, tracker.expectedPaths, deadline, { modeOptions: tracker.modeOptions });
+    let waited = false;
+    const settled = await this._settleTracker(tracker.before, tracker.expectedPaths, deadline,
+      { modeOptions: tracker.modeOptions, onWait: () => { waited = true; } });
+    if (waited) {
+      const current = await this._durable({ type: 'read', path: tracker.path }, deadline);
+      if ((current?.exists ? current.content : null) !== tracker.content) throw contentChanged();
+    }
+    return settled;
   }
 
   // Wait until Make lists exactly the unsaved paths a checked status holds,
-  // before the next mutation relies on its pending list.
-  settleListedPending(status, { overrideMake } = {}) {
+  // before the next mutation or save relies on its pending list. A status
+  // whose pending list was stale is read again; its content must be unchanged.
+  async settleCheckedStatus(status, { overrideMake } = {}) {
     const listed = listedPendingOf(status, overrideMake);
-    if (!listed) return Promise.resolve(status.persistence);
-    return this._operation(deadline => this._settleTracker(status.persistence, listed, deadline,
+    if (!listed) return status;
+    const settled = await this._operation(deadline => this._settleTracker(status.persistence, listed, deadline,
       { optionalPaths: UNLISTED_PERSISTED_PATHS, modeOptions: { overrideMake } }));
+    if (JSON.stringify(settled) === JSON.stringify(status.persistence)) return status;
+    const fresh = await this.projectStatus();
+    if (JSON.stringify(fresh.persistence) !== JSON.stringify(settled) || fresh.workingTree !== status.workingTree) throw contentChanged();
+    return fresh;
   }
 
   async _retryTrackerInventory(read) {
@@ -1108,7 +1128,8 @@ export class MakeClient {
     if (firstVersion && !/^[a-f0-9]{40}$/.test(since || '')) {
       throw new Error('--first-version requires --since <commit>: the sandbox head make status reported before the writes.');
     }
-    const before = await this.projectStatus();
+    let before = await this.projectStatus();
+    if (listed) before = await this.settleCheckedStatus(before, { overrideMake });
     const state = requireGitMode(before.persistence, { firstVersion, overrideMake });
     if (overrideMake) await this._operation(async deadline => {
       const bridge = await this._fileBridge(deadline);
@@ -1146,15 +1167,11 @@ export class MakeClient {
     if (overrideMake && expectedPaths.some(path => !overrideMake.allowedPaths.includes(path))) {
       throw new Error('Override save paths differ from the reviewed receipt.');
     }
-    const listedChanges = listed ? listedPendingOf(before, overrideMake) : null;
     const version = await this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
       if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
-      const current = requireGitMode((await this._driftState(deadline)).state, { firstVersion, overrideMake });
-      const now = listedChanges ? await this._settleTracker(state, listedChanges, deadline,
-        { optionalPaths: UNLISTED_PERSISTED_PATHS, modeOptions: { overrideMake }, initial: current }) : current;
-      const pinned = listedChanges ? { ...state, pendingPaths: now.pendingPaths, pendingCount: now.pendingCount } : state;
-      if (JSON.stringify(now) !== JSON.stringify(pinned)) {
+      const now = requireGitMode((await this._driftState(deadline)).state, { firstVersion, overrideMake });
+      if (JSON.stringify(now) !== JSON.stringify(state)) {
         throw new Error(`Make state changed before the ${firstVersion ? 'first ' : ''}version.`);
       }
       const bridge = await this._fileBridge(deadline);
@@ -1168,7 +1185,7 @@ export class MakeClient {
       try {
         created = await this._durable({ type: 'save', ...(firstVersion ? { firstVersion: true } : {}),
           ...(overrideMake ? { overrideMake: { ...overrideMake, savedFiles: undefined } } : {}), title,
-          expectedPaths: listed ? now.pendingPaths : [],
+          expectedPaths: listed ? state.pendingPaths : [],
           expectedGitSha: firstVersion ? null : state.savedVersion }, deadline);
       }
       catch (cause) { throw uncertainSave(`Make version outcome is uncertain: ${cause.message}. Inspect versions before retrying.`); }

@@ -73,9 +73,13 @@ through `deleteDurable`, and ordinary `make save-version` through
   status read an empty pending set while the tracker still lagged no longer
   refuses; foreign paths and version changes still do.
 - Deploy resume and abort, after their plan and content checks, wait through
-  `settleListedPending` for Make to list exactly that checked unsaved content
+  `settleCheckedStatus` for Make to list exactly that checked unsaved content
   before the next write or delete, so a confirmed but not yet listed write
-  is neither replayed nor later rejected as foreign.
+  is neither replayed nor later rejected as foreign. The deploy save settles
+  the same way before its checks. When the list was stale, status is read
+  again and must hold the same working tree; a confirmed write or delete that
+  had to wait re-reads its path. Changed content fails with
+  `MAKE_CONTENT_CHANGED` before any further mutation or version.
 - When an override's saved commit object is missing from the sandbox, the
   expected pending list comes from the saved inventory the plan recovered from
   the deploy record (`overridePin.savedFiles`), for writes, deletes, resume
