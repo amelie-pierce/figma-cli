@@ -1113,11 +1113,20 @@ export class MakeClient {
     if (overrideMake && expectedPaths.some(path => !overrideMake.allowedPaths.includes(path))) {
       throw new Error('Override save paths differ from the reviewed receipt.');
     }
+    const listedChanges = listed && before.treeSource === 'saved-version'
+      ? [...new Set([...before.makeFlat.keys(), ...before.workingFlat.keys()])]
+        .filter(path => !treeHidden(path) && before.makeFlat.get(path)?.blob !== before.workingFlat.get(path)?.blob)
+      : null;
     const version = await this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
       if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
-      const now = requireGitMode((await this._driftState(deadline)).state, { firstVersion, overrideMake });
-      if (JSON.stringify(now) !== JSON.stringify(state)) throw new Error(`Make state changed before the ${firstVersion ? 'first ' : ''}version.`);
+      const current = requireGitMode((await this._driftState(deadline)).state, { firstVersion, overrideMake });
+      const now = listedChanges ? await this._settleTracker(state, listedChanges, deadline,
+        { optionalPaths: UNLISTED_PERSISTED_PATHS, modeOptions: { overrideMake }, initial: current }) : current;
+      const pinned = listedChanges ? { ...state, pendingPaths: now.pendingPaths, pendingCount: now.pendingCount } : state;
+      if (JSON.stringify(now) !== JSON.stringify(pinned)) {
+        throw new Error(`Make state changed before the ${firstVersion ? 'first ' : ''}version.`);
+      }
       const bridge = await this._fileBridge(deadline);
       try {
         const reader = this._sandboxGit(bridge);
@@ -1128,7 +1137,7 @@ export class MakeClient {
       let created;
       try {
         created = await this._durable({ type: 'save', ...(firstVersion ? { firstVersion: true } : {}), ...(overrideMake ? { overrideMake } : {}), title,
-          expectedPaths: listed ? state.pendingPaths : [],
+          expectedPaths: listed ? now.pendingPaths : [],
           expectedGitSha: firstVersion ? null : state.savedVersion }, deadline);
       }
       catch (cause) { throw uncertainSave(`Make version outcome is uncertain: ${cause.message}. Inspect versions before retrying.`); }

@@ -807,6 +807,25 @@ test('a deploy save (listed) passes exactly Make\'s listed paths and still check
   assert.equal(stray.calls.some(call => call[0] === 'action'), false);
 });
 
+test('a deploy resume save waits for a lagging tracker, but refuses foreign pending paths', async () => {
+  const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
+  const run = drift => {
+    const { client, calls } = checkedClient({ before: savedStatus({ persistence: state(), workingFlat: edited }), drift });
+    const queue = [savedStatus({ persistence: state(), workingFlat: edited }), { ...afterStatus(), makeFlat: edited, workingFlat: edited }];
+    client.projectStatus = async () => (queue.length > 1 ? queue.shift() : queue[0]);
+    return { calls, save: client.saveCheckedVersion('deploy abc1234', ['src/App.tsx', '.figma-cli/project.json'], { listed: true }) };
+  };
+  const lagging = run([state(), state(), state(['src/App.tsx']), { ...state(), savedVersion: next }]);
+  await lagging.save;
+  assert.deepEqual(lagging.calls.find(call => call[0] === 'action')[1].expectedPaths, ['src/App.tsx']);
+  const foreign = run([state(), state(['src/App.tsx', 'src/x.ts'])]);
+  await assert.rejects(foreign.save, /changed/);
+  assert.equal(foreign.calls.some(call => call[0] === 'action'), false);
+  const moved = run([state(), { ...state(['src/App.tsx']), savedVersion: next }]);
+  await assert.rejects(moved.save, /changed/);
+  assert.equal(moved.calls.some(call => call[0] === 'action'), false);
+});
+
 test('a deploy save accepts a saved file mode Make kept, but not different content', async () => {
   const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
   const pending = state(['src/App.tsx']);

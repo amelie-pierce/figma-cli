@@ -39,8 +39,9 @@ through `deleteDurable`, and ordinary `make save-version` through
 - After content verification, `_pendingAfterMutation` derives the exact
   expected pending set from the saved entry and the new bytes or absence.
   Restoring saved bytes, or deleting a newly created file, removes the path.
-  `SandboxGit.entryAt` reads only the relevant ancestor trees; it does not
-  read unrelated source blobs (`src/make-client.js:602`, `src/sandbox-git.js:172`).
+  The saved version's flattened tree is read once and reused until the saved
+  version or connection changes, so a deploy does not reload a packed sandbox
+  for every file; it reads no source blobs (`src/make-client.js:602`).
 - `_settleTracker` polls the same persistence signal every 100 ms within the
   existing operation deadline. It pins the saved version, permits the known
   previous set while waiting, and refuses foreign paths or disappearance of
@@ -64,6 +65,11 @@ through `deleteDurable`, and ordinary `make save-version` through
   after settlement; `plannedState` still checks all unsaved content and pending
   paths against the reviewed plan (`src/make-deploy.js:1164`,
   `src/make-deploy.js:791`). No prototype was used for live validation.
+- The deploy save (`saveCheckedVersion` with `listed`) derives the listed set
+  from the saved tree and the checked working copy, then settles the tracker
+  to it before pinning the state passed to `createVersion`. A resume whose
+  status read an empty pending set while the tracker still lagged no longer
+  refuses; foreign paths and version changes still do.
 
 The DOM error `Make file tree changed before the requested action` is a
 separate row/ancestry identity guard, not a read of `codeFileChanges`.
@@ -86,12 +92,15 @@ then the same paths serially without saves), seven individual saves and one
 batch save, without refusals. Version 12, commit
 `8525f99612992b0648e9eeae570278f248a51886`, had zero pending paths after a fresh
 reload; all seven hashes matched and all 27 non-benchmark files were unchanged.
-The final implementation, including the narrower saved-entry lookup, repeated
-all 14 writes and eight saves successfully. At 02:38:55 UTC its fresh-reload
+A second live run with the then-current implementation (a per-path
+saved-entry lookup, since replaced) repeated all 14 writes and eight saves
+successfully. At 02:38:55 UTC its fresh-reload
 check passed at version 20 (`61a5d9e4d30fa625400b68f833156d5fca179260`), with
 zero pending paths, all seven expected hashes and the same 27 non-benchmark
 file hashes. Tracker waits after content confirmation ranged from 1157 to 1529 ms.
 No installed runtime was updated and no prototype received traffic.
+The later follow-up (cached saved-version tree, deploy-save settlement) was
+validated offline only with fake clients; it has no live run yet.
 
 The final full Make suite passed 644/644 tests, with no skips, under Node
 24.15.0 (578.697 s); the focused durable/tree/inventory/git checks passed
