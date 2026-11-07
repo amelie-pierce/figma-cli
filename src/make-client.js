@@ -256,11 +256,13 @@ export class MakeClient {
     this.fileKey = null;
     this._running = false;
     this._durableOperation = false;
+    this._savedVersionEntries = null;
     // Optional absolute deadline shared by every operation (status budget).
     this.deadline = Infinity;
   }
 
   async connect(fileKeyOrURL) {
+    this._savedVersionEntries = null;
     await this.transport.connect(fileKeyOrURL, { timeoutMs: this.timeoutMs });
     this.fileKey = this.transport.target?.fileKey;
     if (!this.fileKey) {
@@ -605,12 +607,16 @@ export class MakeClient {
     if (!before.hasBaseline || treeHidden(path) || UNLISTED_PERSISTED_PATHS.includes(path)) {
       return { before, expectedPaths: before.pendingPaths, modeOptions };
     }
-    const bridge = await this._fileBridge(deadline);
-    let savedBlob;
-    try {
-      const reader = this._sandboxGit(bridge);
-      savedBlob = (await reader.entryAt(await reader.commitTree(before.savedVersion), path))?.blob ?? null;
-    } finally { await bridge.dispose(); }
+    if (this._savedVersionEntries?.version !== before.savedVersion) {
+      this._savedVersionEntries = null;
+      const bridge = await this._fileBridge(deadline);
+      try {
+        const reader = this._sandboxGit(bridge);
+        const entries = await reader.flatten(await reader.commitTree(before.savedVersion));
+        this._savedVersionEntries = { version: before.savedVersion, entries };
+      } finally { await bridge.dispose(); }
+    }
+    const savedBlob = this._savedVersionEntries.entries.get(path)?.blob ?? null;
     const targetBlob = content === null ? null : gitBlobSha(Buffer.from(content));
     const expectedPaths = before.pendingPaths.filter(item => item !== path);
     if (targetBlob !== savedBlob) expectedPaths.push(path);

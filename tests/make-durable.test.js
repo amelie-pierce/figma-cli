@@ -25,7 +25,7 @@ function fakeClient({ original = null, paths = [], post = state(paths), version 
   client._backup = async (path, content) => { calls.push(['backup', path, content]); return '/private/backup'; };
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._sandboxGit = () => ({ commitTree: async () => 'saved',
-    entryAt: async () => original === null ? null : { blob: gitBlobSha(Buffer.from(original)) } });
+    flatten: async () => ({ get: () => original === null ? null : { blob: gitBlobSha(Buffer.from(original)) } }) });
   let current = original;
   const tracked = path => {
     if (!post.hasBaseline || path.split('/').some(part => part.startsWith('.')) ||
@@ -79,6 +79,7 @@ test('replacement reuses a validated editor selection and reselects if it moved'
     };
     client._fileBridge = async () => ({ dispose: async () => {} });
     let current = 'old';
+    client._driftState = async () => ({ state: state(current === 'old' ? [] : ['src/App.tsx']) });
     client._durable = async action => {
       if (action.type === 'read') return { exists: true, content: current };
       if (action.type === 'write') { current = action.content; return { accepted: true }; }
@@ -1125,7 +1126,7 @@ test('a new file\'s pre-write absence check reuses the ancestor check\'s tree li
   client._operation = fn => fn(Date.now() + 5000);
   client._ensureCode = async () => ({ busy: false, offline: false, readOnly: false });
   client._driftState = async () => ({ state: state(current === null ? [] : [path]) });
-  client._sandboxGit = () => ({ commitTree: async () => 'saved', entryAt: async () => null });
+  client._sandboxGit = () => ({ commitTree: async () => 'saved', flatten: async () => new Map() });
   let current = null;
   const listings = [];
   const entries = () => [{ kind: 'folder', path: 'public' }, { kind: 'folder', path: 'public/atomicaui' },

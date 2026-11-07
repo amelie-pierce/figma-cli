@@ -372,7 +372,7 @@ function fakeMake(nodes, files, change, { clientHeight = 320 } = {}) {
       pendingCount: paths.length, pendingPaths: paths, isLoading: false, error: false } };
   };
   client._sandboxGit = () => ({ commitTree: async () => 'saved',
-    entryAt: async (_tree, path) => Object.hasOwn(files, path) ? { blob: gitBlobSha(Buffer.from(files[path])) } : null });
+    flatten: async () => new Map(Object.entries(files).map(([path, content]) => [path, { blob: gitBlobSha(Buffer.from(content)) }])) });
   client._treeTransport = () => transport;
   client._backup = async () => '/private/backup';
   client._read = async () => { throw Object.assign(new Error('Make shows no source editor.'), { code: 'MAKE_NO_EDITOR' }); };
