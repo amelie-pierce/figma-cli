@@ -1,0 +1,26 @@
+tests/live/make-tracker-lag.mjs
+  s_9d3c19e2276b40::t_b55aeec8ce690c 30
+src/make-deploy.js
+  s_9d3c19e2276b40::t_cc2fdad21cd668 861-865
+tests/make-deploy.test.js
+  s_9d3c19e2276b40::t_cc2fdad21cd668 1785-1789,1791-1796,1799-1801
+  s_9d3c19e2276b40::t_30fbdddaac7f32 1790,1797-1798
+_vaults/figma-cli/wiki/make/tracker-latency.md
+  s_9d3c19e2276b40::t_807367a2643b18 58-59,104-107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7c3686c98b7cd1172f4e764a4bcb1ee24b19381b",
+  "prompts": {},
+  "sessions": {
+    "s_9d3c19e2276b40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "13bdf07c-e8f0-4a82-ba9d-8fb28bb7233a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
