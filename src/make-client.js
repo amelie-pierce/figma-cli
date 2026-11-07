@@ -49,6 +49,13 @@ function trackerChanged() {
 
 // Only a pending-only transition can invalidate a read for tracker latency.
 // A retry discards the entire inventory; it never accepts mixed snapshots.
+// Make lists a saved-version file's content difference, except tree-hidden
+// paths. A confirmed write can still precede that list (tracker-latency.md).
+function listedPendingOf(status) {
+  return [...new Set([...status.makeFlat.keys(), ...status.workingFlat.keys()])]
+    .filter(path => !treeHidden(path) && status.makeFlat.get(path)?.blob !== status.workingFlat.get(path)?.blob);
+}
+
 function inventoryChanged(message, before, after) {
   const error = new Error(message);
   const identity = state => state && JSON.stringify({ ...state, pendingPaths: null, pendingCount: null });
@@ -627,6 +634,14 @@ export class MakeClient {
     return this._settleTracker(tracker.before, tracker.expectedPaths, deadline, { modeOptions: tracker.modeOptions });
   }
 
+  // Wait until Make lists exactly the unsaved paths a checked status holds,
+  // before the next mutation relies on its pending list.
+  settleListedPending(status, { overrideMake } = {}) {
+    if (status.treeSource !== 'saved-version') return Promise.resolve(status.persistence);
+    return this._operation(deadline => this._settleTracker(status.persistence, listedPendingOf(status), deadline,
+      { optionalPaths: UNLISTED_PERSISTED_PATHS, modeOptions: { overrideMake } }));
+  }
+
   async _retryTrackerInventory(read) {
     // Successful large inventories retain per-batch budgets. Once a tracker
     // race occurs, all retries share one bounded recovery budget.
@@ -1113,10 +1128,7 @@ export class MakeClient {
     if (overrideMake && expectedPaths.some(path => !overrideMake.allowedPaths.includes(path))) {
       throw new Error('Override save paths differ from the reviewed receipt.');
     }
-    const listedChanges = listed && before.treeSource === 'saved-version'
-      ? [...new Set([...before.makeFlat.keys(), ...before.workingFlat.keys()])]
-        .filter(path => !treeHidden(path) && before.makeFlat.get(path)?.blob !== before.workingFlat.get(path)?.blob)
-      : null;
+    const listedChanges = listed && before.treeSource === 'saved-version' ? listedPendingOf(before) : null;
     const version = await this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
       if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');

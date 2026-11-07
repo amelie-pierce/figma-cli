@@ -72,6 +72,10 @@ through `deleteDurable`, and ordinary `make save-version` through
   to it before pinning the state passed to `createVersion`. A resume whose
   status read an empty pending set while the tracker still lagged no longer
   refuses; foreign paths and version changes still do.
+- Deploy resume and abort, after their plan and content checks, wait through
+  `settleListedPending` for Make to list exactly that checked unsaved content
+  before the next write or delete, so a confirmed but not yet listed write
+  is neither replayed nor later rejected as foreign.
 
 The DOM error `Make file tree changed before the requested action` is a
 separate row/ancestry identity guard, not a read of `codeFileChanges`.
@@ -102,7 +106,7 @@ zero pending paths, all seven expected hashes and the same 27 non-benchmark
 file hashes. Tracker waits after content confirmation ranged from 1157 to 1529 ms.
 No installed runtime was updated and no prototype received traffic.
 The later follow-up (cached saved-version tree, deploy-save settlement,
-no lockfile replay after confirmed mutations, and a live runner that refuses a
+no lockfile replay after confirmed mutations, resume/abort settlement, and a live runner that refuses a
 scratch file with pending changes instead of saving them) was validated
 offline only with fake clients; it has no live run yet.
 

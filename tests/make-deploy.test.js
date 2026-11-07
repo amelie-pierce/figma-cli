@@ -149,6 +149,11 @@ class FakeMake {
   // Like live Make, root lockfiles are never listed.
   pending() { return this.changed().filter(path => !path.split('/').some(part => part.startsWith('.')) && !['pnpm-lock.yaml', 'package-lock.json'].includes(path)); }
   async inspect() { return { fileKey: KEY, ...this.ui }; }
+  async settleListedPending(status) {
+    this.calls.push(['settle', [...status.persistence.pendingPaths]]);
+    await this.hooks.settle?.(status);
+    return status.persistence;
+  }
   async projectMarker() { return this.working.get(PROJECT_MARKER) ?? null; }
   async projectStatus({ classifyText = false, savedInventory = false, savedProtected = () => false } = {}) {
     this.calls.push(['status']);
@@ -449,6 +454,28 @@ describe('make deploy unopened deep-file read-back', () => {
     assert.equal(s.make.deepReadback, 'tree-vfs-sandbox-matched');
     assert.equal(resumed.stage, 'deployed');
     assert.equal(s.make.saved.get(DEEP_PATH).toString(), 'new\n');
+  });
+
+  it('waits for Make to list a confirmed write before resuming or aborting, and stops on a foreign change', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.afterWrite = path => { if (path === 'src/App.tsx') throw new Error('Make operation timed out.'); };
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+    s.make.hooks.afterWrite = null;
+    s.make.hooks.settle = () => { throw Object.assign(new Error('Make version or unrelated pending files changed while settling the pending tracker.'),
+      { code: 'MAKE_TRACKER_CHANGED' }); };
+    const mark = s.make.calls.length;
+    await refuses(deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps), 'DEPLOY_MAKE_STATE');
+    await refuses(deployAbort(s.make, { receiptPath: error.receiptPath }, s.deps), 'DEPLOY_MAKE_STATE');
+    assert.equal(s.make.calls.slice(mark).some(([kind]) => ['write', 'delete', 'save'].includes(kind)), false);
+    s.make.hooks.settle = null;
+    const from = s.make.calls.length;
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps);
+    assert.equal(resumed.stage, 'deployed');
+    const kinds = s.make.calls.slice(from).map(([kind]) => kind).filter(kind => ['settle', 'write', 'delete'].includes(kind));
+    assert.equal(kinds[0], 'settle');
+    assert.ok(kinds.includes('write'), 'the remaining planned write ran after settling');
   });
 
   it('confirms a timed-out write that landed before resuming', async t => {

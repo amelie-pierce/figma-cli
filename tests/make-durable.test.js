@@ -826,6 +826,20 @@ test('a deploy resume save waits for a lagging tracker, but refuses foreign pend
   assert.equal(moved.calls.some(call => call[0] === 'action'), false);
 });
 
+test('settling a checked status waits for a lagging listed path, but refuses foreign or version changes', async () => {
+  const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
+  const status = savedStatus({ persistence: state(), workingFlat: edited });
+  const run = drift => {
+    const { client } = checkedClient({ before: status, drift });
+    return client.settleListedPending(status);
+  };
+  assert.deepEqual((await run([state(), state(), state(['src/App.tsx'])])).pendingPaths, ['src/App.tsx']);
+  await assert.rejects(run([state(['src/App.tsx', 'src/x.ts'])]), { code: 'MAKE_TRACKER_CHANGED' });
+  await assert.rejects(run([{ ...state(['src/App.tsx']), savedVersion: next }]), { code: 'MAKE_TRACKER_CHANGED' });
+  const headBase = savedStatus({ persistence: state(), workingFlat: edited, treeSource: 'sandbox-head' });
+  assert.equal(await checkedClient({ before: headBase, drift: [state(['src/x.ts'])] }).client.settleListedPending(headBase), headBase.persistence);
+});
+
 test('a deploy save accepts a saved file mode Make kept, but not different content', async () => {
   const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
   const pending = state(['src/App.tsx']);
