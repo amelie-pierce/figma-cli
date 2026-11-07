@@ -1,0 +1,24 @@
+_vaults/figma-cli/wiki/make/deploy.md
+  s_1650db6f70fe2e::t_71b7afe8a07246 29-31
+src/make-client.js
+  s_1650db6f70fe2e::t_bffe85075daab2 64-65
+REFERENCE.md
+  s_1650db6f70fe2e::t_71b7afe8a07246 610
+  s_1650db6f70fe2e::t_bffe85075daab2 611-614
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "73347a715d814912a9a309b0b2d3d1faecd0dca0",
+  "prompts": {},
+  "sessions": {
+    "s_1650db6f70fe2e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1b71f-ad23-7673-8f91-fa67689448c8",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
