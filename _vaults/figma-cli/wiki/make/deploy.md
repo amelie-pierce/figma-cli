@@ -31,6 +31,8 @@ Detached startup, per-run records and terminal results are implemented in
 is in `tests/make-deploy-runner.test.js`. Windows execution and live Figma
 delivery are **UNVERIFIED**.
 
+Updated 2026-11-06: editor-selection reuse is documented in the [command reference](../../../../REFERENCE.md#deploying-main-to-make-make-deploy); regression coverage is in `tests/make-tree.test.js:400` and `tests/make-durable.test.js:58`.
+
 ## Current-main override
 
 For commands, guards and recovery, see the

@@ -494,6 +494,22 @@ scripts. Status reads local receipts and runner records without connecting to Ma
 A live lease does not prove that Make has saved a version; use the receipt and
 fresh reload verification for that proof. Older receipts have no runner record.
 
+For an existing file, a durable write reuses the selected editor row after
+the write only when the final Files-tree scan still shows that row and all
+its ancestors mounted, and the editor validates their identity again.
+If the scan already shows an unmounted row or ancestor, it goes straight to
+guarded selection without an extra cached editor read. If Make moves the
+selection after the scan, the editor check falls back to guarded selection. The
+before and after VFS, sandbox and Files-tree checks still run for each file,
+and the editor content is checked when available. This saves one Files-tree
+selection for replacements whose selection stays mounted; large trees may
+still require both selections. Creates, deletes, and hidden files retain
+their existing checks. A fake client with 120 ms per selection measured
+0.329 s before and 0.212 s after per replacement (one selection instead of
+two) for a mounted selection. Live per-stage Make timing is pending; this
+optimization must not be merged until an authorized scratch-file or vendor-only
+deploy confirms its live behavior and timing.
+
 Normal deploy guards, each refusing with nothing written:
 - a release-installed AtomicAUI folder in the clone equals its VENDOR.json file
   records (`DEPLOY_VENDOR_EDITED`, checked first, also on `--apply`);

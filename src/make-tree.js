@@ -302,7 +302,7 @@ async function scanTree(transport, { deadline, maxEntries, targetPath }) {
       if (state.scrollTop >= maxScroll - POSITION_TOLERANCE) {
         const rows = [...observed.values()].sort((a, b) => a.top - b.top);
         const entries = buildMakeHierarchy(rows, { contentHeight, maxEntries, allowCollapsed: !!targetPath });
-        return { entries, rows, contentHeight, clientHeight: state.clientHeight };
+        return { entries, rows, renderedRows: state.rows, contentHeight, clientHeight: state.clientHeight };
       }
       const nextTop = Math.min(maxScroll, state.scrollTop + Math.max(1, state.clientHeight * 0.75));
       const previousTop = state.scrollTop;

@@ -354,10 +354,10 @@ describe('Make virtualized DOM traversal', () => {
 // real writeDurable/deleteDurable, _durableAgreement and _sourceTree run offline.
 // After the VFS change every folder collapses, and Make applies `change` to the
 // rendered tree while the next scan expands src/lib, so the guard refuses once.
-function fakeMake(nodes, files, change) {
+function fakeMake(nodes, files, change, { clientHeight = 320 } = {}) {
   const vfs = new Map(Object.entries(files));
   let pending = false;
-  const transport = fixture(nodes, { clientHeight: 320, onAction(action, context) {
+  const transport = fixture(nodes, { clientHeight, onAction(action, context) {
     if (pending && action.type === 'expand' && action.row?.name === 'lib') { pending = false; change(context); }
   } });
   const collapse = items => items.forEach(item => { if (item.kind === 'folder') { item.expanded = false; collapse(item.children); } });
@@ -396,6 +396,40 @@ function fakeMake(nodes, files, change) {
 describe('Make durable writes and deletes across a guarded tree refresh', () => {
   const hash = text => createHash('sha256').update(text).digest('hex');
   const tree = (...extra) => [folder('src', [folder('lib', [file('old.ts')]), ...extra])];
+
+  it('avoids cached editor calls for rows or ancestors outside the final viewport', async () => {
+    const cases = [
+      { nodes: [file('App.tsx'), file('b'), file('c'), file('d')], path: 'App.tsx', selections: 2 },
+      { nodes: [folder('src', [file('App.tsx')]), file('last')], path: 'src/App.tsx', selections: 2 },
+      { nodes: [folder('src', [file('App.tsx')])], path: 'src/App.tsx', selections: 1 },
+    ];
+    for (const { nodes, path, selections } of cases) {
+      const client = fakeMake(nodes, { [path]: 'old' }, () => {}, { clientHeight: 64 });
+      const transport = client._treeTransport();
+      client._read = MakeClient.prototype._read;
+      let editorReads = 0;
+      let unmountedReads = 0;
+      client._editor = async action => {
+        if (action.type === 'inspect') return { editorCount: 1 };
+        assert.equal(action.type, 'read');
+        editorReads++;
+        const { entry } = action;
+        const start = transport.viewport.scrollTop;
+        if ([...entry.ancestors, entry].some(row => row.top < start || row.top >= start + 64)) {
+          unmountedReads++;
+          throw new Error('Make selected source file or ancestor is no longer rendered.');
+        }
+        assert.equal(transport.selectedPath, entry.path);
+        return { content: (await client._durable({ type: 'read', path: entry.path })).content };
+      };
+      const result = await client.writeDurable(path, 'new', { expectedSha256: hash('old') });
+      assert.equal(result.verification, 'editor-tree-vfs-sandbox-matched');
+      assert.equal((await client.readDurable(path)).content, 'new');
+      assert.equal(unmountedReads, 0, 'the completed tree scan must rule out an unmounted cached entry');
+      assert.equal(editorReads, 2, 'only the before/after editor reads are needed');
+      assert.equal(transport.clicks.filter(clicked => clicked === path).length, selections);
+    }
+  });
 
   it('writes a file whose new folder appears during a guarded expand', async () => {
     const client = fakeMake(tree(), { 'src/lib/old.ts': 'old' },
