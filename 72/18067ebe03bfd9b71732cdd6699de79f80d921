@@ -1,0 +1,51 @@
+tests/make-durable.test.js
+  s_217726e14ec871::t_7c254af32b0eaa 7,26-27,30-36,40-41,1084,1162,1167
+  s_217726e14ec871::t_399c178918a0e3 28,1079-1083,1095-1096,1146-1161,1163-1166,1168-1228
+tests/make-sandbox-git.test.js
+  s_217726e14ec871::t_49a1ba046f5b28 111
+  s_217726e14ec871::t_1fdb19451b0354 98-110,112-118
+_vaults/figma-cli/wiki/make/tracker-latency.md
+  s_217726e14ec871::t_f7920564722e70 1-13,15-28,35-42,44-55,57-79,82-88
+  s_217726e14ec871::t_6614fd8f170b85 14,43,81,89-94
+  s_217726e14ec871::t_f6903b2836c456 29-31,33-34,56,80
+  s_217726e14ec871::t_cdba9c6cafcb9e 32
+  s_217726e14ec871::t_487a3ee62aef3b 95-99
+skills/figma-make/SKILL.md
+  s_217726e14ec871::t_ab44633a08086a 181-185
+tests/live/make-tracker-lag.mjs
+  s_217726e14ec871::t_4c40ca34320b9d 1-64
+src/sandbox-git.js
+  s_217726e14ec871::t_70cf60a911af53 170-195
+src/make-client.js
+  s_217726e14ec871::t_5b52addfe9dd6f 15,50-54,57-58
+  s_217726e14ec871::t_1b80e5ca31e6b7 56,581
+  s_217726e14ec871::t_e3efebb005df5c 55
+  s_217726e14ec871::t_e6e6253b61ce53 42-49,59-60,582,586
+  s_217726e14ec871::t_6ece49dd512a6b 814,844,847,872-873,875,935,959-960,990-994
+  s_217726e14ec871::t_f32e3b3ac15c91 1182-1186,1198,1243,1256-1260,1298,1348,1395-1399,1438,1446
+  s_217726e14ec871::t_7ab788ac524750 566-580,583-585,587-607,614-642
+  s_217726e14ec871::t_58ea6d3b4ce5e6 610-611
+  s_217726e14ec871::t_9809811575fcf9 61,608-609,612-613,848,874
+_vaults/figma-cli/wiki/make/index.md
+  s_217726e14ec871::t_f7920564722e70 8
+tests/make-tree.test.js
+  s_217726e14ec871::t_66103d8a299e22 6,369-375
+tests/make-project-client.test.js
+  s_217726e14ec871::t_a4444a5042c741 230-271
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7218067ebe03bfd9b71732cdd6699de79f80d921",
+  "prompts": {},
+  "sessions": {
+    "s_217726e14ec871": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1b3d0-fdfd-7d01-b3a2-81b18ac8d53a",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
