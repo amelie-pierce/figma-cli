@@ -12,7 +12,7 @@ import { makeWorkspace, openMakeFilesTab } from './make-workspace.js';
 import { makeUiSnapshot } from './make-ui.js';
 import { makePersistenceState, makeVersionHistory } from './make-persistence.js';
 import { compareVendor, digest, externalReceipt, sourcePath, vendorManifest, verifyGeneratedManifest } from './make-drift.js';
-import { makeDurablePageAction, requireFirstVersionPending, requireGitMode, requireExactPending, TREE_HIDDEN_ROOT_FILES } from './make-durable.js';
+import { makeDurablePageAction, requireFirstVersionPending, requireGitMode, requireExactPending, TREE_HIDDEN_ROOT_FILES, UNLISTED_PERSISTED_PATHS } from './make-durable.js';
 import { gitBlobSha, isIgnored, parseIgnore } from './git-tree.js';
 import { lfsMatcher, PROJECT_EXCLUDES, PROJECT_MARKER, treeOf, workingFlat } from './make-project.js';
 import { notInventoried } from './make-unread.js';
@@ -36,6 +36,26 @@ function uncertainSave(message) {
 function pendingChanged(what) {
   const error = new Error(`Make version or pending files changed before the durable ${what}.`);
   error.code = 'MAKE_PENDING_CHANGED';
+  return error;
+}
+
+function trackerChanged() {
+  const error = new Error('Make version or unrelated pending files changed while settling the pending tracker. Inspect state before retrying.');
+  // Unlike MAKE_PENDING_CHANGED, a mutation may already be confirmed. Deploy
+  // must not treat this as a pre-write refusal and automatically replay it.
+  error.code = 'MAKE_TRACKER_CHANGED';
+  return error;
+}
+
+// Only a pending-only transition can invalidate a read for tracker latency.
+// A retry discards the entire inventory; it never accepts mixed snapshots.
+function inventoryChanged(message, before, after) {
+  const error = new Error(message);
+  const identity = state => state && JSON.stringify({ ...state, pendingPaths: null, pendingCount: null });
+  if (before?.mode === 'git' && before.hasBaseline && after && before.pendingCount === before.pendingPaths?.length && after.pendingCount === after.pendingPaths?.length &&
+      identity(before) === identity(after) && !after.isLoading && !after.error) {
+    error.trackerTransition = { before, after };
+  }
   return error;
 }
 
@@ -543,6 +563,83 @@ export class MakeClient {
     return { state };
   }
 
+  // A confirmed VFS write can precede codeFileChanges by seconds, even when
+  // isLoading is false. Wait for the exact expected set under the same saved
+  // version. Only the known old set may remain temporarily; foreign paths,
+  // disappearing unrelated paths and version changes still fail closed.
+  async _settleTracker(before, expectedPaths, deadline, { optionalPaths = [], modeOptions = {}, initial } = {}) {
+    const expected = [...new Set(expectedPaths)].sort();
+    const allowed = new Set([...before.pendingPaths, ...expected]);
+    const required = before.pendingPaths.filter(path => expected.includes(path));
+    let observed = initial;
+    try {
+      for (;;) {
+        this._remaining(deadline);
+        const current = observed ?? (await this._driftState(deadline)).state;
+        observed = undefined;
+        if (!current || current.savedVersion !== before.savedVersion || current.mode !== before.mode ||
+            current.hasBaseline !== before.hasBaseline || current.error !== before.error ||
+            current.pendingCount !== current.pendingPaths?.length) throw trackerChanged();
+        if (!current.isLoading) {
+          requireGitMode(current, modeOptions);
+          if (current.pendingPaths.some(path => !allowed.has(path)) || required.some(path => !current.pendingPaths.includes(path))) {
+            throw trackerChanged();
+          }
+          const listed = expected.filter(path => !optionalPaths.includes(path) || current.pendingPaths.includes(path));
+          if (JSON.stringify(current.pendingPaths) === JSON.stringify(listed)) return current;
+        }
+        await this._bounded(() => new Promise(resolve => setTimeout(resolve, 100)), deadline);
+      }
+    } catch (error) {
+      if (error.message === 'Make operation timed out.') {
+        error.code = 'MAKE_TRACKER_UNSETTLED';
+        error.message = `Make pending tracker did not settle to ${JSON.stringify(expected)} before the operation deadline. Inspect state before retrying.`;
+      }
+      throw error;
+    }
+  }
+
+  async _pendingAfterMutation(before, path, content, deadline, modeOptions) {
+    // These paths have separate tree/content verification because Make does
+    // not list them. A never-saved/override file may have no usable baseline.
+    if (!before.hasBaseline || treeHidden(path) || UNLISTED_PERSISTED_PATHS.includes(path)) {
+      return { before, expectedPaths: before.pendingPaths, modeOptions };
+    }
+    const bridge = await this._fileBridge(deadline);
+    let savedBlob;
+    try {
+      const reader = this._sandboxGit(bridge);
+      savedBlob = (await reader.entryAt(await reader.commitTree(before.savedVersion), path))?.blob ?? null;
+    } finally { await bridge.dispose(); }
+    const targetBlob = content === null ? null : gitBlobSha(Buffer.from(content));
+    const expectedPaths = before.pendingPaths.filter(item => item !== path);
+    if (targetBlob !== savedBlob) expectedPaths.push(path);
+    return { before, expectedPaths: expectedPaths.sort(), modeOptions };
+  }
+
+  async _settleMutation(tracker, deadline) {
+    return this._settleTracker(tracker.before, tracker.expectedPaths, deadline, { modeOptions: tracker.modeOptions });
+  }
+
+  async _retryTrackerInventory(read) {
+    // Successful large inventories retain per-batch budgets. Once a tracker
+    // race occurs, all retries share one bounded recovery budget.
+    const previousDeadline = this.deadline;
+    let recoveryDeadline;
+    try {
+      for (;;) {
+        try { return await read(); }
+        catch (error) {
+          if (!error.trackerTransition) throw error;
+          recoveryDeadline ??= Math.min(Date.now() + this.timeoutMs, previousDeadline);
+          this.deadline = recoveryDeadline;
+          const { before, after } = error.trackerTransition;
+          await this._operation(deadline => this._settleTracker(before, after.pendingPaths, deadline));
+        }
+      }
+    } finally { this.deadline = previousDeadline; }
+  }
+
   _durable(action, deadline) {
     return this._evaluate(`(${makeDurablePageAction.toString()})(${JSON.stringify(action)})`, deadline,
       { bytes: action.type === 'read' ? Infinity : 0 });
@@ -736,6 +833,7 @@ export class MakeClient {
       if (!existing.exists) await this._requireListableAncestor(path, deadline, baseFolders, treeState);
       await this._durableAgreement(path, existing.exists ? existing.content : null, deadline, { treeState, releaseAsset, vendorTreeFallback });
       if (existing.exists && existing.content === content && !rewrite) return { fileKey: this.fileKey, path, changed: false, sha256: originalSha256, verification: 'unchanged' };
+      const tracker = await this._pendingAfterMutation(before, path, content, deadline, { firstVersion, overrideMake });
       const backupPath = existing.exists ? await this._bounded(() => this._backup(path, existing.content, {
         backupDir, operation: 'durable-write', replacementSha256: sha256(content),
       }), deadline) : null;
@@ -765,8 +863,11 @@ export class MakeClient {
         error.backupPath = backupPath;
         // The page refused before writing; anything else may have landed.
         if (!refused) error.uncertainWrite = { ...written, cause: cause.message, observed: cause.observed };
+        if (!refused) error.trackerExpectation = tracker;
         throw error;
       }
+      try { await this._settleMutation(tracker, deadline); }
+      catch (error) { error.confirmedWrite = written; error.backupPath = backupPath; throw error; }
       return { ...written, verification, persistence: 'pending-version' };
     }, { durable: true });
   }
@@ -790,6 +891,10 @@ export class MakeClient {
       }
       error.readBack = readBack;
       if (readBack.vfs === 'matched' && readBack.sandbox === 'matched') {
+        if (error.trackerExpectation) {
+          try { await this._operation(deadline => this._settleMutation(error.trackerExpectation, deadline)); }
+          catch (trackerError) { trackerError.confirmedWrite = written; trackerError.backupPath = written.backupPath; throw trackerError; }
+        }
         return { ...written, verification: 'vfs-sandbox-matched-after-uncertain-write', uncertainCause: cause,
           persistence: 'pending-version' };
       }
@@ -849,6 +954,7 @@ export class MakeClient {
       await this._requireListableAncestor(path, deadline);
       const treeState = {};
       await this._durableAgreement(path, original.content, deadline, { treeState, vendorTreeFallback });
+      const tracker = await this._pendingAfterMutation(before, path, null, deadline, { firstVersion, overrideMake });
       const backupPath = await this._bounded(() => this._backup(path, original.content, { backupDir, operation: 'durable-delete' }), deadline);
       const immediate = requireGitMode((await this._driftState(deadline)).state, { firstVersion, overrideMake });
       if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {
@@ -872,6 +978,8 @@ export class MakeClient {
         error.backupPath = backupPath;
         throw error;
       }
+      try { await this._settleMutation(tracker, deadline); }
+      catch (error) { error.backupPath = backupPath; error.confirmedDelete = { path }; throw error; }
       return { fileKey: this.fileKey, path, beforeSha256: sha256(original.content), backupPath,
         verification: 'tree-vfs-sandbox-delete-matched', persistence: 'pending-version' };
     }, { durable: true });
@@ -901,7 +1009,11 @@ export class MakeClient {
     return this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
       if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
-      const before = requireGitMode((await this._driftState(deadline)).state);
+      const initial = requireGitMode((await this._driftState(deadline)).state);
+      // Foreign paths are never a settling condition for a save.
+      if (initial.pendingPaths.some(path => !expectedPaths.includes(path))) requireExactPending(initial, expectedPaths);
+      const before = await this._settleTracker(initial, expectedPaths, deadline,
+        { optionalPaths: UNLISTED_PERSISTED_PATHS, initial });
       const { listed: changedFiles, unlisted } = requireExactPending(before, expectedPaths);
       const unlistedFiles = await this._unlistedSnapshot(unlisted, deadline);
       let version;
@@ -1089,7 +1201,11 @@ export class MakeClient {
   // Bound each renderer/socket batch independently. Large kits can take more
   // than one command timeout in total, but no Runtime.callFunctionOn owns the
   // whole tree. Version/pending state is checked at every batch boundary.
-  async inventoryVendor(root = 'src/vendor/atomic-aui', { includeBytes = false, batchSize = 24 } = {}) {
+  inventoryVendor(root = 'src/vendor/atomic-aui', options = {}) {
+    return this._retryTrackerInventory(() => this._inventoryVendor(root, options));
+  }
+
+  async _inventoryVendor(root = 'src/vendor/atomic-aui', { includeBytes = false, batchSize = 24 } = {}) {
     sourcePath(root);
     if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 64) throw new Error('Inventory batch size must be 1–64.');
     const directories = [root];
@@ -1101,7 +1217,7 @@ export class MakeClient {
     while (directories.length || files.length) {
       await this._operation(async deadline => {
         const state = (await this._driftState(deadline)).state;
-        if (baseline !== undefined && JSON.stringify(state) !== JSON.stringify(baseline)) throw new Error('Make state changed during inventory.');
+        if (baseline !== undefined && JSON.stringify(state) !== JSON.stringify(baseline)) throw inventoryChanged('Make state changed during inventory.', baseline, state);
         if (baseline === undefined) baseline = state;
         const bridge = await this._fileBridge(deadline);
         try {
@@ -1146,7 +1262,7 @@ export class MakeClient {
           }
         } finally { await bridge.dispose(); }
         const after = (await this._driftState(deadline)).state;
-        if (JSON.stringify(after) !== JSON.stringify(baseline)) throw new Error('Make state changed during inventory.');
+        if (JSON.stringify(after) !== JSON.stringify(baseline)) throw inventoryChanged('Make state changed during inventory.', baseline, after);
       });
     }
     return { inventory, contents, state: baseline, batches: Math.ceil((seenDirectories.size + inventory.size) / batchSize) };
@@ -1159,7 +1275,11 @@ export class MakeClient {
   // kept even when an ignore rule matches it; the baseline always wins. An
   // untracked node_modules folder is skipped. Excluded files are never read.
   // Version/pending state is bracketed per batch, as for inventoryVendor.
-  async inventoryProject({ includeBytes = false, classifyText = false, batchSize = 24, tracked = [], exclude = null } = {}) {
+  inventoryProject(options = {}) {
+    return this._retryTrackerInventory(() => this._inventoryProject(options));
+  }
+
+  async _inventoryProject({ includeBytes = false, classifyText = false, batchSize = 24, tracked = [], exclude = null } = {}) {
     const keep = typeof includeBytes === 'function' ? includeBytes : () => includeBytes === true;
     if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 64) throw new Error('Inventory batch size must be 1–64.');
     const list = async (bridge, directory) => {
@@ -1197,7 +1317,7 @@ export class MakeClient {
     while (directories.length || files.length) {
       await this._operation(async deadline => {
         const state = (await this._driftState(deadline)).state;
-        if (baseline !== undefined && JSON.stringify(state) !== JSON.stringify(baseline)) throw new Error('Make state changed during inventory.');
+        if (baseline !== undefined && JSON.stringify(state) !== JSON.stringify(baseline)) throw inventoryChanged('Make state changed during inventory.', baseline, state);
         if (baseline === undefined) baseline = state;
         const bridge = await this._fileBridge(deadline);
         try {
@@ -1247,7 +1367,7 @@ export class MakeClient {
           }
         } finally { await bridge.dispose(); }
         const after = (await this._driftState(deadline)).state;
-        if (JSON.stringify(after) !== JSON.stringify(baseline)) throw new Error('Make state changed during inventory.');
+        if (JSON.stringify(after) !== JSON.stringify(baseline)) throw inventoryChanged('Make state changed during inventory.', baseline, after);
       });
     }
     return { inventory, contents, state: baseline, excluded: excluded.sort(), excludeSource: exclude ? '.git/info/exclude' : 'baseline-only',
@@ -1294,7 +1414,11 @@ export class MakeClient {
   // sandbox git objects (exact file modes), the project inventory with that
   // tree's paths kept as tracked, the working-copy tree, the marker and the
   // AI-turn version history.
-  async projectStatus({ classifyText = false, savedInventory = false, savedProtected } = {}) {
+  projectStatus(options = {}) {
+    return this._retryTrackerInventory(() => this._projectStatus(options));
+  }
+
+  async _projectStatus({ classifyText = false, savedInventory = false, savedProtected } = {}) {
     if (savedInventory && typeof savedProtected !== 'function') throw new Error('Saved inventory requires a protected-path matcher.');
     const git = await this._operation(async deadline => {
       const state = (await this._driftState(deadline)).state;
@@ -1333,7 +1457,7 @@ export class MakeClient {
           }
         }
         const after = (await this._driftState(deadline)).state;
-        if (JSON.stringify(after) !== JSON.stringify(state)) throw new Error('Make state changed while reading its git objects.');
+        if (JSON.stringify(after) !== JSON.stringify(state)) throw inventoryChanged('Make state changed while reading its git objects.', state, after);
         const headFlat = savedTree && saved !== head ? await reader.flatten(await reader.commitTree(head)) : flat;
         return { state, history, head, tree, flat, headFlat, treeSource: savedTree ? 'saved-version' : 'sandbox-head',
           savedMissing, exclude, savedSha256, savedBlobs };
@@ -1341,7 +1465,7 @@ export class MakeClient {
     });
     const scan = await this.inventoryProject({ includeBytes: path => path === PROJECT_MARKER || path === '.gitattributes', classifyText,
       tracked: [...new Set([...git.flat.keys(), ...git.headFlat.keys()])], exclude: git.exclude });
-    if (JSON.stringify(scan.state) !== JSON.stringify(git.state)) throw new Error('Make state changed during inventory.');
+    if (JSON.stringify(scan.state) !== JSON.stringify(git.state)) throw inventoryChanged('Make state changed during inventory.', git.state, scan.state);
     const isLfs = lfsMatcher(scan.contents.get('.gitattributes')?.toString('utf8'));
     const working = workingFlat(scan.inventory, git.flat);
     const lfsPaths = [...new Set([...scan.inventory.keys(), ...git.flat.keys()])].filter(isLfs).sort();

@@ -95,3 +95,24 @@ describe('sandbox git object reader', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+it('resolves one saved entry without traversing unrelated trees or reading blob contents', async () => {
+  const dir = repository();
+  try {
+    const reader = new SandboxGit(io(dir));
+    const tree = git(dir, 'rev-parse', 'HEAD^{tree}');
+    const allowed = new Set([tree, git(dir, 'rev-parse', 'HEAD:src')]);
+    const object = reader.object.bind(reader);
+    reader.object = async sha => {
+      assert.ok(allowed.has(sha), `unrelated tree or blob read: ${sha}`);
+      return object(sha);
+    };
+    assert.deepEqual(await reader.entryAt(tree, 'src/App.tsx'), {
+      mode: '100644', blob: git(dir, 'rev-parse', 'HEAD:src/App.tsx'),
+    });
+    assert.equal(await reader.entryAt(tree, 'src/absent.ts'), null);
+    assert.equal(await reader.entryAt(tree, 'missing/file.ts'), null);
+    assert.equal(await reader.entryAt(tree, 'README.md/not-a-directory'), null);
+    await assert.rejects(reader.entryAt(tree, '../escape'), /Invalid git tree path/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

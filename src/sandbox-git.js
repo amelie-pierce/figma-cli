@@ -167,6 +167,32 @@ export class SandboxGit {
     return out;
   }
 
+  // Resolve one saved path without reading unrelated subtrees or blob bytes.
+  // Durable writes use this to distinguish an edit from a return to baseline.
+  async entryAt(treeSha, path) {
+    const parts = path.split('/');
+    if (parts.some(part => !part || part === '.' || part === '..')) throw new Error('Invalid git tree path.');
+    for (let depth = 0; depth < parts.length; depth++) {
+      const { type, content } = await this.object(treeSha);
+      if (type !== 'tree') throw new Error(`Make sandbox object ${treeSha} is not a tree.`);
+      let found = null;
+      for (let pos = 0; pos < content.length;) {
+        const space = content.indexOf(0x20, pos);
+        const nul = content.indexOf(0, space);
+        if (space < pos || nul < space || nul + 21 > content.length) throw new Error('Malformed Make git tree.');
+        const mode = content.subarray(pos, space).toString('latin1');
+        const name = content.subarray(space + 1, nul).toString('utf8');
+        const blob = content.subarray(nul + 1, nul + 21).toString('hex');
+        pos = nul + 21;
+        if (name === parts[depth]) { found = { mode: mode.padStart(6, '0'), blob }; break; }
+      }
+      if (!found) return null;
+      if (depth === parts.length - 1) return found;
+      if (found.mode !== '040000') return null;
+      treeSha = found.blob;
+    }
+  }
+
   // Whether ancestor is head itself or reachable through its parents. A missing
   // object fails closed through object().
   async reaches(head, ancestor, limit = 5000) {

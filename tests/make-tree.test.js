@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { createHash } from 'node:crypto';
 import { MakeClient } from '../src/make-client.js';
+import { gitBlobSha } from '../src/git-tree.js';
 import { buildMakeHierarchy, listMakeFiles, selectMakeFile } from '../src/make-tree.js';
 
 const row = (name, kind, level, index, extra = {}) => ({
@@ -365,8 +366,13 @@ function fakeMake(nodes, files, change, { clientHeight = 320 } = {}) {
   client.fileKey = 'ScratchKey';
   client._operation = fn => fn(Date.now() + 5000);
   client._ensureCode = async () => ({ busy: false, offline: false, readOnly: false });
-  client._driftState = async () => ({ state: { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40),
-    pendingCount: 0, pendingPaths: [], isLoading: false, error: false } });
+  client._driftState = async () => {
+    const paths = [...new Set([...Object.keys(files), ...vfs.keys()])].filter(path => files[path] !== vfs.get(path)).sort();
+    return { state: { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40),
+      pendingCount: paths.length, pendingPaths: paths, isLoading: false, error: false } };
+  };
+  client._sandboxGit = () => ({ commitTree: async () => 'saved',
+    entryAt: async (_tree, path) => Object.hasOwn(files, path) ? { blob: gitBlobSha(Buffer.from(files[path])) } : null });
   client._treeTransport = () => transport;
   client._backup = async () => '/private/backup';
   client._read = async () => { throw Object.assign(new Error('Make shows no source editor.'), { code: 'MAKE_NO_EDITOR' }); };

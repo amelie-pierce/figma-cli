@@ -178,6 +178,11 @@ For exact commands and safe in-memory examples, read
 2. Add supporting modules and dependencies before replacing the entry point, so
    the app spends less time with unresolved imports. Imports are sequential,
    not atomic; do not run concurrent writers or assume rollback is automatic.
+   Durable writes/deletes also wait, within the operation timeout, for Make's
+   pending tracker to reflect the confirmed change. A tracker timeout can occur
+   after the bytes landed: inspect state before retrying. `save-version` waits
+   for missing expected pending paths but still refuses unrelated paths or a
+   changed saved version. Do not add sleeps or replay a confirmed write.
 3. For durable work, call `save-version` with the exact pending path set and
    record its version ID and git SHA. Include root `AGENTS.md` or `CLAUDE.md`
    when you changed them: Make does not list them as pending, so the result
