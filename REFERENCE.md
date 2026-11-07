@@ -607,8 +607,11 @@ regenerated), and tries that path again. Before the save, a dependency file
 Make regenerated is written again; when Make keeps changing it after three
 rounds, the deploy stops without saving. It then
 saves one version `deploy <sha7>` whose saved tree must equal the checked working
-tree (Make may list only planned paths as pending), checks the whole project
-root against `main`, and pushes the annotated tag `make-deploy/<n>` on the
+tree (Make may list only planned paths as pending). Resume and the final save
+include planned nested dot files, such as
+`src/vendor/atomic-aui/tokens/generated/.generated`, when checking that pending
+list. They still refuse unrelated pending paths. The deploy then checks the
+whole project root against `main`, and pushes the annotated tag `make-deploy/<n>` on the
 deployed commit. The tag message ends with the receipt's public JSON (no local
 paths). `make status` and the next deploy take the tagged commit's tree as the
 base; a receipt `mainTree` that differs from it is refused by deploy and flagged

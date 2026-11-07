@@ -53,22 +53,25 @@ function trackerChanged() {
   return error;
 }
 
-// Make lists a saved-version file's content difference, except tree-hidden
-// paths. A confirmed write can still precede that list (tracker-latency.md).
 // Without the saved commit object, an override uses its recovered saved
 // inventory ({ path, sha256 } or { path, blob }) as that saved content.
 function savedMatches(item, sha, blob) {
   return item ? (item.blob ? item.blob === blob : item.sha256 === sha) : sha == null && blob == null;
 }
 
-function listedPendingOf(status, overrideMake) {
+function listedPendingOf(status, overrideMake, plannedPaths = []) {
+  const planned = new Set(plannedPaths);
+  // A planned dot file below visible folders may be pending; paths inside dot
+  // folders and root dot files remain excluded because Make may omit them.
+  const listed = path => !treeHidden(path) || (planned.has(path) && path.includes('/') &&
+    path.split('/').slice(0, -1).every(part => !part.startsWith('.')));
   if (status.treeSource === 'saved-version') {
     return [...new Set([...status.makeFlat.keys(), ...status.workingFlat.keys()])]
-      .filter(path => !treeHidden(path) && status.makeFlat.get(path)?.blob !== status.workingFlat.get(path)?.blob);
+      .filter(path => listed(path) && status.makeFlat.get(path)?.blob !== status.workingFlat.get(path)?.blob);
   }
   if (!overrideMake?.savedFiles || !status.persistence.hasBaseline) return null;
   const saved = new Map(overrideMake.savedFiles.map(item => [item.path, item]));
-  return [...new Set([...saved.keys(), ...status.workingFlat.keys()])].filter(path => !treeHidden(path) &&
+  return [...new Set([...saved.keys(), ...status.workingFlat.keys()])].filter(path => listed(path) &&
     !savedMatches(saved.get(path), status.workingSha256.get(path), status.workingFlat.get(path)?.blob));
 }
 
@@ -678,8 +681,8 @@ export class MakeClient {
   // Wait until Make lists exactly the unsaved paths a checked status holds,
   // before the next mutation or save relies on its pending list. A status
   // whose pending list was stale is read again; its content must be unchanged.
-  async settleCheckedStatus(status, { overrideMake } = {}) {
-    const listed = listedPendingOf(status, overrideMake);
+  async settleCheckedStatus(status, { overrideMake, plannedPaths } = {}) {
+    const listed = listedPendingOf(status, overrideMake, plannedPaths);
     if (!listed) return status;
     const settled = await this._operation(deadline => this._settleTracker(status.persistence, listed, deadline,
       { optionalPaths: UNLISTED_PERSISTED_PATHS, modeOptions: { overrideMake } }));
@@ -1141,7 +1144,7 @@ export class MakeClient {
       throw new Error('--first-version requires --since <commit>: the sandbox head make status reported before the writes.');
     }
     let before = await this.projectStatus();
-    if (listed) before = await this.settleCheckedStatus(before, { overrideMake });
+    if (listed) before = await this.settleCheckedStatus(before, { overrideMake, plannedPaths: expectedPaths });
     const state = requireGitMode(before.persistence, { firstVersion, overrideMake });
     if (overrideMake) await this._operation(async deadline => {
       const bridge = await this._fileBridge(deadline);

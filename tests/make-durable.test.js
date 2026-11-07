@@ -949,6 +949,37 @@ test('settling a checked status waits for a lagging listed path, but refuses for
   assert.equal(await checkedClient({ before: headBase, drift: [state(['src/x.ts'])] }).client.settleCheckedStatus(headBase), headBase);
 });
 
+test('settling a deploy status includes planned dot files but omits dot folders in saved and override inventories', async () => {
+  const planned = 'src/vendor/atomic-aui/tokens/generated/.generated';
+  const unrelated = 'src/other/.local';
+  const workingFlat = new Map([...markerWorking,
+    [planned, { mode: '100644', blob: '5'.repeat(40) }],
+    [unrelated, { mode: '100644', blob: '6'.repeat(40) }]]);
+  const pending = state([planned]);
+  const status = savedStatus({ persistence: pending, workingFlat });
+  const { client } = checkedClient({ before: status, drift: [pending] });
+  const plannedPaths = [planned, '.figma-cli/project.json'];
+  assert.equal(await client.settleCheckedStatus(status, { plannedPaths }), status);
+  const overrideStatus = { ...status, treeSource: 'sandbox-head', workingSha256: new Map() };
+  const overrideMake = { savedVersion: base, head,
+    savedFiles: [...sinceFlat].map(([path, item]) => ({ path, blob: item.blob })) };
+  const override = checkedClient({ before: overrideStatus, drift: [pending] });
+  assert.equal(await override.client.settleCheckedStatus(overrideStatus, { overrideMake, plannedPaths }), overrideStatus);
+});
+
+test('a deploy save keeps a planned dot file in the final pending check', async () => {
+  const planned = 'src/vendor/atomic-aui/tokens/generated/.generated';
+  const edited = new Map([...markerWorking, [planned, { mode: '100644', blob: '5'.repeat(40) }]]);
+  const pending = state([planned]);
+  const before = savedStatus({ persistence: pending, workingFlat: edited });
+  const { client, calls } = checkedClient({ before, drift: [pending, pending, { ...state(), savedVersion: next }] });
+  const queue = [before, { ...afterStatus(), makeFlat: edited, workingFlat: edited }];
+  client.projectStatus = async () => (queue.length > 1 ? queue.shift() : queue[0]);
+  const result = await client.saveCheckedVersion('deploy', [planned, '.figma-cli/project.json'], { listed: true });
+  assert.deepEqual(calls.find(call => call[0] === 'action')[1].expectedPaths, [planned]);
+  assert.deepEqual(result.changedFiles, ['.figma-cli/project.json', planned]);
+});
+
 test('a deploy save accepts a saved file mode Make kept, but not different content', async () => {
   const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
   const pending = state(['src/App.tsx']);
