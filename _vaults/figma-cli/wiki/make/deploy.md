@@ -31,7 +31,7 @@ Detached startup, per-run records and terminal results are implemented in
 is in `tests/make-deploy-runner.test.js`. Windows execution and live Figma
 delivery are **UNVERIFIED**.
 
-Updated 2026-11-06: for changes to the interaction between verification scans and editor selection, use the virtualized durable-write regression in `tests/make-tree.test.js:400`. It exercises offscreen files, offscreen ancestors, and mounted selection reuse through real tree traversal; the simpler client stub in `tests/make-durable.test.js:58` covers a selection changing after the scan. Timing limitations and the pending live-measurement hold are documented in the command reference linked above.
+Updated 2026-11-06: editor-selection reuse is documented in the [command reference](../../../../REFERENCE.md#deploying-main-to-make-make-deploy); regression coverage is in `tests/make-tree.test.js:400` and `tests/make-durable.test.js:58`.
 
 ## Current-main override
 
