@@ -1,0 +1,35 @@
+tests/make-tree.test.js
+  s_9d3c19e2276b40::t_7c5bd8d79b2983 375
+src/make-client.js
+  s_c55a8e94bfe2a9::t_4709e6ba086f08 259,265,610-619
+tests/make-sandbox-git.test.js
+  s_c55a8e94bfe2a9::t_63db0c1f11a306 7,100,103-117,119-132
+tests/make-durable.test.js
+  s_9d3c19e2276b40::t_7c5bd8d79b2983 1129
+  s_c55a8e94bfe2a9::t_2df047bde5bf38 28
+  s_9d3c19e2276b40::t_b45bcf0ddf65c5 82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "01ccb2d24a2669df51a50f308550f267e53936da",
+  "prompts": {},
+  "sessions": {
+    "s_9d3c19e2276b40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "13bdf07c-e8f0-4a82-ba9d-8fb28bb7233a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_c55a8e94bfe2a9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1b3f2-4986-7e61-9f66-2a0c0f2a997d",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
