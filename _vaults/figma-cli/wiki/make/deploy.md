@@ -17,11 +17,21 @@ Updated 2026-10-29: status marks a missing saved commit even when Make claims a 
 Updated 2026-11-04: tracked `.npmrc`, mode-only and reloaded Make-only override follow-ups; warn-only deploy reminders.
 Updated 2026-11-06: deploy progress and local status are documented in the command reference.
 Updated 2026-11-06: detached deploy details live in the command reference and runner modules.
+Updated 2026-11-08: resume pending settlement includes planned dot files.
 
 # make deploy
 Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI files first (`DEPLOY_VENDOR_EDITED`); see [vendor-lock.md](vendor-lock.md).
 
 ## Progress and local status
+
+Resume passes the receipt's planned paths into the pending-set comparison, so a
+dot-prefixed file that Make lists as pending is expected when its checked content
+differs from the saved copy. Unplanned hidden paths remain excluded from this
+tracker expectation; root instruction files remain optional (`src/make-deploy.js:1181`,
+`src/make-client.js:64`, `src/make-client.js:684`, `src/make-durable.js:157`).
+Offline coverage exercises the client comparison and receipt resume
+(`tests/make-durable.test.js:952`, `tests/make-deploy.test.js:502`). Live Make
+recovery with this build is **UNVERIFIED**.
 
 See [Deploying main to Make](../../../../REFERENCE.md#deploying-main-to-make-make-deploy) for progress output and receipt status commands. The implementation is in `src/make-deploy.js` and `src/make-deploy-status.js`; fake receipt coverage is in `tests/make-deploy-status.test.js`.
 

@@ -1178,7 +1178,7 @@ async function resumable(client, receipt, what, warn = () => {}) {
   const checked = plannedState(receipt, status);
   if (checked.problem) fail(`${checked.problem}. ${checked.code === 'DEPLOY_RECEIPT' ? 'Inspect it by hand. ' : ''}Nothing was changed.`, checked.code);
   let settled;
-  try { settled = await client.settleCheckedStatus(status, { overrideMake: overridePin(receipt) }); }
+  try { settled = await client.settleCheckedStatus(status, { overrideMake: overridePin(receipt), plannedPaths: receipt.plan.files.map(file => file.path) }); }
   catch (error) { fail(`Make's pending list does not match its checked unsaved content: ${error.message} Nothing was changed.`, 'DEPLOY_MAKE_STATE'); }
   return { status: settled, files: checked.files };
 }

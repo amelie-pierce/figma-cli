@@ -949,6 +949,18 @@ test('settling a checked status waits for a lagging listed path, but refuses for
   assert.equal(await checkedClient({ before: headBase, drift: [state(['src/x.ts'])] }).client.settleCheckedStatus(headBase), headBase);
 });
 
+test('settling a deploy status includes planned dot files but does not require unrelated hidden files', async () => {
+  const planned = 'src/vendor/atomic-aui/tokens/generated/.generated';
+  const unrelated = 'src/other/.local';
+  const workingFlat = new Map([...markerWorking,
+    [planned, { mode: '100644', blob: '5'.repeat(40) }],
+    [unrelated, { mode: '100644', blob: '6'.repeat(40) }]]);
+  const pending = state([planned]);
+  const status = savedStatus({ persistence: pending, workingFlat });
+  const { client } = checkedClient({ before: status, drift: [pending] });
+  assert.equal(await client.settleCheckedStatus(status, { plannedPaths: [planned] }), status);
+});
+
 test('a deploy save accepts a saved file mode Make kept, but not different content', async () => {
   const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
   const pending = state(['src/App.tsx']);

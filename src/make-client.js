@@ -54,21 +54,24 @@ function trackerChanged() {
 }
 
 // Make lists a saved-version file's content difference, except tree-hidden
-// paths. A confirmed write can still precede that list (tracker-latency.md).
+// paths that were not planned for deploy. A confirmed write can still precede
+// that list (tracker-latency.md).
 // Without the saved commit object, an override uses its recovered saved
 // inventory ({ path, sha256 } or { path, blob }) as that saved content.
 function savedMatches(item, sha, blob) {
   return item ? (item.blob ? item.blob === blob : item.sha256 === sha) : sha == null && blob == null;
 }
 
-function listedPendingOf(status, overrideMake) {
+function listedPendingOf(status, overrideMake, plannedPaths = []) {
+  const planned = new Set(plannedPaths);
+  const listed = path => !treeHidden(path) || (planned.has(path) && !TREE_HIDDEN_ROOT_FILES.includes(path));
   if (status.treeSource === 'saved-version') {
     return [...new Set([...status.makeFlat.keys(), ...status.workingFlat.keys()])]
-      .filter(path => !treeHidden(path) && status.makeFlat.get(path)?.blob !== status.workingFlat.get(path)?.blob);
+      .filter(path => listed(path) && status.makeFlat.get(path)?.blob !== status.workingFlat.get(path)?.blob);
   }
   if (!overrideMake?.savedFiles || !status.persistence.hasBaseline) return null;
   const saved = new Map(overrideMake.savedFiles.map(item => [item.path, item]));
-  return [...new Set([...saved.keys(), ...status.workingFlat.keys()])].filter(path => !treeHidden(path) &&
+  return [...new Set([...saved.keys(), ...status.workingFlat.keys()])].filter(path => listed(path) &&
     !savedMatches(saved.get(path), status.workingSha256.get(path), status.workingFlat.get(path)?.blob));
 }
 
@@ -678,8 +681,8 @@ export class MakeClient {
   // Wait until Make lists exactly the unsaved paths a checked status holds,
   // before the next mutation or save relies on its pending list. A status
   // whose pending list was stale is read again; its content must be unchanged.
-  async settleCheckedStatus(status, { overrideMake } = {}) {
-    const listed = listedPendingOf(status, overrideMake);
+  async settleCheckedStatus(status, { overrideMake, plannedPaths } = {}) {
+    const listed = listedPendingOf(status, overrideMake, plannedPaths);
     if (!listed) return status;
     const settled = await this._operation(deadline => this._settleTracker(status.persistence, listed, deadline,
       { optionalPaths: UNLISTED_PERSISTED_PATHS, modeOptions: { overrideMake } }));

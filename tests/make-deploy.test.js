@@ -498,6 +498,29 @@ describe('make deploy unopened deep-file read-back', () => {
     assert.ok(lines.includes(`resuming 1/${plan.files.length}`));
     assert.ok(lines.some(line => line.startsWith(`${plan.files.length}/${plan.files.length} src/Card.tsx `)));
   });
+
+  it('resumes when a planned dot file is already in Make pending', async t => {
+    const hidden = 'src/vendor/atomic-aui/tokens/generated/.generated';
+    const s = setup(t);
+    landChange(s, { [hidden]: 'generated\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    assert.ok(plan.files.some(file => file.path === hidden));
+    s.make.pending = () => s.make.changed().filter(path => path === hidden ||
+      (!path.split('/').some(part => part.startsWith('.')) && !['pnpm-lock.yaml', 'package-lock.json'].includes(path)));
+    s.make.hooks.afterWrite = path => { if (path === hidden) throw new Error('Make operation timed out.'); };
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+    assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+    s.make.hooks.afterWrite = null;
+    assert.deepEqual(s.make.pending(), [hidden]);
+    const checked = new MakeClient({ transport: { close() {} }, timeoutMs: 500 });
+    checked._operation = fn => fn(Date.now() + 500);
+    checked._driftState = async () => ({ state: (await s.make.projectStatus()).persistence });
+    checked.projectStatus = () => s.make.projectStatus();
+    s.make.settleCheckedStatus = (status, options) => checked.settleCheckedStatus(status, options);
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps);
+    assert.equal(resumed.stage, 'deployed');
+    assert.ok(readReceipt(error.receiptPath).completedWrites.some(write => write.path === hidden && write.confirmedOnResume));
+  });
 });
 
 // Warn-only reminders: each test checks the warning and that the outcome
