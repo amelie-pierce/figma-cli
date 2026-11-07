@@ -654,14 +654,23 @@ export class MakeClient {
     return { before, path, content, expectedPaths: expectedPaths.sort(), modeOptions };
   }
 
-  // After any wait, the confirmed content must still be in place.
+  // After any wait, the client VFS and the sandbox must both still hold the
+  // confirmed content, or both still lack a deleted path.
   async _settleMutation(tracker, deadline) {
     let waited = false;
     const settled = await this._settleTracker(tracker.before, tracker.expectedPaths, deadline,
       { modeOptions: tracker.modeOptions, onWait: () => { waited = true; } });
     if (waited) {
-      const current = await this._durable({ type: 'read', path: tracker.path }, deadline);
-      if ((current?.exists ? current.content : null) !== tracker.content) throw contentChanged();
+      const { path, content } = tracker;
+      const vfs = await this._durable({ type: 'read', path }, deadline);
+      const bridge = await this._fileBridge(deadline, content === null
+        ? { requestTimeoutMs: Math.min(5000, this._remaining(deadline)) } : undefined);
+      let sandboxKept;
+      try {
+        sandboxKept = content === null ? await this._sandboxAbsent(bridge, path)
+          : (await this._bridgeRead(bridge, path).catch(() => null))?.content === content;
+      } finally { await bridge.dispose(); }
+      if ((vfs?.exists ? vfs.content : null) !== content || !sandboxKept) throw contentChanged();
     }
     return settled;
   }
@@ -733,6 +742,21 @@ export class MakeClient {
         (await this._durable({ type: 'read', path }, deadline)).exists) refuse();
   }
 
+  // Make never answers a listing of a missing directory; try the parent.
+  async _sandboxAbsent(bridge, path) {
+    const segments = path.split('/');
+    for (let depth = segments.length - 1; depth >= 0; depth--) {
+      const remotePath = ['code', ...segments.slice(0, depth)].join('/');
+      const listing = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
+        'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
+      ]).catch(() => null);
+      if (listing?.success === true && listing.data?.path === remotePath && Array.isArray(listing.data.files)) {
+        return !listing.data.files.some(entry => entry?.name === segments[depth]);
+      }
+    }
+    return false;
+  }
+
   // Returns which independent views agreed. On timeout, the error names the
   // last state of each view instead of a bare timeout.
   async _durableAgreement(path, expectedContent, deadline, { treeState, expectedChange, releaseAsset = false, vendorTreeFallback = false } = {}) {
@@ -755,20 +779,8 @@ export class MakeClient {
         let sandbox;
         let absentInSandbox = false;
         try {
-          if (expectedContent === null) {
-            const segments = path.split('/');
-            for (let depth = segments.length - 1; depth >= 0; depth--) {
-              const remotePath = ['code', ...segments.slice(0, depth)].join('/');
-              // Make never answers a listing of a missing directory; try the parent.
-              const listing = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
-                'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
-              ]).catch(() => null);
-              if (listing?.success === true && listing.data?.path === remotePath && Array.isArray(listing.data.files)) {
-                absentInSandbox = !listing.data.files.some(entry => entry?.name === segments[depth]);
-                break;
-              }
-            }
-          } else sandbox = await this._bridgeRead(bridge, path).catch(() => null);
+          if (expectedContent === null) absentInSandbox = await this._sandboxAbsent(bridge, path);
+          else sandbox = await this._bridgeRead(bridge, path).catch(() => null);
         }
         finally { await bridge.dispose(); }
         // A pre-write absence check may start from the listing its ancestor
