@@ -149,6 +149,11 @@ class FakeMake {
   // Like live Make, root lockfiles are never listed.
   pending() { return this.changed().filter(path => !path.split('/').some(part => part.startsWith('.')) && !['pnpm-lock.yaml', 'package-lock.json'].includes(path)); }
   async inspect() { return { fileKey: KEY, ...this.ui }; }
+  async settleCheckedStatus(status) {
+    this.calls.push(['settle', [...status.persistence.pendingPaths]]);
+    await this.hooks.settle?.(status);
+    return status;
+  }
   async projectMarker() { return this.working.get(PROJECT_MARKER) ?? null; }
   async projectStatus({ classifyText = false, savedInventory = false, savedProtected = () => false } = {}) {
     this.calls.push(['status']);
@@ -449,6 +454,28 @@ describe('make deploy unopened deep-file read-back', () => {
     assert.equal(s.make.deepReadback, 'tree-vfs-sandbox-matched');
     assert.equal(resumed.stage, 'deployed');
     assert.equal(s.make.saved.get(DEEP_PATH).toString(), 'new\n');
+  });
+
+  it('waits for Make to list a confirmed write before resuming or aborting, and stops on a foreign change', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.afterWrite = path => { if (path === 'src/App.tsx') throw new Error('Make operation timed out.'); };
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+    s.make.hooks.afterWrite = null;
+    s.make.hooks.settle = () => { throw Object.assign(new Error('Make version or unrelated pending files changed while settling the pending tracker.'),
+      { code: 'MAKE_TRACKER_CHANGED' }); };
+    const mark = s.make.calls.length;
+    await refuses(deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps), 'DEPLOY_MAKE_STATE');
+    await refuses(deployAbort(s.make, { receiptPath: error.receiptPath }, s.deps), 'DEPLOY_MAKE_STATE');
+    assert.equal(s.make.calls.slice(mark).some(([kind]) => ['write', 'delete', 'save'].includes(kind)), false);
+    s.make.hooks.settle = null;
+    const from = s.make.calls.length;
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps);
+    assert.equal(resumed.stage, 'deployed');
+    const kinds = s.make.calls.slice(from).map(([kind]) => kind).filter(kind => ['settle', 'write', 'delete'].includes(kind));
+    assert.equal(kinds[0], 'settle');
+    assert.ok(kinds.includes('write'), 'the remaining planned write ran after settling');
   });
 
   it('confirms a timed-out write that landed before resuming', async t => {
@@ -1780,6 +1807,23 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     assert.deepEqual(s.make.calls.filter(([kind]) => kind === 'save').length, 1);
     const verified = await deployVerify(s.make, { ...s.opts, receiptPath: applied.receiptPath }, s.deps);
     assert.match(verified.summary, /Verified after a fresh reload/);
+  });
+
+  it('does not replay a confirmed lockfile write whose tracker settlement timed out', async t => {
+    const s = dependencyChange(t);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    let once = true;
+    s.make.hooks.afterWrite = path => {
+      if (path !== 'pnpm-lock.yaml' || !once) return;
+      once = false;
+      throw Object.assign(new Error('Make pending tracker did not settle before the operation deadline.'),
+        { code: 'MAKE_TRACKER_UNSETTLED', confirmedWrite: { path } });
+    };
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.outcome, 'ok');
+    assert.deepEqual(s.make.writes.filter(([kind]) => kind === 'write').map(([, path]) => path),
+      ['src/App.tsx', 'package.json', 'pnpm-lock.yaml', 'pnpm-lock.yaml'], 'only the reconcile pass writes it again');
+    assert.equal(s.make.saved.get('pnpm-lock.yaml').toString(), lockFor(NEW_PKG));
   });
 
   it('waits and re-checks when Make\'s install lands under a write, then retries that path', async t => {

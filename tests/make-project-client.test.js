@@ -227,3 +227,45 @@ test('the write gate reads the marker through the client VFS', async () => {
   c._durable = async () => ({ exists: false, content: null });
   assert.equal(await c.projectMarker(), null);
 });
+
+test('deploy resume status discards an inventory whose pending tracker catches up mid-scan', async t => {
+  const dir = sandbox(t);
+  const head = git(dir, 'rev-parse', 'HEAD');
+  writeFileSync(join(dir, 'src/App.tsx'), 'confirmed edit\n');
+  const { c, calls } = client(dir, { state: clean(head) });
+  let reads = 0;
+  const caughtUp = { ...clean(head), pendingCount: 1, pendingPaths: ['src/App.tsx'] };
+  c._driftState = async () => ({ state: ++reads >= 4 ? caughtUp : clean(head) });
+  const result = await c.projectStatus();
+  assert.deepEqual(result.persistence.pendingPaths, ['src/App.tsx']);
+  assert.notEqual(result.workingTree, result.makeTree);
+  assert.ok(calls.filter(call => call.type === 'fs/dir/list' && call.path === 'code').length >= 2,
+    'the inconsistent inventory is discarded and read again');
+});
+
+test('inventory retry never follows a changed saved version', async t => {
+  const dir = sandbox(t);
+  const head = git(dir, 'rev-parse', 'HEAD');
+  const { c } = client(dir, { state: clean(head) });
+  let reads = 0;
+  c._driftState = async () => ({ state: clean(++reads >= 4 ? 'f'.repeat(40) : head) });
+  await assert.rejects(c.projectStatus(), /Make state changed/);
+});
+
+test('continuous tracker churn exhausts the shared inventory recovery deadline', async t => {
+  const dir = sandbox(t);
+  const head = git(dir, 'rev-parse', 'HEAD');
+  const { c } = client(dir, { state: clean(head) });
+  c.timeoutMs = 180;
+  c._operation = async fn => {
+    const deadline = Math.min(Date.now() + c.timeoutMs, c.deadline);
+    c._remaining(deadline);
+    return fn(deadline);
+  };
+  let reads = 0;
+  c._driftState = async () => ({ state: ++reads % 2 ? clean(head)
+    : { ...clean(head), pendingCount: 1, pendingPaths: ['src/App.tsx'] } });
+  const start = Date.now();
+  await assert.rejects(c.projectStatus(), /timed out|did not settle/);
+  assert.ok(Date.now() - start < 1500, 'retries cannot reset the recovery deadline');
+});

@@ -728,7 +728,8 @@ function newReceipt(plan, who, at, home) {
 
 const backupDir = (receipt, home) => join(deployDir(home), 'backups', receipt.deployId);
 const overridePin = receipt => receipt.mode === 'override-make'
-  ? { savedVersion: receipt.makeBefore.versionGitSha, head: receipt.makeBefore.head } : undefined;
+  ? { savedVersion: receipt.makeBefore.versionGitSha, head: receipt.makeBefore.head,
+    ...(receipt.makeBefore.savedInventorySource ? { savedFiles: receipt.makeBefore.savedInventory } : {}) } : undefined;
 
 function stop(receipt, error, stage, message, code) {
   receipt.stage = stage;
@@ -858,7 +859,11 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
         }
         // Make's install may already hold main's lockfile; the client must
         // still write it, or the version keeps the old one.
-        if (checked.files.find(item => item.path === file.path).state === 'after' && !isLockfile(file.path)) { recordWrite(receipt, file, null); break; }
+        const confirmed = !!(error.confirmedWrite || error.confirmedDelete);
+        if (checked.files.find(item => item.path === file.path).state === 'after' && (!isLockfile(file.path) || confirmed)) {
+          recordWrite(receipt, file, confirmed ? error.backupPath ?? null : null);
+          break;
+        }
         expected = status.workingSha256.get(file.path) ?? null;
         continue;
       }
@@ -1172,7 +1177,10 @@ async function resumable(client, receipt, what, warn = () => {}) {
   }
   const checked = plannedState(receipt, status);
   if (checked.problem) fail(`${checked.problem}. ${checked.code === 'DEPLOY_RECEIPT' ? 'Inspect it by hand. ' : ''}Nothing was changed.`, checked.code);
-  return { status, files: checked.files };
+  let settled;
+  try { settled = await client.settleCheckedStatus(status, { overrideMake: overridePin(receipt) }); }
+  catch (error) { fail(`Make's pending list does not match its checked unsaved content: ${error.message} Nothing was changed.`, 'DEPLOY_MAKE_STATE'); }
+  return { status: settled, files: checked.files };
 }
 
 export async function deployResume(client, { dir, receiptPath } = {}, deps = {}) {

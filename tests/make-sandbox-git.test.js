@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { MakeClient } from '../src/make-client.js';
 import { SandboxGit } from '../src/sandbox-git.js';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8',
@@ -94,4 +95,40 @@ describe('sandbox git object reader', () => {
       await assert.rejects(tampered.commitTree(head), /hash check|not a commit/);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+});
+
+it('reuses packed saved entries across mutations and reloads them for a new version', async () => {
+  const dir = repository();
+  try {
+    git(dir, 'repack', '-adf', '--depth=50', '--window=250');
+    git(dir, 'prune-packed');
+    const current = git(dir, 'rev-parse', 'HEAD');
+    const previous = git(dir, 'rev-parse', 'HEAD~1');
+    const client = new MakeClient({ transport: { close() {} } });
+    client.fileKey = 'ScratchKey';
+    client._fileBridge = async () => ({ dispose: async () => {} });
+    const files = io(dir);
+    let packReads = 0;
+    client._sandboxGit = () => new SandboxGit({
+      ...files,
+      readFile: async path => {
+        if (path.endsWith('.pack')) packReads++;
+        return files.readFile(path);
+      },
+    });
+    const before = savedVersion => ({ mode: 'git', hasBaseline: true, savedVersion, pendingPaths: [] });
+    const deadline = Date.now() + 5000;
+    const changed = await client._pendingAfterMutation(before(current), 'src/App.tsx', 'changed', deadline, {});
+    assert.deepEqual(changed.expectedPaths, ['src/App.tsx']);
+    assert.equal(packReads, 1);
+    const restored = await client._pendingAfterMutation(before(current), 'src/App.tsx',
+      readFileSync(join(dir, 'src/App.tsx'), 'utf8'), deadline, {});
+    assert.deepEqual(restored.expectedPaths, []);
+    const deleted = await client._pendingAfterMutation(before(current), 'src/round-3.ts', null, deadline, {});
+    assert.deepEqual(deleted.expectedPaths, ['src/round-3.ts']);
+    assert.equal(packReads, 1);
+    const absentInPrevious = await client._pendingAfterMutation(before(previous), 'src/round-3.ts', null, deadline, {});
+    assert.deepEqual(absentInPrevious.expectedPaths, []);
+    assert.equal(packReads, 2);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

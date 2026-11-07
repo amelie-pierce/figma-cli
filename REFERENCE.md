@@ -196,10 +196,16 @@ refuse in the same case when the clone's installed files (git-ignored files
 and untracked `.DS_Store` excepted) differ from the VENDOR.json file records (`TEAM_VENDOR_EDITED`, `DEPLOY_VENDOR_EDITED`), listing
 each changed, added or missing file (`src/make-vendor-lock.js`).
 
-`make save-version --title TITLE --expected-path PATH ...` calls Make's own
-in-page `createVersion` only when the complete pending path set matches the
-supplied paths. It records the version ID, number, full git SHA, previous SHA,
-and changed-file set; `--receipt-out` writes these to a new private JSON file.
+`make save-version --title TITLE --expected-path PATH ...` waits within the
+operation deadline for Make's pending tracker to list the expected paths it
+tracks, then calls Make's own in-page `createVersion` only when the complete
+pending path set matches. For listed paths, a durable `write` or `delete` also
+waits for the confirmed change to appear in that tracker before reporting
+success. A tracker timeout may follow a
+confirmed mutation; inspect the current file and pending state before retrying
+so the mutation is not replayed. The save records the version ID, number, full
+git SHA, previous SHA, and changed-file set; `--receipt-out` writes these to a
+new private JSON file.
 The CLI then checks that Make reports the new baseline and no pending changes.
 At least one expected path is required, so a clean file never gets an empty version.
 Make hides root `AGENTS.md` and `CLAUDE.md` from its pending list although

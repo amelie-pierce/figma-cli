@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { MakeClient } from '../src/make-client.js';
+import { gitBlobSha } from '../src/git-tree.js';
+import { scratchBaselineProblem } from './live/make-tracker-lag.mjs';
 import { makeDurablePageAction, requireExactPending, requireFirstVersionPending, requireGitMode } from '../src/make-durable.js';
 
 const hash = text => createHash('sha256').update(text).digest('hex');
@@ -22,14 +24,29 @@ function fakeClient({ original = null, paths = [], post = state(paths), version 
   client._sourceTree = async () => [{ kind: 'folder', path: 'src' }];
   client._durableAgreement = async (path, content) => calls.push(['agreement', path, content]);
   client._backup = async (path, content) => { calls.push(['backup', path, content]); return '/private/backup'; };
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._sandboxGit = () => ({ commitTree: async () => 'saved',
+    flatten: async () => ({ get: () => original === null ? null : { blob: gitBlobSha(Buffer.from(original)) } }) });
   let current = original;
+  const tracked = path => {
+    if (!post.hasBaseline || path.split('/').some(part => part.startsWith('.')) ||
+        ['AGENTS.md', 'CLAUDE.md', 'pnpm-lock.yaml', 'package-lock.json'].includes(path)) return;
+    const pending = new Set(post.pendingPaths);
+    if (current === original) pending.delete(path); else pending.add(path);
+    post = { ...post, pendingPaths: [...pending].sort(), pendingCount: pending.size };
+  };
   client._durable = async action => {
     calls.push([action.type, action.path || action.title]);
     if (action.type === 'read') return { exists: current !== null, content: current };
-    if (action.type === 'write') { current = action.content; return { accepted: true }; }
-    if (action.type === 'delete') { current = null; return { accepted: true }; }
+    if (action.type === 'write') { current = action.content; tracked(action.path); return { accepted: true }; }
+    if (action.type === 'delete') { current = null; tracked(action.path); return { accepted: true }; }
     if (action.type === 'save') return version;
   };
+  client._bridgeRead = async () => {
+    if (current === null) throw new Error('missing');
+    return { content: current };
+  };
+  client._sandboxAbsent = async () => current === null;
   return { client, calls };
 }
 
@@ -68,6 +85,7 @@ test('replacement reuses a validated editor selection and reselects if it moved'
     };
     client._fileBridge = async () => ({ dispose: async () => {} });
     let current = 'old';
+    client._driftState = async () => ({ state: state(current === 'old' ? [] : ['src/App.tsx']) });
     client._durable = async action => {
       if (action.type === 'read') return { exists: true, content: current };
       if (action.type === 'write') { current = action.content; return { accepted: true }; }
@@ -782,7 +800,7 @@ test('a deploy save (listed) passes exactly Make\'s listed paths and still check
   const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
   const pending = state(['src/App.tsx']);
   const { client, calls } = checkedClient({ before: savedStatus({ persistence: pending, workingFlat: edited }),
-    drift: [pending, { ...state(), savedVersion: next }] });
+    drift: [pending, pending, { ...state(), savedVersion: next }] });
   const queue = [savedStatus({ persistence: pending, workingFlat: edited }), { ...afterStatus(), makeFlat: edited, workingFlat: edited }];
   client.projectStatus = async () => (queue.length > 1 ? queue.shift() : queue[0]);
   const result = await client.saveCheckedVersion('deploy abc1234', ['src/App.tsx', '.figma-cli/project.json'], { listed: true });
@@ -791,8 +809,144 @@ test('a deploy save (listed) passes exactly Make\'s listed paths and still check
   assert.deepEqual(result.changedFiles, ['.figma-cli/project.json', 'src/App.tsx']);
   assert.equal(result.verification, 'saved-version-clean-baseline; saved-content-matched');
   const stray = checkedClient({ before: savedStatus({ persistence: state(['src/App.tsx', 'src/x.ts']), workingFlat: edited }) });
-  await assert.rejects(stray.client.saveCheckedVersion('deploy', ['src/App.tsx', '.figma-cli/project.json'], { listed: true }), /other pending changes.*src\/x\.ts/);
+  await assert.rejects(stray.client.saveCheckedVersion('deploy', ['src/App.tsx', '.figma-cli/project.json'], { listed: true }), { code: 'MAKE_TRACKER_CHANGED' });
   assert.equal(stray.calls.some(call => call[0] === 'action'), false);
+});
+
+test('a deploy resume save waits for a lagging tracker, but refuses foreign pending paths', async () => {
+  const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
+  const listed = state(['src/App.tsx']);
+  const run = (drift, fresh = savedStatus({ persistence: listed, workingFlat: edited })) => {
+    const { client, calls } = checkedClient({ before: savedStatus({ persistence: state(), workingFlat: edited }), drift });
+    const queue = [savedStatus({ persistence: state(), workingFlat: edited }), fresh, { ...afterStatus(), makeFlat: edited, workingFlat: edited }];
+    client.projectStatus = async () => (queue.length > 1 ? queue.shift() : queue[0]);
+    return { calls, save: client.saveCheckedVersion('deploy abc1234', ['src/App.tsx', '.figma-cli/project.json'], { listed: true }) };
+  };
+  const lagging = run([state(), state(), listed, listed, { ...state(), savedVersion: next }]);
+  await lagging.save;
+  assert.deepEqual(lagging.calls.find(call => call[0] === 'action')[1].expectedPaths, ['src/App.tsx']);
+  const lockfile = new Map([...edited, ['pnpm-lock.yaml', { mode: '100644', blob: '7'.repeat(40) }]]);
+  const rewritten = run([state(), listed], savedStatus({ persistence: listed, workingFlat: lockfile, workingTree: 'f'.repeat(40) }));
+  await assert.rejects(rewritten.save, { code: 'MAKE_CONTENT_CHANGED' });
+  assert.equal(rewritten.calls.some(call => call[0] === 'action'), false);
+  const foreign = run([state(), state(['src/App.tsx', 'src/x.ts'])]);
+  await assert.rejects(foreign.save, /changed/);
+  assert.equal(foreign.calls.some(call => call[0] === 'action'), false);
+  const moved = run([state(), { ...state(['src/App.tsx']), savedVersion: next }]);
+  await assert.rejects(moved.save, /changed/);
+  assert.equal(moved.calls.some(call => call[0] === 'action'), false);
+});
+
+test('an override without the saved commit object derives Make\'s pending list from its recovered saved inventory', async () => {
+  const missing = { commitTree: async sha => { throw new Error(`Make sandbox git object ${sha} is missing.`); },
+    head: async () => head, reaches: async () => true };
+  const pin = { savedVersion: base, head, savedFiles: [{ path: 'src/App.tsx', sha256: hash('old') }] };
+  const { client } = fakeClient({ original: 'old' });
+  client._sandboxGit = () => missing;
+  const written = await client.writeDurable('src/App.tsx', 'new', { expectedSha256: hash('old'), overrideMake: pin });
+  assert.equal(written.persistence, 'pending-version');
+  const restored = await client.writeDurable('src/App.tsx', 'old', { expectedSha256: hash('new'), overrideMake: pin });
+  assert.equal(restored.persistence, 'pending-version');
+  const unpinned = fakeClient({ original: 'old' });
+  unpinned.client._sandboxGit = () => missing;
+  await assert.rejects(unpinned.client.writeDurable('src/App.tsx', 'new', { expectedSha256: hash('old'),
+    overrideMake: { savedVersion: base, head } }), /is missing/);
+  assert.equal(unpinned.calls.some(call => call[0] === 'write'), false);
+
+  const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
+  const status = savedStatus({ persistence: state(), workingFlat: edited, treeSource: 'sandbox-head',
+    workingSha256: new Map([['src/App.tsx', hash('new')]]) });
+  const savedFiles = [{ path: 'src/App.tsx', sha256: hash('old') }, { path: 'package.json', blob: '2'.repeat(40) }];
+  const settle = drift => {
+    const { client } = checkedClient({ before: status, drift });
+    client.projectStatus = async () => ({ ...status, persistence: state(['src/App.tsx']) });
+    return client.settleCheckedStatus(status, { overrideMake: { ...pin, savedFiles } });
+  };
+  assert.deepEqual((await settle([state(), state(['src/App.tsx'])])).persistence.pendingPaths, ['src/App.tsx']);
+  await assert.rejects(settle([state(['src/App.tsx', 'src/x.ts'])]), { code: 'MAKE_TRACKER_CHANGED' });
+  await assert.rejects(settle([{ ...state(['src/App.tsx']), savedVersion: next }]), { code: 'MAKE_TRACKER_CHANGED' });
+});
+
+test('the live tracker runner refuses a scratch file with any unsaved content, listed or not', () => {
+  const clean = savedStatus({ workingFlat: sinceFlat });
+  assert.equal(scratchBaselineProblem(clean), null);
+  assert.match(scratchBaselineProblem(savedStatus({ workingFlat: new Map([...sinceFlat, ['AGENTS.md', { mode: '100644', blob: '9'.repeat(40) }]]) })),
+    /unsaved content \["AGENTS\.md"\]/);
+  assert.match(scratchBaselineProblem(savedStatus({ persistence: state(['src/benchmark/04.txt']), workingFlat: sinceFlat })), /pending changes/);
+  assert.match(scratchBaselineProblem(savedStatus({ workingFlat: sinceFlat, treeSource: 'sandbox-head' })), /no readable saved version/);
+});
+
+// The tracker settles only after one loading poll; `during` then changes
+// what the client VFS or the sandbox holds.
+function settlingClient(during) {
+  const fake = fakeClient({ original: 'old' });
+  const { client } = fake;
+  const durable = client._durable;
+  const drift = client._driftState;
+  const views = { vfs: undefined, sandbox: undefined };
+  let mutated = false;
+  let waited = false;
+  client._durable = async action => {
+    if (action.type === 'write' || action.type === 'delete') mutated = true;
+    if (action.type === 'read' && views.vfs !== undefined) return { exists: views.vfs !== null, content: views.vfs };
+    return durable(action);
+  };
+  const bridgeRead = client._bridgeRead;
+  client._bridgeRead = async (bridge, path) => {
+    if (views.sandbox === undefined) return bridgeRead(bridge, path);
+    if (views.sandbox === null) throw new Error('missing');
+    return { content: views.sandbox };
+  };
+  const absent = client._sandboxAbsent;
+  client._sandboxAbsent = async (bridge, path) => (views.sandbox === undefined ? absent(bridge, path) : views.sandbox === null);
+  client._driftState = async deadline => {
+    const result = await drift(deadline);
+    if (!mutated || waited) return result;
+    waited = true;
+    during(views);
+    return { state: { ...result.state, isLoading: true } };
+  };
+  return fake;
+}
+
+test('a confirmed mutation that waited for the tracker fails when Make changes the VFS or the sandbox, without mutating again', async () => {
+  const cases = [
+    ['pnpm-lock.yaml', 'new', views => { views.vfs = 'regenerated by Make'; }],
+    ['pnpm-lock.yaml', 'new', views => { views.sandbox = 'regenerated by Make'; }],
+    ['src/App.tsx', 'new', views => { views.sandbox = 'regenerated by Make'; }],
+    ['src/old.ts', null, views => { views.sandbox = 'recreated by Make'; }],
+    ['src/old.ts', null, views => { views.vfs = 'recreated by Make'; }],
+  ];
+  for (const [path, content, during] of cases) {
+    const { client, calls } = settlingClient(during);
+    const error = await (content === null
+      ? client.deleteDurable(path, { expectedSha256: hash('old') })
+      : client.writeDurable(path, content, { expectedSha256: hash('old') })).catch(cause => cause);
+    assert.equal(error.code, 'MAKE_CONTENT_CHANGED', `${path} ${during}`);
+    assert.ok(content === null ? error.confirmedDelete : error.confirmedWrite);
+    assert.equal(calls.filter(call => ['write', 'delete'].includes(call[0])).length, 1);
+  }
+  const kept = settlingClient(() => {});
+  assert.equal((await kept.client.writeDurable('pnpm-lock.yaml', 'new', { expectedSha256: hash('old') })).sha256, hash('new'));
+  const gone = settlingClient(() => {});
+  assert.equal((await gone.client.deleteDurable('src/old.ts', { expectedSha256: hash('old') })).verification, 'tree-vfs-sandbox-delete-matched');
+});
+
+test('settling a checked status waits for a lagging listed path, but refuses foreign or version changes', async () => {
+  const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
+  const status = savedStatus({ persistence: state(), workingFlat: edited });
+  const run = (drift, fresh = { ...status, persistence: state(['src/App.tsx']) }) => {
+    const { client } = checkedClient({ before: status, drift });
+    client.projectStatus = async () => fresh;
+    return client.settleCheckedStatus(status);
+  };
+  assert.deepEqual((await run([state(), state(), state(['src/App.tsx'])])).persistence.pendingPaths, ['src/App.tsx']);
+  await assert.rejects(run([state(), state(['src/App.tsx'])], { ...status, persistence: state(['src/App.tsx']), workingTree: 'f'.repeat(40) }),
+    { code: 'MAKE_CONTENT_CHANGED' });
+  await assert.rejects(run([state(['src/App.tsx', 'src/x.ts'])]), { code: 'MAKE_TRACKER_CHANGED' });
+  await assert.rejects(run([{ ...state(['src/App.tsx']), savedVersion: next }]), { code: 'MAKE_TRACKER_CHANGED' });
+  const headBase = savedStatus({ persistence: state(), workingFlat: edited, treeSource: 'sandbox-head' });
+  assert.equal(await checkedClient({ before: headBase, drift: [state(['src/x.ts'])] }).client.settleCheckedStatus(headBase), headBase);
 });
 
 test('a deploy save accepts a saved file mode Make kept, but not different content', async () => {
@@ -800,7 +954,7 @@ test('a deploy save accepts a saved file mode Make kept, but not different conte
   const pending = state(['src/App.tsx']);
   const kept = new Map([...edited, ['src/App.tsx', { mode: '100755', blob: '5'.repeat(40) }]]);
   const run = after => {
-    const { client } = checkedClient({ before: savedStatus({ persistence: pending, workingFlat: edited }), drift: [pending, { ...state(), savedVersion: next }] });
+    const { client } = checkedClient({ before: savedStatus({ persistence: pending, workingFlat: edited }), drift: [pending, pending, { ...state(), savedVersion: next }] });
     const queue = [savedStatus({ persistence: pending, workingFlat: edited }), after];
     client.projectStatus = async () => (queue.length > 1 ? queue.shift() : queue[0]);
     return client.saveCheckedVersion('deploy', ['src/App.tsx', '.figma-cli/project.json'], { listed: true });
@@ -1097,8 +1251,12 @@ test('a write the page refused is not read back as if it might have landed', asy
 });
 
 test('a failed read-back after an uncertain write is reported with the original error', async () => {
-  const { client } = uncertainClient();
-  client._fileBridge = async () => { throw new Error('No Make filesystem connection was observed'); };
+  const { client, calls } = uncertainClient();
+  const bridge = client._fileBridge;
+  client._fileBridge = async () => {
+    if (calls.some(([type]) => type === 'write')) throw new Error('No Make filesystem connection was observed');
+    return bridge();
+  };
   await assert.rejects(client.writeDurableConfirmed('src/App.tsx', 'new', { expectedSha256: hash('old') }),
     /outcome is uncertain: .*The read-back after it also failed: No Make filesystem connection/);
 });
@@ -1109,7 +1267,8 @@ test('a new file\'s pre-write absence check reuses the ancestor check\'s tree li
   client.fileKey = 'ScratchKey';
   client._operation = fn => fn(Date.now() + 5000);
   client._ensureCode = async () => ({ busy: false, offline: false, readOnly: false });
-  client._driftState = async () => ({ state: state() });
+  client._driftState = async () => ({ state: state(current === null ? [] : [path]) });
+  client._sandboxGit = () => ({ commitTree: async () => 'saved', flatten: async () => new Map() });
   let current = null;
   const listings = [];
   const entries = () => [{ kind: 'folder', path: 'public' }, { kind: 'folder', path: 'public/atomicaui' },
@@ -1158,4 +1317,87 @@ test('make write offers the vendor tree fallback', () => {
     { env: { ...process.env, FIGMA_CLI_NO_UPDATE_CHECK: '1' }, encoding: 'utf8' });
   assert.equal(result.status, 0);
   assert.match(result.stdout, /--vendor-tree-fallback/);
+});
+
+// Model the observed split: content read-back succeeds while changedFiles
+// still describes the prior tree and isLoading remains false.
+function laggingClient(options = {}) {
+  const fake = fakeClient(options);
+  const { client } = fake;
+  const readState = client._driftState;
+  const durable = client._durable;
+  let prior, remaining = 0;
+  const samples = [];
+  client._durable = async action => {
+    if (['write', 'delete'].includes(action.type)) {
+      prior = (await readState()).state;
+      remaining = 3;
+    }
+    return durable(action);
+  };
+  client._driftState = async () => {
+    const result = remaining-- > 0 ? { state: prior } : await readState();
+    samples.push(result.state);
+    return result;
+  };
+  return { ...fake, samples };
+}
+
+test('confirmed serial writes wait for pending tracker latency without repeating a mutation', async () => {
+  const { client, calls, samples } = laggingClient({ original: 'saved' });
+  await client.writeDurable('src/a.ts', 'first', { expectedSha256: hash('saved') });
+  assert.deepEqual(samples.at(-1).pendingPaths, ['src/a.ts']);
+  await client.writeDurable('src/a.ts', 'second', { expectedSha256: hash('first') });
+  assert.equal(calls.filter(([type]) => type === 'write').length, 2);
+  assert.ok(samples.filter(sample => sample.pendingCount === 0 && !sample.isLoading).length >= 3);
+});
+
+test('restoring saved bytes waits for pending removal, and delete waits for its pending change', async () => {
+  const { client, samples } = laggingClient({ original: 'saved' });
+  await client.writeDurable('src/a.ts', 'edit', { expectedSha256: hash('saved') });
+  await client.writeDurable('src/a.ts', 'saved', { expectedSha256: hash('edit') });
+  assert.deepEqual(samples.at(-1).pendingPaths, []);
+  await client.deleteDurable('src/a.ts', { expectedSha256: hash('saved') });
+  assert.deepEqual(samples.at(-1).pendingPaths, ['src/a.ts']);
+});
+
+test('save from a fresh client waits for exactly its expected paths before createVersion', async () => {
+  const { client, calls } = fakeClient({ version: { id: 'v', versionNumber: 3, gitSha: next } });
+  let reads = 0;
+  client._driftState = async () => ({ state: calls.some(([type]) => type === 'save')
+    ? { ...state(), savedVersion: next } : state(++reads < 4 ? [] : ['src/a.ts']) });
+  const saved = await client.saveVersion('Lagged', ['src/a.ts']);
+  assert.deepEqual(saved.changedFiles, ['src/a.ts']);
+  assert.equal(reads, 4);
+  assert.equal(calls.filter(([type]) => type === 'save').length, 1);
+});
+
+test('tracker settlement refuses foreign pending changes and baseline movement before saving', async () => {
+  for (const changed of [state(['src/foreign.ts']), { ...state(['src/a.ts']), savedVersion: next }]) {
+    const { client, calls } = fakeClient();
+    let reads = 0;
+    client._driftState = async () => ({ state: reads++ ? changed : state() });
+    await assert.rejects(client.saveVersion('Refuse', ['src/a.ts']), { code: 'MAKE_TRACKER_CHANGED' });
+    assert.equal(calls.some(([type]) => type === 'save'), false);
+  }
+});
+
+test('missing pending paths time out without a save or a second write', async () => {
+  const { client, calls } = fakeClient({ original: 'old' });
+  client._operation = fn => fn(Date.now() + 180);
+  client._driftState = async () => ({ state: state() });
+  const error = await client.writeDurableConfirmed('src/a.ts', 'new', { expectedSha256: hash('old') }).catch(error => error);
+  assert.equal(error.code, 'MAKE_TRACKER_UNSETTLED');
+  assert.equal(error.confirmedWrite.sha256, hash('new'));
+  assert.equal(calls.filter(([type]) => type === 'write').length, 1);
+  await assert.rejects(client.saveVersion('Missing', ['src/a.ts']), { code: 'MAKE_TRACKER_UNSETTLED' });
+  assert.equal(calls.some(([type]) => type === 'save'), false);
+});
+
+test('a tracker change unrelated to the confirmed write is never reconciled into success', async () => {
+  const { client, calls } = fakeClient({ original: 'old' });
+  client._driftState = async () => ({ state: state(calls.some(([type]) => type === 'write')
+    ? ['src/a.ts', 'src/foreign.ts'] : []) });
+  await assert.rejects(client.writeDurableConfirmed('src/a.ts', 'new', { expectedSha256: hash('old') }), { code: 'MAKE_TRACKER_CHANGED' });
+  assert.equal(calls.filter(([type]) => type === 'write').length, 1);
 });
