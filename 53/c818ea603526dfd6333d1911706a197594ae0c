@@ -1,0 +1,21 @@
+src/make-client.js
+  s_9d3c19e2276b40::t_8e07e60d9f5942 1250
+_vaults/figma-cli/wiki/make/tracker-latency.md
+  s_9d3c19e2276b40::t_d555b8f46b0f4f 64-65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "53c818ea603526dfd6333d1911706a197594ae0c",
+  "prompts": {},
+  "sessions": {
+    "s_9d3c19e2276b40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "13bdf07c-e8f0-4a82-ba9d-8fb28bb7233a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
