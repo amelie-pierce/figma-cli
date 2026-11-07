@@ -53,9 +53,6 @@ function trackerChanged() {
   return error;
 }
 
-// Make lists a saved-version file's content difference, except tree-hidden
-// paths that were not planned for deploy. A confirmed write can still precede
-// that list (tracker-latency.md).
 // Without the saved commit object, an override uses its recovered saved
 // inventory ({ path, sha256 } or { path, blob }) as that saved content.
 function savedMatches(item, sha, blob) {
@@ -64,7 +61,8 @@ function savedMatches(item, sha, blob) {
 
 function listedPendingOf(status, overrideMake, plannedPaths = []) {
   const planned = new Set(plannedPaths);
-  const listed = path => !treeHidden(path) || (planned.has(path) && !TREE_HIDDEN_ROOT_FILES.includes(path));
+  const listed = path => !treeHidden(path) || (planned.has(path) && path.includes('/') &&
+    path.split('/').slice(0, -1).every(part => !part.startsWith('.')));
   if (status.treeSource === 'saved-version') {
     return [...new Set([...status.makeFlat.keys(), ...status.workingFlat.keys()])]
       .filter(path => listed(path) && status.makeFlat.get(path)?.blob !== status.workingFlat.get(path)?.blob);
@@ -1144,7 +1142,7 @@ export class MakeClient {
       throw new Error('--first-version requires --since <commit>: the sandbox head make status reported before the writes.');
     }
     let before = await this.projectStatus();
-    if (listed) before = await this.settleCheckedStatus(before, { overrideMake });
+    if (listed) before = await this.settleCheckedStatus(before, { overrideMake, plannedPaths: expectedPaths });
     const state = requireGitMode(before.persistence, { firstVersion, overrideMake });
     if (overrideMake) await this._operation(async deadline => {
       const bridge = await this._fileBridge(deadline);

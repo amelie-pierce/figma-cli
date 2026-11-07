@@ -17,19 +17,20 @@ Updated 2026-10-29: status marks a missing saved commit even when Make claims a 
 Updated 2026-11-04: tracked `.npmrc`, mode-only and reloaded Make-only override follow-ups; warn-only deploy reminders.
 Updated 2026-11-06: deploy progress and local status are documented in the command reference.
 Updated 2026-11-06: detached deploy details live in the command reference and runner modules.
-Updated 2026-11-08: resume pending settlement includes planned dot files.
+Updated 2026-11-08: resume and save pending settlement include planned nested dot files.
 
 # make deploy
 Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI files first (`DEPLOY_VENDOR_EDITED`); see [vendor-lock.md](vendor-lock.md).
 
 ## Progress and local status
 
-Resume passes the receipt's planned paths into the pending-set comparison, so a
-dot-prefixed file that Make lists as pending is expected when its checked content
-differs from the saved copy. Unplanned hidden paths remain excluded from this
-tracker expectation; root instruction files remain optional (`src/make-deploy.js:1181`,
-`src/make-client.js:64`, `src/make-client.js:684`, `src/make-durable.js:157`).
-Offline coverage exercises the client comparison and receipt resume
+Resume and the final save pass planned paths into the pending-set comparison.
+A planned nested dot file that Make lists is expected when its checked content
+differs from the saved copy. Files beneath dot folders such as `.figma-cli/`
+and root dot files remain unlisted; root instruction files remain optional
+(`src/make-deploy.js:1181`, `src/make-client.js:64`, `src/make-client.js:684`,
+`src/make-client.js:1145`, `src/make-durable.js:157`). Offline coverage exercises
+saved-version and override comparisons, the final save, and receipt resume
 (`tests/make-durable.test.js:952`, `tests/make-deploy.test.js:502`). Live Make
 recovery with this build is **UNVERIFIED**.
 
