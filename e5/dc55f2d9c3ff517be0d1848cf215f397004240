@@ -1,0 +1,39 @@
+tests/make-durable.test.js
+  s_9d3c19e2276b40::t_778cff2a53c995 8,830-839,845-847,850-863
+  s_9d3c19e2276b40::t_6389a01b2ccb88 840-844
+  s_9d3c19e2276b40::t_79d462a2ccede5 848-849
+  s_9d3c19e2276b40::t_5fa122f3c8f3e4 864
+src/make-client.js
+  s_9d3c19e2276b40::t_99c251db0cb717 1169-1170
+  s_9d3c19e2276b40::t_cb1d18bbf70808 52-66,69-70,629-635,657-659,1149
+src/make-deploy.js
+  s_9d3c19e2276b40::t_cb1d18bbf70808 731-732
+tests/live/make-tracker-lag.mjs
+  s_9d3c19e2276b40::t_e91bb4120f8c63 7,9-23,45-46,79
+_vaults/figma-cli/wiki/make/tracker-latency.md
+  s_854a072c5c1573::t_23e35df320bfb6 79-83
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e5dc55f2d9c3ff517be0d1848cf215f397004240",
+  "prompts": {},
+  "sessions": {
+    "s_854a072c5c1573": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1b431-efdf-7181-a8e4-e775f996835d",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_9d3c19e2276b40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "13bdf07c-e8f0-4a82-ba9d-8fb28bb7233a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
