@@ -76,6 +76,11 @@ through `deleteDurable`, and ordinary `make save-version` through
   `settleListedPending` for Make to list exactly that checked unsaved content
   before the next write or delete, so a confirmed but not yet listed write
   is neither replayed nor later rejected as foreign.
+- When an override's saved commit object is missing from the sandbox, the
+  expected pending list comes from the saved inventory the plan recovered from
+  the deploy record (`overridePin.savedFiles`), for writes, deletes, resume
+  and the save; the live runner refuses a scratch file with any unsaved
+  content, listed or not (such as `AGENTS.md`).
 
 The DOM error `Make file tree changed before the requested action` is a
 separate row/ancestry identity guard, not a read of `codeFileChanges`.

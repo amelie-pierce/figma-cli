@@ -728,7 +728,8 @@ function newReceipt(plan, who, at, home) {
 
 const backupDir = (receipt, home) => join(deployDir(home), 'backups', receipt.deployId);
 const overridePin = receipt => receipt.mode === 'override-make'
-  ? { savedVersion: receipt.makeBefore.versionGitSha, head: receipt.makeBefore.head } : undefined;
+  ? { savedVersion: receipt.makeBefore.versionGitSha, head: receipt.makeBefore.head,
+    ...(receipt.makeBefore.savedInventorySource ? { savedFiles: receipt.makeBefore.savedInventory } : {}) } : undefined;
 
 function stop(receipt, error, stage, message, code) {
   receipt.stage = stage;

@@ -4,7 +4,23 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { MakeClient } from '../../src/make-client.js';
 import { MakeTransport } from '../../src/make-transport.js';
+import { pathToFileURL } from 'node:url';
 
+// The run must save only benchmark writes: refuse any listed pending path and
+// any saved-tree versus working-copy difference, including unlisted AGENTS.md.
+export function scratchBaselineProblem(status) {
+  if (status.treeSource !== 'saved-version') return 'Scratch file has no readable saved version; refusing to start.';
+  if (status.persistence.pendingPaths.length) {
+    return `Scratch file has pending changes ${JSON.stringify(status.persistence.pendingPaths)}; refusing to start.`;
+  }
+  const unsaved = [...new Set([...status.makeFlat.keys(), ...status.workingFlat.keys()])]
+    .filter(path => status.makeFlat.get(path)?.blob !== status.workingFlat.get(path)?.blob).sort();
+  return unsaved.length ? `Scratch file has unsaved content ${JSON.stringify(unsaved)}; refusing to start.` : null;
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) await main();
+
+async function main() {
 if (!process.argv.includes('--scratch-confirmed')) throw new Error('Confirm scratch-only isolation before running this live test.');
 const fileKey = 'Iv9p3539krJZZ4MZsDjjfg';
 const paths = Array.from({ length: 7 }, (_, i) => `src/benchmark/${String(i + 4).padStart(2, '0')}.txt`);
@@ -26,9 +42,8 @@ try {
   assert.equal(await client.projectMarker(), null, 'scratch must remain solo');
   const baseline = await client.projectStatus();
   log({ baseline: baseline.persistence, nonBenchmarkFiles: outsideBenchmark(baseline).length });
-  if (baseline.persistence.pendingPaths.length) {
-    throw new Error(`Scratch file has pending changes ${JSON.stringify(baseline.persistence.pendingPaths)}; refusing to start.`);
-  }
+  const problem = scratchBaselineProblem(baseline);
+  if (problem) throw new Error(problem);
   for (const phase of ['save-after-each', 'serial-without-saves']) {
     for (const path of paths) {
       const original = await client.readDurable(path);
@@ -61,3 +76,4 @@ try {
   log({ outcome: 'failed', message: error.message, code: error.code, version: error.version });
   process.exitCode = 1;
 } finally { client.close(); }
+}

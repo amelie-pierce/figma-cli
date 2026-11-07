@@ -47,15 +47,27 @@ function trackerChanged() {
   return error;
 }
 
-// Only a pending-only transition can invalidate a read for tracker latency.
-// A retry discards the entire inventory; it never accepts mixed snapshots.
 // Make lists a saved-version file's content difference, except tree-hidden
 // paths. A confirmed write can still precede that list (tracker-latency.md).
-function listedPendingOf(status) {
-  return [...new Set([...status.makeFlat.keys(), ...status.workingFlat.keys()])]
-    .filter(path => !treeHidden(path) && status.makeFlat.get(path)?.blob !== status.workingFlat.get(path)?.blob);
+// Without the saved commit object, an override uses its recovered saved
+// inventory ({ path, sha256 } or { path, blob }) as that saved content.
+function savedMatches(item, sha, blob) {
+  return item ? (item.blob ? item.blob === blob : item.sha256 === sha) : sha == null && blob == null;
 }
 
+function listedPendingOf(status, overrideMake) {
+  if (status.treeSource === 'saved-version') {
+    return [...new Set([...status.makeFlat.keys(), ...status.workingFlat.keys()])]
+      .filter(path => !treeHidden(path) && status.makeFlat.get(path)?.blob !== status.workingFlat.get(path)?.blob);
+  }
+  if (!overrideMake?.savedFiles || !status.persistence.hasBaseline) return null;
+  const saved = new Map(overrideMake.savedFiles.map(item => [item.path, item]));
+  return [...new Set([...saved.keys(), ...status.workingFlat.keys()])].filter(path => !treeHidden(path) &&
+    !savedMatches(saved.get(path), status.workingSha256.get(path), status.workingFlat.get(path)?.blob));
+}
+
+// Only a pending-only transition can invalidate a read for tracker latency.
+// A retry discards the entire inventory; it never accepts mixed snapshots.
 function inventoryChanged(message, before, after) {
   const error = new Error(message);
   const identity = state => state && JSON.stringify({ ...state, pendingPaths: null, pendingCount: null });
@@ -614,6 +626,13 @@ export class MakeClient {
     if (!before.hasBaseline || treeHidden(path) || UNLISTED_PERSISTED_PATHS.includes(path)) {
       return { before, expectedPaths: before.pendingPaths, modeOptions };
     }
+    const targetBlob = content === null ? null : gitBlobSha(Buffer.from(content));
+    const expectedPaths = before.pendingPaths.filter(item => item !== path);
+    if (modeOptions.overrideMake?.savedFiles) {
+      const item = modeOptions.overrideMake.savedFiles.find(file => file.path === path);
+      if (!savedMatches(item, content === null ? null : sha256(content), targetBlob)) expectedPaths.push(path);
+      return { before, expectedPaths: expectedPaths.sort(), modeOptions };
+    }
     if (this._savedVersionEntries?.version !== before.savedVersion) {
       this._savedVersionEntries = null;
       const bridge = await this._fileBridge(deadline);
@@ -624,8 +643,6 @@ export class MakeClient {
       } finally { await bridge.dispose(); }
     }
     const savedBlob = this._savedVersionEntries.entries.get(path)?.blob ?? null;
-    const targetBlob = content === null ? null : gitBlobSha(Buffer.from(content));
-    const expectedPaths = before.pendingPaths.filter(item => item !== path);
     if (targetBlob !== savedBlob) expectedPaths.push(path);
     return { before, expectedPaths: expectedPaths.sort(), modeOptions };
   }
@@ -637,8 +654,9 @@ export class MakeClient {
   // Wait until Make lists exactly the unsaved paths a checked status holds,
   // before the next mutation relies on its pending list.
   settleListedPending(status, { overrideMake } = {}) {
-    if (status.treeSource !== 'saved-version') return Promise.resolve(status.persistence);
-    return this._operation(deadline => this._settleTracker(status.persistence, listedPendingOf(status), deadline,
+    const listed = listedPendingOf(status, overrideMake);
+    if (!listed) return Promise.resolve(status.persistence);
+    return this._operation(deadline => this._settleTracker(status.persistence, listed, deadline,
       { optionalPaths: UNLISTED_PERSISTED_PATHS, modeOptions: { overrideMake } }));
   }
 
@@ -1128,7 +1146,7 @@ export class MakeClient {
     if (overrideMake && expectedPaths.some(path => !overrideMake.allowedPaths.includes(path))) {
       throw new Error('Override save paths differ from the reviewed receipt.');
     }
-    const listedChanges = listed && before.treeSource === 'saved-version' ? listedPendingOf(before) : null;
+    const listedChanges = listed ? listedPendingOf(before, overrideMake) : null;
     const version = await this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
       if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
@@ -1148,7 +1166,8 @@ export class MakeClient {
       } finally { await bridge.dispose(); }
       let created;
       try {
-        created = await this._durable({ type: 'save', ...(firstVersion ? { firstVersion: true } : {}), ...(overrideMake ? { overrideMake } : {}), title,
+        created = await this._durable({ type: 'save', ...(firstVersion ? { firstVersion: true } : {}),
+          ...(overrideMake ? { overrideMake: { ...overrideMake, savedFiles: undefined } } : {}), title,
           expectedPaths: listed ? now.pendingPaths : [],
           expectedGitSha: firstVersion ? null : state.savedVersion }, deadline);
       }

@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { MakeClient } from '../src/make-client.js';
 import { gitBlobSha } from '../src/git-tree.js';
+import { scratchBaselineProblem } from './live/make-tracker-lag.mjs';
 import { makeDurablePageAction, requireExactPending, requireFirstVersionPending, requireGitMode } from '../src/make-durable.js';
 
 const hash = text => createHash('sha256').update(text).digest('hex');
@@ -824,6 +825,41 @@ test('a deploy resume save waits for a lagging tracker, but refuses foreign pend
   const moved = run([state(), { ...state(['src/App.tsx']), savedVersion: next }]);
   await assert.rejects(moved.save, /changed/);
   assert.equal(moved.calls.some(call => call[0] === 'action'), false);
+});
+
+test('an override without the saved commit object derives Make\'s pending list from its recovered saved inventory', async () => {
+  const missing = { commitTree: async sha => { throw new Error(`Make sandbox git object ${sha} is missing.`); },
+    head: async () => head, reaches: async () => true };
+  const pin = { savedVersion: base, head, savedFiles: [{ path: 'src/App.tsx', sha256: hash('old') }] };
+  const { client } = fakeClient({ original: 'old' });
+  client._sandboxGit = () => missing;
+  const written = await client.writeDurable('src/App.tsx', 'new', { expectedSha256: hash('old'), overrideMake: pin });
+  assert.equal(written.persistence, 'pending-version');
+  const restored = await client.writeDurable('src/App.tsx', 'old', { expectedSha256: hash('new'), overrideMake: pin });
+  assert.equal(restored.persistence, 'pending-version');
+  const unpinned = fakeClient({ original: 'old' });
+  unpinned.client._sandboxGit = () => missing;
+  await assert.rejects(unpinned.client.writeDurable('src/App.tsx', 'new', { expectedSha256: hash('old'),
+    overrideMake: { savedVersion: base, head } }), /is missing/);
+  assert.equal(unpinned.calls.some(call => call[0] === 'write'), false);
+
+  const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
+  const status = savedStatus({ persistence: state(), workingFlat: edited, treeSource: 'sandbox-head',
+    workingSha256: new Map([['src/App.tsx', hash('new')]]) });
+  const savedFiles = [{ path: 'src/App.tsx', sha256: hash('old') }, { path: 'package.json', blob: '2'.repeat(40) }];
+  const settle = drift => checkedClient({ before: status, drift }).client.settleListedPending(status, { overrideMake: { ...pin, savedFiles } });
+  assert.deepEqual((await settle([state(), state(['src/App.tsx'])])).pendingPaths, ['src/App.tsx']);
+  await assert.rejects(settle([state(['src/App.tsx', 'src/x.ts'])]), { code: 'MAKE_TRACKER_CHANGED' });
+  await assert.rejects(settle([{ ...state(['src/App.tsx']), savedVersion: next }]), { code: 'MAKE_TRACKER_CHANGED' });
+});
+
+test('the live tracker runner refuses a scratch file with any unsaved content, listed or not', () => {
+  const clean = savedStatus({ workingFlat: sinceFlat });
+  assert.equal(scratchBaselineProblem(clean), null);
+  assert.match(scratchBaselineProblem(savedStatus({ workingFlat: new Map([...sinceFlat, ['AGENTS.md', { mode: '100644', blob: '9'.repeat(40) }]]) })),
+    /unsaved content \["AGENTS\.md"\]/);
+  assert.match(scratchBaselineProblem(savedStatus({ persistence: state(['src/benchmark/04.txt']), workingFlat: sinceFlat })), /pending changes/);
+  assert.match(scratchBaselineProblem(savedStatus({ workingFlat: sinceFlat, treeSource: 'sandbox-head' })), /no readable saved version/);
 });
 
 test('settling a checked status waits for a lagging listed path, but refuses foreign or version changes', async () => {
