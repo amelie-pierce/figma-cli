@@ -25,10 +25,9 @@ try {
   await client.connect(fileKey);
   assert.equal(await client.projectMarker(), null, 'scratch must remain solo');
   const baseline = await client.projectStatus();
-  assert.ok(baseline.persistence.pendingPaths.every(path => paths.includes(path)), 'foreign pending changes');
   log({ baseline: baseline.persistence, nonBenchmarkFiles: outsideBenchmark(baseline).length });
   if (baseline.persistence.pendingPaths.length) {
-    log({ baselineSave: await client.saveVersion('Tracker test baseline', baseline.persistence.pendingPaths) });
+    throw new Error(`Scratch file has pending changes ${JSON.stringify(baseline.persistence.pendingPaths)}; refusing to start.`);
   }
   for (const phase of ['save-after-each', 'serial-without-saves']) {
     for (const path of paths) {

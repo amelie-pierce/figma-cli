@@ -858,7 +858,11 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
         }
         // Make's install may already hold main's lockfile; the client must
         // still write it, or the version keeps the old one.
-        if (checked.files.find(item => item.path === file.path).state === 'after' && !isLockfile(file.path)) { recordWrite(receipt, file, null); break; }
+        const confirmed = !!(error.confirmedWrite || error.confirmedDelete);
+        if (checked.files.find(item => item.path === file.path).state === 'after' && (!isLockfile(file.path) || confirmed)) {
+          recordWrite(receipt, file, confirmed ? error.backupPath ?? null : null);
+          break;
+        }
         expected = status.workingSha256.get(file.path) ?? null;
         continue;
       }

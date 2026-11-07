@@ -1782,6 +1782,23 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     assert.match(verified.summary, /Verified after a fresh reload/);
   });
 
+  it('does not replay a confirmed lockfile write whose tracker settlement timed out', async t => {
+    const s = dependencyChange(t);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    let once = true;
+    s.make.hooks.afterWrite = path => {
+      if (path !== 'pnpm-lock.yaml' || !once) return;
+      once = false;
+      throw Object.assign(new Error('Make pending tracker did not settle before the operation deadline.'),
+        { code: 'MAKE_TRACKER_UNSETTLED', confirmedWrite: { path } });
+    };
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.outcome, 'ok');
+    assert.deepEqual(s.make.writes.filter(([kind]) => kind === 'write').map(([, path]) => path),
+      ['src/App.tsx', 'package.json', 'pnpm-lock.yaml', 'pnpm-lock.yaml'], 'only the reconcile pass writes it again');
+    assert.equal(s.make.saved.get('pnpm-lock.yaml').toString(), lockFor(NEW_PKG));
+  });
+
   it('waits and re-checks when Make\'s install lands under a write, then retries that path', async t => {
     const s = dependencyChange(t);
     const plan = await deployPlan(s.make, s.opts, s.deps);

@@ -55,6 +55,8 @@ through `deleteDurable`, and ordinary `make save-version` through
   cannot mistake them for a pre-write `MAKE_PENDING_CHANGED` refusal and replay
   the mutation. Uncertain-write read-back also settles the tracker before
   reporting success (`src/make-client.js:42`, `src/make-client.js:858`).
+  A dependency retry rechecks the planned content and does not rewrite a
+  confirmed lockfile write or delete merely because settlement timed out.
 - Inventory snapshots still have to agree at every boundary. A pending-only
   transition discards the partial read, uses the same settlement helper, and
   restarts the complete read with one shared recovery deadline. Version,
@@ -99,8 +101,10 @@ check passed at version 20 (`61a5d9e4d30fa625400b68f833156d5fca179260`), with
 zero pending paths, all seven expected hashes and the same 27 non-benchmark
 file hashes. Tracker waits after content confirmation ranged from 1157 to 1529 ms.
 No installed runtime was updated and no prototype received traffic.
-The later follow-up (cached saved-version tree, deploy-save settlement) was
-validated offline only with fake clients; it has no live run yet.
+The later follow-up (cached saved-version tree, deploy-save settlement,
+no lockfile replay after confirmed mutations, and a live runner that refuses a
+scratch file with pending changes instead of saving them) was validated
+offline only with fake clients; it has no live run yet.
 
 The final full Make suite passed 644/644 tests, with no skips, under Node
 24.15.0 (578.697 s); the focused durable/tree/inventory/git checks passed
