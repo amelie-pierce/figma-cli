@@ -61,6 +61,8 @@ function savedMatches(item, sha, blob) {
 
 function listedPendingOf(status, overrideMake, plannedPaths = []) {
   const planned = new Set(plannedPaths);
+  // A planned dot file below visible folders may be pending; paths inside dot
+  // folders and root dot files remain excluded because Make may omit them.
   const listed = path => !treeHidden(path) || (planned.has(path) && path.includes('/') &&
     path.split('/').slice(0, -1).every(part => !part.startsWith('.')));
   if (status.treeSource === 'saved-version') {

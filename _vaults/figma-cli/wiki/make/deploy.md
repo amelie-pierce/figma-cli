@@ -26,8 +26,9 @@ Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI fil
 
 Resume and the final save pass planned paths into the pending-set comparison.
 A planned nested dot file that Make lists is expected when its checked content
-differs from the saved copy. Files beneath dot folders such as `.figma-cli/`
-and root dot files remain unlisted; root instruction files remain optional
+differs from the saved copy. Paths inside dot folders and root dot files remain
+excluded from this comparison; Make is known to omit `.figma-cli/` paths from
+its pending list. Root instruction files remain optional
 (`src/make-deploy.js:1181`, `src/make-client.js:64`, `src/make-client.js:684`,
 `src/make-client.js:1145`, `src/make-durable.js:157`). Offline coverage exercises
 saved-version and override comparisons, the final save, and receipt resume
