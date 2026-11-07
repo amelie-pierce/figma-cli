@@ -11,8 +11,8 @@ client VFS and sandbox agree. Masking condition: React's `codeFileChanges`
 still describes the previous working copy, with `isLoading: false`. Symptom:
 the next write sees two different pending snapshots, or an immediate save sees
 an empty pending set. Content agreement and tracker agreement are distinct
-signals (`src/make-client.js:679`, `src/make-client.js:818`,
-`src/make-persistence.js:25`).
+signals (`src/make-client.js:762`, `src/make-client.js:597`,
+`src/make-persistence.js:5`).
 
 Scratch-only reproduction on `Iv9p3539krJZZ4MZsDjjfg`, 2026-11-07 UTC:
 `src/benchmark/04.txt` returned `editor-tree-vfs-sandbox-matched` at
@@ -30,31 +30,31 @@ The CLI routes `make write` through `writeDurableConfirmed`, `make delete`
 through `deleteDurable`, and ordinary `make save-version` through
 `saveVersion` (`src/commands/make.js:272`, `src/commands/make.js:284`,
 `src/commands/make.js:307`). Deploy writes use the same client; resume reads
-`projectStatus` before checking the receipt (`src/make-deploy.js:1164`).
+`projectStatus` before checking the receipt (`src/make-deploy.js:1169`).
 
 - The pre-write and pre-delete guards still require the saved version and
   pending paths to equal their earlier snapshot. SHA and page-side content
-  guards remain in place (`src/make-client.js:818`, `src/make-client.js:937`,
+  guards remain in place (`src/make-client.js:911`, `src/make-client.js:1030`,
   `src/make-durable.js:84`).
 - After content verification, `_pendingAfterMutation` derives the exact
   expected pending set from the saved entry and the new bytes or absence.
   Restoring saved bytes, or deleting a newly created file, removes the path.
   The saved version's flattened tree is read once and reused until the saved
   version or connection changes, so a deploy does not reload a packed sandbox
-  for every file; it reads no source blobs (`src/make-client.js:602`).
+  for every file; it reads no source blobs (`src/make-client.js:630`).
 - `_settleTracker` polls the same persistence signal every 100 ms within the
   existing operation deadline. It pins the saved version, permits the known
   previous set while waiting, and refuses foreign paths or disappearance of
   unrelated pending paths. Hidden paths and no-baseline files retain their
-  existing special verification rules (`src/make-client.js:570`).
+  existing special verification rules (`src/make-client.js:630`).
 - `saveVersion` waits for missing expected paths before applying the unchanged
   exact-set check and the page-side `createVersion` guard. The allowlist for
-  unlisted instruction files is unchanged (`src/make-client.js:985`,
-  `src/make-durable.js:41`, `src/make-durable.js:162`).
+  unlisted instruction files is unchanged (`src/make-client.js:1080`,
+  `src/make-durable.js:41`, `src/make-durable.js:157`).
 - Tracker failures after confirmed writes have distinct error codes, so deploy
   cannot mistake them for a pre-write `MAKE_PENDING_CHANGED` refusal and replay
   the mutation. Uncertain-write read-back also settles the tracker before
-  reporting success (`src/make-client.js:42`, `src/make-client.js:858`).
+  reporting success (`src/make-client.js:47`, `src/make-client.js:951`).
   A dependency retry rechecks the planned content and does not rewrite a
   confirmed lockfile write or delete merely because settlement timed out.
 - Inventory snapshots still have to agree at every boundary. A pending-only
@@ -62,10 +62,10 @@ through `deleteDurable`, and ordinary `make save-version` through
   restarts the complete read with one shared recovery deadline. Version,
   mode, error and malformed-state changes still fail closed. This covers
   project status and project inventory; vendor inventory keeps its
-  fail-closed refusal (`src/make-client.js:52`, `src/make-client.js:624`).
+  fail-closed refusal (`src/make-client.js:692`, `src/make-client.js:1279`).
 - Deploy resume calls `projectStatus`, so it receives the coherent inventory
   after settlement; `plannedState` still checks all unsaved content and pending
-  paths against the reviewed plan (`src/make-deploy.js:1164`,
+  paths against the reviewed plan (`src/make-deploy.js:1169`,
   `src/make-deploy.js:791`). No prototype was used for live validation.
 - The deploy save (`saveCheckedVersion` with `listed`) derives the listed set
   from the saved tree and the checked working copy, then settles the tracker
@@ -99,7 +99,7 @@ Fake regressions execute public write/save/status methods with delayed tracker
 updates, foreign paths, changed versions, non-settlement, restored saved bytes
 and continuous inventory churn. Six new regressions failed against the
 pre-fix client, including the immediate save and mid-inventory transition;
-all 126 focused fixed checks passed (`tests/make-durable.test.js:1171`,
+the focused checks passed in that run (`tests/make-durable.test.js:1171`,
 `tests/make-project-client.test.js:231`). Existing deploy recovery tests still
 reject unrelated edits (`tests/make-deploy.test.js:1435`).
 
@@ -120,7 +120,5 @@ no lockfile replay after confirmed mutations, resume/abort settlement, and a liv
 scratch file with pending changes instead of saving them) was validated
 offline only with fake clients; it has no live run yet.
 
-The final full Make suite passed 644/644 tests, with no skips, under Node
-24.15.0 (578.697 s); the focused durable/tree/inventory/git checks passed
-126/126. The Make suite is the offline runner in `tests/run-make-tests.mjs:6`;
+The Make suite is the offline runner in `tests/run-make-tests.mjs:6`;
 the live runner is separately opt-in.
