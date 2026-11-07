@@ -1,0 +1,25 @@
+_vaults/figma-cli/wiki/make/deploy.md
+  s_12e31fd9689509::t_f91350ba811d3a 114
+_vaults/figma-cli/wiki/make/size-and-timeouts.md
+  s_12e31fd9689509::t_f91350ba811d3a 9
+  s_12e31fd9689509::t_9b969f2f950838 3
+REFERENCE.md
+  s_12e31fd9689509::t_9b969f2f950838 162,164
+  s_12e31fd9689509::t_f91350ba811d3a 160-161,163
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d36a387cfd448ee9acb7bc1e98e750ec8768ffdb",
+  "prompts": {},
+  "sessions": {
+    "s_12e31fd9689509": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1aed8-22f0-7a73-8409-fb3bb8d169c8",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
