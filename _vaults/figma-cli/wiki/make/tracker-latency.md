@@ -61,8 +61,8 @@ through `deleteDurable`, and ordinary `make save-version` through
   transition discards the partial read, uses the same settlement helper, and
   restarts the complete read with one shared recovery deadline. Version,
   mode, error and malformed-state changes still fail closed. This covers
-  project status, project inventory and vendor inventory
-  (`src/make-client.js:52`, `src/make-client.js:624`).
+  project status and project inventory; vendor inventory keeps its
+  fail-closed refusal (`src/make-client.js:52`, `src/make-client.js:624`).
 - Deploy resume calls `projectStatus`, so it receives the coherent inventory
   after settlement; `plannedState` still checks all unsaved content and pending
   paths against the reviewed plan (`src/make-deploy.js:1164`,

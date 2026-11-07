@@ -1247,11 +1247,7 @@ export class MakeClient {
   // Bound each renderer/socket batch independently. Large kits can take more
   // than one command timeout in total, but no Runtime.callFunctionOn owns the
   // whole tree. Version/pending state is checked at every batch boundary.
-  inventoryVendor(root = 'src/vendor/atomic-aui', options = {}) {
-    return this._retryTrackerInventory(() => this._inventoryVendor(root, options));
-  }
-
-  async _inventoryVendor(root = 'src/vendor/atomic-aui', { includeBytes = false, batchSize = 24 } = {}) {
+  async inventoryVendor(root = 'src/vendor/atomic-aui', { includeBytes = false, batchSize = 24 } = {}) {
     sourcePath(root);
     if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 64) throw new Error('Inventory batch size must be 1–64.');
     const directories = [root];
