@@ -956,11 +956,16 @@ async function backupLockfiles(client, receipt, home) {
   }
 }
 
-// Make's install can rewrite a dependency file after the deploy wrote it.
-// Once Make is idle every planned path must hold main's content; a dependency
-// file Make regenerated is written again, for at most ROUNDS rounds.
+// Make's install can rewrite a dependency file after the deploy wrote it, and
+// Make's editor can write LF line endings back over a CRLF file it wrote.
+// Before the save, once Make is idle, every planned path must hold main's
+// content; a dependency file Make regenerated is written again, for at most
+// ROUNDS rounds, and a CRLF file Make turned into LF once.
 async function reconcile(client, receipt, { mainBytes, home, deps }) {
-  if (!receipt.plan.files.some(file => isDependency(file.path))) return;
+  const crlf = receipt.mode !== 'override-make' &&
+    receipt.plan.files.some(file => file.op !== 'delete' && mainBytes(file.afterBlob).includes('\r\n'));
+  if (!crlf && !receipt.plan.files.some(file => isDependency(file.path))) return;
+  const eolWritten = new Set();
   for (let round = 1; ; round++) {
     const status = await settledStatus(client, receipt, deps);
     const checked = plannedState(receipt, status, mainBytes);
@@ -970,10 +975,11 @@ async function reconcile(client, receipt, { mainBytes, home, deps }) {
     }
     const left = checked.files.filter(file => file.state !== 'after');
     if (!left.length) return;
-    if (round > ROUNDS || left.some(file => !isDependency(file.path))) {
+    if (round > ROUNDS || left.some(file => !isDependency(file.path) && (file.state !== 'after-eol' || eolWritten.has(file.path)))) {
       stop(receipt, null, 'written', `Make keeps changing ${JSON.stringify(left.map(file => file.path))} after the deploy wrote main's content, ` +
         `so main cannot be saved as it is. No version was saved. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
     }
+    for (const file of left) if (file.state === 'after-eol') eolWritten.add(file.path);
     receipt.stage = 'writing';
     await writeFiles(client, receipt, left.map(file => ({ ...file, expectedSha256: status.workingSha256.get(file.path) ?? null })), { mainBytes, home, deps });
   }
@@ -1265,8 +1271,16 @@ export async function deployAbort(client, { receiptPath, dir } = {}, deps = {}) 
   const receipt = readReceipt(receiptPath);
   await requireAdmin(receipt.repo, deps.gh);
   const root = resolve(dir || '.');
-  const plannedBytes = blob => { try { return deps.readBlob(root, blob); } catch { return null; } };
-  const { status: first, files } = await resumable(client, receipt, 'abort', deps.warn, plannedBytes);
+  let unread = false;
+  const plannedBytes = blob => { try { return deps.readBlob(root, blob); } catch { unread = true; return null; } };
+  let first, files;
+  try { ({ status: first, files } = await resumable(client, receipt, 'abort', deps.warn, plannedBytes)); }
+  catch (error) {
+    if (unread && error.code === 'DEPLOY_RECEIPT') {
+      error.message += ` Could not read main's content from ${root}; run --abort with --dir <local clone> so it can recognise a Make line-ending-only rewrite.`;
+    }
+    throw error;
+  }
   const restoreOf = file => (file.op === 'add' ? null : backupContent(receipt, file, deps.home));
   // Every backup is read before anything changes.
   const contents = new Map(files.filter(file => (receipt.mode === 'override-make' || !noOriginal(file)) &&

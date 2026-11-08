@@ -1536,8 +1536,38 @@ describe('make deploy recovery', () => {
     // Without main's bytes the LF copy cannot be told from a designer edit.
     s.make.working.set('src/assets/plate.svg', Buffer.from(CRLF_SVG.replace(/\r\n/g, '\n')));
     const elsewhere = temp(t);
-    await refuses(deployAbort(s.make, { receiptPath, dir: elsewhere }, s.deps), 'DEPLOY_RECEIPT', /plate\.svg/);
+    await refuses(deployAbort(s.make, { receiptPath, dir: elsewhere }, s.deps), 'DEPLOY_RECEIPT', /plate\.svg.*--abort with --dir <local clone>/s);
     assert.equal(s.make.writes.length, writes, 'nothing was changed');
+  });
+
+  const editorRewritesLf = async (t, times) => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'v2\n', 'src/assets/plate.svg': CRLF_SVG, 'src/zz.ts': 'z\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    let left = times;
+    s.make.hooks.afterWrite = path => {
+      if (path !== 'src/assets/plate.svg' || left-- <= 0) return;
+      s.make.working.set(path, Buffer.from(CRLF_SVG.replace(/\r\n/g, '\n')));
+    };
+    return { s, plan };
+  };
+
+  it('writes main\'s CRLF bytes again before saving when Make\'s editor turned a confirmed write into LF', async t => {
+    const { s, plan } = await editorRewritesLf(t, 1);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.outcome, 'ok');
+    assert.ok(s.make.saved.get('src/assets/plate.svg').equals(Buffer.from(CRLF_SVG)), 'the saved version holds main\'s CRLF bytes');
+    assert.equal(s.make.writes.filter(([kind, path]) => kind === 'write' && path === 'src/assets/plate.svg').length, 2);
+    assert.equal(s.make.calls.filter(([kind]) => kind === 'save').length, 1);
+  });
+
+  it('refuses to save when Make\'s editor keeps turning a deployed CRLF file into LF', async t => {
+    const { s, plan } = await editorRewritesLf(t, Infinity);
+    let receiptPath;
+    await refuses(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(error => { receiptPath = error.receiptPath; throw error; }),
+      'DEPLOY_WRITE_FAILED', /src\/assets\/plate\.svg.*No version was saved\. Run .*--resume/s);
+    assert.equal(s.make.calls.filter(([kind]) => kind === 'save').length, 0);
+    assert.equal(readReceipt(receiptPath).outcome, 'uncertain');
   });
 
   it('only recognises a line-ending rewrite of UTF-8 text', () => {
