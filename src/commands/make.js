@@ -478,7 +478,7 @@ const deployCommand = make.command('deploy').description('Deploy GitHub main fro
         }
         if (options.verify) return report(await deployVerify(client, { dir, receiptPath: options.verify }, deps));
         if (options.resume) return report(await deployResume(client, { dir, receiptPath: options.resume }, deps));
-        if (options.abort) return report(await deployAbort(client, { receiptPath: options.abort }, deps));
+        if (options.abort) return report(await deployAbort(client, { dir, receiptPath: options.abort }, deps));
         report(await deployPlan(client, { dir, overrideMake: options.overrideMake === true,
           deleteMakeOnly: options.deleteMakeOnly === true }, deps));
       }, undefined, [], { assertOwner: stopHeartbeat?.assert });

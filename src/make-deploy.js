@@ -773,8 +773,9 @@ async function settledStatus(client, receipt, deps) {
 
 // Every path Make holds unsaved must be planned and hold its before or
 // planned content; only a planned dependency file may hold what Make's own
-// install regenerated. Returns { problem, code } or { files } (classified).
-function plannedState(receipt, status) {
+// install regenerated, or planned content Make's editor turned into LF line
+// endings (see lineEndingsOnly). Returns { problem, code } or { files }.
+function plannedState(receipt, status, plannedBytes) {
   const state = status.persistence;
   if (state?.savedVersion !== receipt.makeBefore.versionGitSha) {
     return { problem: `Make's saved version is ${state?.savedVersion ?? 'unknown'}, not ${receipt.makeBefore.versionGitSha} where the deploy started`, code: 'DEPLOY_RECEIPT' };
@@ -795,7 +796,7 @@ function plannedState(receipt, status) {
         !(receipt.saveRefusals && (status.workingSha256.get(path) ?? null) === (saved.get(path) ?? null)))
     : [...new Set([...contentDiff(status.workingFlat, status.makeFlat, notInventoried(status.workingFlat)), ...(state.pendingPaths || [])])].filter(path => !planned.has(path));
   if (others.length) return { problem: `Make has unsaved changes outside the deploy ${JSON.stringify(others)}`, code: 'DEPLOY_MAKE_AHEAD' };
-  const files = classify(receipt, status);
+  const files = classify(receipt, status, plannedBytes);
   const odd = files.filter(file => file.state === 'other').map(file => file.path);
   if (odd.length) return { problem: `Make holds content the deploy neither started from nor planned in ${JSON.stringify(odd)}`, code: 'DEPLOY_RECEIPT' };
   return { files };
@@ -824,7 +825,7 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
   for (const file of [...todo].sort(byWriteOrder)) {
     const writeStarted = Date.now();
     if (receipt.mode === 'override-make') {
-      const checked = plannedState(receipt, await client.projectStatus());
+      const checked = plannedState(receipt, await client.projectStatus(), mainBytes);
       if (checked.problem) stop(receipt, null, 'writing', `Override stopped before writing ${file.path}: ${checked.problem}.`, checked.code);
     }
     let content = null;
@@ -852,7 +853,7 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
           stop(receipt, error, 'writing', `Deploy stopped while writing ${file.path}: ${error.message} No version was saved. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
         }
         const status = await settledStatus(client, receipt, deps);
-        const checked = plannedState(receipt, status);
+        const checked = plannedState(receipt, status, mainBytes);
         if (checked.problem) {
           stop(receipt, error, 'writing', `Deploy stopped while writing ${file.path}: ${error.message} Once Make was idle: ${checked.problem}. ` +
             `No version was saved. Run ${recovery(receipt)}.`, checked.code === 'DEPLOY_MAKE_AHEAD' ? 'DEPLOY_MAKE_AHEAD' : 'DEPLOY_WRITE_FAILED');
@@ -955,24 +956,30 @@ async function backupLockfiles(client, receipt, home) {
   }
 }
 
-// Make's install can rewrite a dependency file after the deploy wrote it.
-// Once Make is idle every planned path must hold main's content; a dependency
-// file Make regenerated is written again, for at most ROUNDS rounds.
+// Make's install can rewrite a dependency file after the deploy wrote it, and
+// Make's editor can write LF line endings back over a CRLF file it wrote.
+// Before the save, once Make is idle, every planned path must hold main's
+// content; a dependency file Make regenerated is written again, for at most
+// ROUNDS rounds, and a CRLF file Make turned into LF once.
 async function reconcile(client, receipt, { mainBytes, home, deps }) {
-  if (!receipt.plan.files.some(file => isDependency(file.path))) return;
+  const crlf = receipt.mode !== 'override-make' &&
+    receipt.plan.files.some(file => file.op !== 'delete' && mainBytes(file.afterBlob).includes('\r\n'));
+  if (!crlf && !receipt.plan.files.some(file => isDependency(file.path))) return;
+  const eolWritten = new Set();
   for (let round = 1; ; round++) {
     const status = await settledStatus(client, receipt, deps);
-    const checked = plannedState(receipt, status);
+    const checked = plannedState(receipt, status, mainBytes);
     if (checked.problem) {
       stop(receipt, null, 'written', `Once Make was idle after the writes: ${checked.problem}. No version was saved. Run ${recovery(receipt)}.`,
         checked.code === 'DEPLOY_MAKE_AHEAD' ? 'DEPLOY_MAKE_AHEAD' : 'DEPLOY_WRITE_FAILED');
     }
     const left = checked.files.filter(file => file.state !== 'after');
     if (!left.length) return;
-    if (round > ROUNDS || left.some(file => !isDependency(file.path))) {
+    if (round > ROUNDS || left.some(file => !isDependency(file.path) && (file.state !== 'after-eol' || eolWritten.has(file.path)))) {
       stop(receipt, null, 'written', `Make keeps changing ${JSON.stringify(left.map(file => file.path))} after the deploy wrote main's content, ` +
         `so main cannot be saved as it is. No version was saved. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
     }
+    for (const file of left) if (file.state === 'after-eol') eolWritten.add(file.path);
     receipt.stage = 'writing';
     await writeFiles(client, receipt, left.map(file => ({ ...file, expectedSha256: status.workingSha256.get(file.path) ?? null })), { mainBytes, home, deps });
   }
@@ -1142,23 +1149,39 @@ const result = (receipt, summary) => ({ deployId: receipt.deployId, fileKey: rec
   counts: counts(receipt.files), excludedCount: receipt.excluded.length, outcome: receipt.outcome, stage: receipt.stage, verification: receipt.verification,
   receiptPath: receipt.receiptPath, summary });
 
+// Make's code editor holds text with LF line endings and can write that
+// buffer back over a CRLF file the deploy wrote. The path then holds main's
+// UTF-8 text with only CRLF turned into LF: the deploy's own write, not a
+// designer edit. plannedBytes(blob) reads main's bytes; any other difference
+// is not this.
+function lineEndingsOnly(file, status, plannedBytes) {
+  if (!plannedBytes || !file.afterBlob || !status.workingFlat.has(file.path)) return false;
+  let bytes;
+  try { bytes = plannedBytes(file.afterBlob); } catch { return false; }
+  if (!bytes || sha256(bytes) !== file.afterSha256 || decode(bytes) == null || !bytes.includes('\r\n')) return false;
+  const lf = Buffer.from(bytes.toString('latin1').replace(/\r\n/g, '\n'), 'latin1');
+  return sha256(lf) === status.workingSha256.get(file.path);
+}
+
 // Each planned path in Make's working copy: still as before, already as
-// planned, a dependency file Make's own install regenerated, or something
-// else (which stops resume and abort).
-export function classify(receipt, status) {
+// planned, planned but with Make's LF line endings ('after-eol', given
+// plannedBytes), a dependency file Make's own install regenerated, or
+// something else (which stops resume and abort).
+export function classify(receipt, status, plannedBytes) {
   const saved = new Map(receipt.makeBefore.savedInventory?.map(item => [item.path, item.sha256]));
   return receipt.plan.files.map(file => {
     const blob = status.workingFlat.get(file.path)?.blob ?? null;
     const state = blob === file.afterBlob ? 'after' : blob === file.beforeBlob ? 'before'
       : receipt.saveRefusals && saved.has(file.path) && status.workingSha256.get(file.path) === saved.get(file.path) ? 'saved'
-        : blob && isDependency(file.path) ? 'regenerated' : 'other';
+        : lineEndingsOnly(file, status, plannedBytes) ? 'after-eol'
+          : blob && isDependency(file.path) ? 'regenerated' : 'other';
     return { ...file, state };
   });
 }
 
 // Receipts that may continue: nothing saved yet, Make still at the version
 // the deploy started from, and every other path untouched.
-async function resumable(client, receipt, what, warn = () => {}) {
+async function resumable(client, receipt, what, warn = () => {}, plannedBytes) {
   if (receipt.fileKey !== client.fileKey) fail(`The receipt is for Make file ${receipt.fileKey}, not ${client.fileKey}.`, 'DEPLOY_RECEIPT');
   if (receipt.outcome !== 'uncertain' || !BEFORE_SAVE.includes(receipt.stage)) {
     fail(`This deploy is at stage ${receipt.stage} (${receipt.outcome}); --${what} applies only before a version was saved.` +
@@ -1175,7 +1198,7 @@ async function resumable(client, receipt, what, warn = () => {}) {
     fail(`Make's saved version is ${state.savedVersion}, not ${receipt.makeBefore.versionGitSha} where the deploy started, so a version was saved. ` +
       `Run figma-cli make deploy --file ${receipt.fileKey} --dir <clone> --verify ${receipt.receiptPath}.`, 'DEPLOY_RECEIPT');
   }
-  const checked = plannedState(receipt, status);
+  const checked = plannedState(receipt, status, plannedBytes);
   if (checked.problem) fail(`${checked.problem}. ${checked.code === 'DEPLOY_RECEIPT' ? 'Inspect it by hand. ' : ''}Nothing was changed.`, checked.code);
   let settled;
   try { settled = await client.settleCheckedStatus(status, { overrideMake: overridePin(receipt), plannedPaths: receipt.plan.files.map(file => file.path) }); }
@@ -1196,8 +1219,10 @@ export async function deployResume(client, { dir, receiptPath } = {}, deps = {})
   const access = await requireAdmin(receipt.repo, deps.gh);
   if (!revOf(ctx, receipt.mainCommit)) fetchMain(ctx);
   if (!revOf(ctx, receipt.mainCommit)) fail(`The clone does not have main ${short(receipt.mainCommit)}.`, 'DEPLOY_RECEIPT');
-  const { status, files } = await resumable(client, receipt, 'resume', deps.warn);
-  const todo = files.filter(file => file.state === 'before' || file.state === 'saved' || file.state === 'regenerated' || (file.state === 'after' && isLockfile(file.path)))
+  const mainBytes = blob => deps.readBlob(ctx.root, blob);
+  const { status, files } = await resumable(client, receipt, 'resume', deps.warn, mainBytes);
+  // An 'after-eol' path is written again with main's exact bytes.
+  const todo = files.filter(file => ['before', 'saved', 'regenerated', 'after-eol'].includes(file.state) || (file.state === 'after' && isLockfile(file.path)))
     .map(file => ({ ...file, expectedSha256: status.workingSha256.get(file.path) ?? null }));
   const confirmed = new Set(receipt.completedWrites.filter(write => !write.uncertain && !write.backupOnly).map(write => write.path));
   for (const file of files.filter(item => item.state === 'after' && !isLockfile(item.path) && !confirmed.has(item.path))) {
@@ -1208,7 +1233,6 @@ export async function deployResume(client, { dir, receiptPath } = {}, deps = {})
   receipt.writeRun = { startedAt: new Date().toISOString(), completedWrites: 0 };
   saveReceipt(receipt);
   deps.progress(`resuming ${new Set(receipt.completedWrites.filter(write => !write.uncertain && !write.backupOnly).map(write => write.path)).size}/${receipt.plan.files.length}`);
-  const mainBytes = blob => deps.readBlob(ctx.root, blob);
   await backupLockfiles(client, receipt, deps.home);
   await writeFiles(client, receipt, todo, { mainBytes, home: deps.home, deps });
   await reconcile(client, receipt, { mainBytes, home: deps.home, deps });
@@ -1239,15 +1263,28 @@ function backupContent(receipt, file, home) {
   fail(`No backup of ${file.path} with its original content was found. Nothing was changed.`, 'DEPLOY_RECEIPT');
 }
 
-export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
+// dir: a local clone (default: current folder). Abort needs none, but with
+// one it recognises a path Make's editor turned into LF line endings
+// ('after-eol') as the deploy's own write and restores it too.
+export async function deployAbort(client, { receiptPath, dir } = {}, deps = {}) {
   deps = defaults(deps);
   const receipt = readReceipt(receiptPath);
   await requireAdmin(receipt.repo, deps.gh);
-  const { status: first, files } = await resumable(client, receipt, 'abort', deps.warn);
+  const root = resolve(dir || '.');
+  let unread = false;
+  const plannedBytes = blob => { try { return deps.readBlob(root, blob); } catch { unread = true; return null; } };
+  let first, files;
+  try { ({ status: first, files } = await resumable(client, receipt, 'abort', deps.warn, plannedBytes)); }
+  catch (error) {
+    if (unread && error.code === 'DEPLOY_RECEIPT') {
+      error.message += ` Could not read main's content from ${root}; run --abort with --dir <local clone> so it can recognise a Make line-ending-only rewrite.`;
+    }
+    throw error;
+  }
   const restoreOf = file => (file.op === 'add' ? null : backupContent(receipt, file, deps.home));
   // Every backup is read before anything changes.
   const contents = new Map(files.filter(file => (receipt.mode === 'override-make' || !noOriginal(file)) &&
-    (file.state === 'after' || file.state === 'saved' || file.state === 'regenerated')).map(file => [file.path, restoreOf(file)]));
+    ['after', 'after-eol', 'saved', 'regenerated'].includes(file.state)).map(file => [file.path, restoreOf(file)]));
   for (const file of reverted(receipt, first)) contents.set(file.path, restoreOf(file));
   const restored = new Set(receipt.restored || []);
   // Older abort retries replaced this list. Recover paths that this deploy
@@ -1279,7 +1316,7 @@ export async function deployAbort(client, { receiptPath } = {}, deps = {}) {
     ? (status.workingSha256.get(file.path) ?? null) === file.beforeSha256 : checked.files.find(item => item.path === file.path).state === 'before');
   const recheck = async () => {
     status = await settledStatus(client, receipt, deps);
-    const checked = plannedState(receipt, status);
+    const checked = plannedState(receipt, status, plannedBytes);
     if (checked.problem) stopAbort(null, `Abort stopped once Make was idle: ${checked.problem}. Run --abort again.`);
     return checked;
   };

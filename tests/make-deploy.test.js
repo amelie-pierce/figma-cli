@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gitBlobSha, gitTreeSha } from '../src/git-tree.js';
 import { MakeClient } from '../src/make-client.js';
-import { DEPLOY_IGNORE, defaultReadBlob, deployDir, deployAbort, deployApply, deployPlan, deployResume, deployVerify, driftProblems, ignoreMatcher, ignorePatterns, readReceipt } from '../src/make-deploy.js';
+import { DEPLOY_IGNORE, classify, defaultReadBlob, deployDir, deployAbort, deployApply, deployPlan, deployResume, deployVerify, driftProblems, ignoreMatcher, ignorePatterns, readReceipt } from '../src/make-deploy.js';
 import { markerContent } from '../src/make-mode.js';
 import { PROJECT_MARKER } from '../src/make-project.js';
 import { defaultRun } from '../src/make-team.js';
@@ -1488,6 +1488,100 @@ describe('make deploy recovery', () => {
     await refuses(deployResume(s.make, { ...s.opts, receiptPath }, s.deps), 'DEPLOY_RECEIPT', /Inspect it by hand/);
     s.make.working.set('src/main.tsx', Buffer.from('outside the plan\n'));
     await refuses(deployResume(s.make, { ...s.opts, receiptPath }, s.deps), 'DEPLOY_MAKE_AHEAD');
+  });
+
+  // Make's code editor keeps text with LF line endings and can write that
+  // buffer back over a CRLF file the deploy wrote (an Illustrator SVG).
+  const CRLF_SVG = '<svg>\r\n  <path d="M0 0"/>\r\n</svg>\r\n';
+  const lineEndingsRewritten = async (t, editorView = CRLF_SVG.replace(/\r\n/g, '\n')) => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'v2\n', 'src/assets/plate.svg': CRLF_SVG, 'src/zz.ts': 'z\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.beforeWrite = path => { if (path === 'src/zz.ts') throw new Error('Make operation timed out.'); };
+    let receiptPath;
+    await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => { receiptPath = error.receiptPath; return true; });
+    s.make.hooks.beforeWrite = null;
+    assert.ok(s.make.working.get('src/assets/plate.svg').equals(Buffer.from(CRLF_SVG)), 'the deploy wrote main\'s exact bytes');
+    s.make.working.set('src/assets/plate.svg', Buffer.from(editorView));
+    return { s, receiptPath };
+  };
+
+  it('aborts when Make\'s editor rewrote a deployed CRLF file with LF line endings', async t => {
+    const { s, receiptPath } = await lineEndingsRewritten(t);
+    const before = new Map(s.make.saved);
+    const aborted = await deployAbort(s.make, { receiptPath, dir: s.p.clone }, s.deps);
+    assert.equal(aborted.outcome, 'aborted');
+    assert.deepEqual([...s.make.working.keys()].sort(), [...before.keys()].sort());
+    for (const [path, bytes] of before) assert.ok(s.make.working.get(path).equals(bytes), path);
+    assert.ok(s.make.calls.some(([kind, path]) => kind === 'delete' && path === 'src/assets/plate.svg'));
+    assert.equal(s.make.calls.filter(([kind]) => kind === 'save').length, 0);
+  });
+
+  it('resumes over a deployed CRLF file Make rewrote with LF by writing main\'s exact bytes again', async t => {
+    const { s, receiptPath } = await lineEndingsRewritten(t);
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath }, s.deps);
+    assert.equal(resumed.outcome, 'ok');
+    assert.ok(s.make.saved.get('src/assets/plate.svg').equals(Buffer.from(CRLF_SVG)), 'the saved version holds main\'s CRLF bytes');
+    assert.equal(s.make.writes.filter(([kind, path]) => kind === 'write' && path === 'src/assets/plate.svg').length, 2);
+  });
+
+  it('still refuses a deployed CRLF file with one real character changed, or with no clone to compare against', async t => {
+    const { s, receiptPath } = await lineEndingsRewritten(t, CRLF_SVG.replace(/\r\n/g, '\n').replace('M0 0', 'M0 1'));
+    const writes = s.make.writes.length;
+    await refuses(deployAbort(s.make, { receiptPath, dir: s.p.clone }, s.deps), 'DEPLOY_RECEIPT', /neither started from nor planned in \["src\/assets\/plate\.svg"\]/);
+    await refuses(deployResume(s.make, { ...s.opts, receiptPath }, s.deps), 'DEPLOY_RECEIPT', /Inspect it by hand/);
+    // A trailing-newline difference is not a line-ending rewrite either.
+    s.make.working.set('src/assets/plate.svg', Buffer.from(CRLF_SVG.replace(/\r\n/g, '\n').replace(/\n$/, '')));
+    await refuses(deployAbort(s.make, { receiptPath, dir: s.p.clone }, s.deps), 'DEPLOY_RECEIPT', /plate\.svg/);
+    // Without main's bytes the LF copy cannot be told from a designer edit.
+    s.make.working.set('src/assets/plate.svg', Buffer.from(CRLF_SVG.replace(/\r\n/g, '\n')));
+    const elsewhere = temp(t);
+    await refuses(deployAbort(s.make, { receiptPath, dir: elsewhere }, s.deps), 'DEPLOY_RECEIPT', /plate\.svg.*--abort with --dir <local clone>/s);
+    assert.equal(s.make.writes.length, writes, 'nothing was changed');
+  });
+
+  const editorRewritesLf = async (t, times) => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'v2\n', 'src/assets/plate.svg': CRLF_SVG, 'src/zz.ts': 'z\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    let left = times;
+    s.make.hooks.afterWrite = path => {
+      if (path !== 'src/assets/plate.svg' || left-- <= 0) return;
+      s.make.working.set(path, Buffer.from(CRLF_SVG.replace(/\r\n/g, '\n')));
+    };
+    return { s, plan };
+  };
+
+  it('writes main\'s CRLF bytes again before saving when Make\'s editor turned a confirmed write into LF', async t => {
+    const { s, plan } = await editorRewritesLf(t, 1);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.outcome, 'ok');
+    assert.ok(s.make.saved.get('src/assets/plate.svg').equals(Buffer.from(CRLF_SVG)), 'the saved version holds main\'s CRLF bytes');
+    assert.equal(s.make.writes.filter(([kind, path]) => kind === 'write' && path === 'src/assets/plate.svg').length, 2);
+    assert.equal(s.make.calls.filter(([kind]) => kind === 'save').length, 1);
+  });
+
+  it('refuses to save when Make\'s editor keeps turning a deployed CRLF file into LF', async t => {
+    const { s, plan } = await editorRewritesLf(t, Infinity);
+    let receiptPath;
+    await refuses(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(error => { receiptPath = error.receiptPath; throw error; }),
+      'DEPLOY_WRITE_FAILED', /src\/assets\/plate\.svg.*No version was saved\. Run .*--resume/s);
+    assert.equal(s.make.calls.filter(([kind]) => kind === 'save').length, 0);
+    assert.equal(readReceipt(receiptPath).outcome, 'uncertain');
+  });
+
+  it('only recognises a line-ending rewrite of UTF-8 text', () => {
+    const binary = Buffer.from([0xff, 0xfe, 0x0d, 0x0a, 0x00, 0x0d, 0x0a]);
+    const stripped = Buffer.from([0xff, 0xfe, 0x0a, 0x00, 0x0a]);
+    const text = Buffer.from(CRLF_SVG);
+    const lf = Buffer.from(CRLF_SVG.replace(/\r\n/g, '\n'));
+    const classifyOne = (planned, working) => {
+      const file = { path: 'src/a.bin', op: 'add', beforeBlob: null, afterBlob: gitBlobSha(planned), beforeSha256: null, afterSha256: sha256(planned) };
+      const status = { workingFlat: new Map([[file.path, { blob: gitBlobSha(working) }]]), workingSha256: new Map([[file.path, sha256(working)]]) };
+      return classify({ makeBefore: {}, plan: { files: [file] } }, status, () => planned)[0].state;
+    };
+    assert.equal(classifyOne(text, lf), 'after-eol');
+    assert.equal(classifyOne(binary, stripped), 'other');
   });
 
   it('aborts an interrupted deploy by restoring the written paths from backups', async t => {
