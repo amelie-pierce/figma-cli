@@ -444,6 +444,65 @@ test('a mounted editor that disagrees refuses the three-view fallback', async ()
   assert.match(error.message, /editor different/);
 });
 
+// Make's code editor shows a CRLF file with LF line endings (an Illustrator
+// SVG in a deploy stalled on exactly this until the operation timed out).
+const CRLF_SVG = '<svg>\r\n  <path d="M0 0"/>\r\n</svg>\r\n';
+function lineEndingClient({ stored = CRLF_SVG, editor = CRLF_SVG.replace(/\r\n/g, '\n') } = {}) {
+  const path = 'src/assets/plate.svg';
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
+  client.fileKey = 'ScratchKey';
+  client._durable = async () => ({ exists: true, content: stored });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._bridgeRead = async () => ({ content: stored });
+  client._sourceTree = async () => [{ kind: 'file', path }];
+  client._read = async () => ({ content: editor });
+  return { client, path };
+}
+
+test('a mounted editor that shows a CRLF file with LF line endings agrees when VFS and sandbox hold the exact bytes', async () => {
+  const { client, path } = lineEndingClient();
+  assert.equal(await client._durableAgreement(path, CRLF_SVG, Date.now() + 1000), 'editor-lf-tree-vfs-sandbox-matched');
+  // LF content shown as LF is still an exact match.
+  const lf = CRLF_SVG.replace(/\r\n/g, '\n');
+  const plain = lineEndingClient({ stored: lf, editor: lf });
+  assert.equal(await plain.client._durableAgreement(plain.path, lf, Date.now() + 1000), 'editor-tree-vfs-sandbox-matched');
+});
+
+test('an editor view with one real character changed besides line endings still disagrees', async () => {
+  const { client, path } = lineEndingClient({ editor: CRLF_SVG.replace(/\r\n/g, '\n').replace('M0 0', 'M0 1') });
+  const error = await client._durableAgreement(path, CRLF_SVG, Date.now() + 300).catch(cause => cause);
+  assert.match(error.message, /editor different/);
+  // The client VFS and sandbox are still compared byte for byte.
+  const vfs = lineEndingClient({ stored: CRLF_SVG.replace(/\r\n/g, '\n') });
+  await assert.rejects(vfs.client._durableAgreement(vfs.path, CRLF_SVG, Date.now() + 300), /vfs different, sandbox different/);
+});
+
+test('a CRLF write whose mounted editor shows LF is confirmed, not left uncertain', async () => {
+  const path = 'src/assets/plate.svg';
+  const { client } = fakeClient({ original: 'old' });
+  client._durableAgreement = MakeClient.prototype._durableAgreement;
+  client._sourceTree = async () => [{ kind: 'file', path }];
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  let current = 'old';
+  client._driftState = async () => ({ state: state(current === 'old' ? [] : [path]) });
+  client._durable = async action => {
+    if (action.type === 'read') return { exists: true, content: current };
+    if (action.type === 'write') { current = action.content; return { accepted: true }; }
+  };
+  client._bridgeRead = async () => ({ content: current });
+  client._read = async () => ({ content: current.replace(/\r\n/g, '\n') });
+  const result = await client.writeDurableConfirmed(path, CRLF_SVG, { expectedSha256: hash('old') });
+  assert.equal(result.verification, 'editor-lf-tree-vfs-sandbox-matched');
+  assert.equal(result.sha256, hash(CRLF_SVG));
+  assert.equal(current, CRLF_SVG);
+  client._read = async () => ({ content: current.replace(/\r\n/g, '\n').replace('M0 0', 'M9 9') });
+  current = 'old';
+  client.timeoutMs = 600;
+  const error = await client.writeDurableConfirmed(path, CRLF_SVG, { expectedSha256: hash('old') }).catch(cause => cause);
+  assert.match(error.message, /outcome is uncertain: .*editor different/);
+  assert.equal(error.readBack, undefined, 'a real editor difference is not confirmed from VFS and sandbox');
+});
+
 test('a sandbox or tree mismatch refuses the missing-editor fallback', async () => {
   const path = 'src/vendor/atomic-aui/lib/datepicker/use-recipe.ts';
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });

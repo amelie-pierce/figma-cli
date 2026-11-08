@@ -22,6 +22,9 @@ const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex
 // Make serves the live session preview from *.makeproxy-<x>.figma.site and the
 // Browser tab's cached preview from <id>-figmacachedpreview.figma.site.
 const PREVIEW_HOST = /(\.makeproxy-[a-z]+|-figmacachedpreview)\.figma\.site$/;
+// Equal text once CRLF is read as LF; any other difference still differs.
+const sameIgnoringLineEndings = (a, b) => typeof a === 'string' && typeof b === 'string' &&
+  a.replace(/\r\n/g, '\n') === b.replace(/\r\n/g, '\n');
 const treeHidden = path => path.split('/').some(part => part.startsWith('.')) || TREE_HIDDEN_ROOT_FILES.includes(path);
 
 // createVersion may have run: the caller must inspect, never retry the save.
@@ -842,10 +845,15 @@ export class MakeClient {
                 } catch { /* The selection changed; use the guarded path selection below. */ }
               }
               editor ??= await this._read(path, deadline, { editorWaitMs: EDITOR_WAIT_MS });
-              observed.editor = editor.content === expectedContent ? 'matched' : 'different';
-              if (observed.editor === 'matched') {
+              // Make's code editor shows text with LF line endings, so a CRLF
+              // file it mounts reads back as LF. The client VFS and sandbox
+              // above still matched the exact bytes; only that line-ending
+              // difference is accepted from the editor view.
+              observed.editor = editor.content === expectedContent ? 'matched'
+                : sameIgnoringLineEndings(editor.content, expectedContent) ? 'matched-lf' : 'different';
+              if (observed.editor !== 'different') {
                 if (treeState) treeState.editorEntry = editor.entry;
-                return 'editor-tree-vfs-sandbox-matched';
+                return observed.editor === 'matched' ? 'editor-tree-vfs-sandbox-matched' : 'editor-lf-tree-vfs-sandbox-matched';
               }
               editorDisagreed = true;
             } catch (error) {

@@ -18,6 +18,7 @@ Updated 2026-11-04: tracked `.npmrc`, mode-only and reloaded Make-only override 
 Updated 2026-11-06: deploy progress and local status are documented in the command reference.
 Updated 2026-11-06: detached deploy details live in the command reference and runner modules.
 Updated 2026-11-08: resume and save pending settlement include planned nested dot files.
+Updated 2026-11-08: a line-ending-only (CRLF to LF) rewrite by Make's code editor is the deploy's own write.
 
 # make deploy
 Updated 2026-11-03: plan and apply refuse edited release-installed AtomicAUI files first (`DEPLOY_VENDOR_EDITED`); see [vendor-lock.md](vendor-lock.md).
@@ -34,6 +35,22 @@ its pending list. Root instruction files remain optional
 saved-version and override comparisons, the final save, and receipt resume
 (`tests/make-durable.test.js:952`, `tests/make-deploy.test.js:502`). Live Make
 recovery with this build is **UNVERIFIED**.
+
+## Line endings rewritten by Make's editor
+
+Make's code editor shows text with LF line endings. A mounted editor showing a
+CRLF file as LF agrees with the write when the client VFS and sandbox hold the
+exact bytes (`matched-lf`, `src/make-client.js:853`); any other editor
+difference still leaves the write uncertain. If the editor writes its LF buffer
+back over a deployed CRLF file, `classify` marks that path `after-eol` when its
+working sha256 equals main's UTF-8 bytes with CRLF turned into LF
+(`lineEndingsOnly`, `src/make-deploy.js:1151`). Resume writes main's bytes
+again; abort restores it, reading main's bytes from `--dir` (default the current
+folder) and refusing without them. A trailing-newline or character difference
+is still `other` and refuses. Trigger: an AGPD deploy stalled on Illustrator
+CRLF SVGs. Fake coverage: `tests/make-durable.test.js:462`,
+`tests/make-deploy.test.js:1509`. Live Make with this
+build is **UNVERIFIED**.
 
 See [Deploying main to Make](../../../../REFERENCE.md#deploying-main-to-make-make-deploy) for progress output and receipt status commands. The implementation is in `src/make-deploy.js` and `src/make-deploy-status.js`; fake receipt coverage is in `tests/make-deploy-status.test.js`.
 
