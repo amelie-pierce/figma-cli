@@ -476,6 +476,55 @@ describe('make deploy unopened deep-file read-back', () => {
     assert.equal(receipt.completedWrites.some(write => write.path === 'src/App.tsx' && write.confirmedOnResume), true);
   });
 
+  describe('uncertain in-flight write that landed', () => {
+    // Leaves App.tsx at main's content with only an uncertain write recorded, like a write whose reply never came.
+    async function interrupted(t, { extraUncertain = false } = {}) {
+      const s = setup(t);
+      landChange(s, { 'src/App.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
+      const plan = await deployPlan(s.make, s.opts, s.deps);
+      s.make.hooks.afterWrite = path => { if (path === 'src/App.tsx') throw new Error('Make operation timed out.'); };
+      const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+      s.make.hooks.afterWrite = null;
+      const receipt = readReceipt(error.receiptPath);
+      const paths = extraUncertain ? ['src/App.tsx', 'src/Card.tsx'] : ['src/App.tsx'];
+      receipt.completedWrites = paths.map(path => ({ path, op: 'update', backupPath: null, uncertain: true }));
+      writeFileSync(error.receiptPath, JSON.stringify(receipt));
+      return { s, receiptPath: error.receiptPath };
+    }
+    const landedOf = s => (s.make.settleOptions ?? []).map(options => options.landedContent).filter(map => map?.size);
+
+    it('counts the single uncertain write as written when its hash equals the plan', async t => {
+      const { s, receiptPath } = await interrupted(t);
+      const afterSha = readReceipt(receiptPath).plan.files.find(file => file.path === 'src/App.tsx').afterSha256;
+      await deployResume(s.make, { ...s.opts, receiptPath }, s.deps);
+      assert.equal(landedOf(s)[0].get('src/App.tsx'), afterSha);
+      assert.equal(landedOf(s)[0].size, 1);
+    });
+
+    it('does not accept it when the content hash differs', async t => {
+      const { s, receiptPath } = await interrupted(t);
+      s.make.working.set('src/App.tsx', Buffer.from('something else\n'));
+      await deployResume(s.make, { ...s.opts, receiptPath }, s.deps).catch(() => {});
+      assert.equal(landedOf(s).length, 0);
+    });
+
+    it('does not accept it when the path is not the uncertain write', async t => {
+      const { s, receiptPath } = await interrupted(t);
+      const receipt = readReceipt(receiptPath);
+      receipt.completedWrites = [];
+      writeFileSync(receiptPath, JSON.stringify(receipt));
+      await deployResume(s.make, { ...s.opts, receiptPath }, s.deps).catch(() => {});
+      assert.equal(landedOf(s).length, 0);
+    });
+
+    it('does not accept two uncertain writes', async t => {
+      const { s, receiptPath } = await interrupted(t, { extraUncertain: true });
+      s.make.working.set('src/Card.tsx', Buffer.from('export const Card = 1;\n'));
+      await deployResume(s.make, { ...s.opts, receiptPath }, s.deps).catch(() => {});
+      assert.equal(landedOf(s).length, 0);
+    });
+  });
+
   it('waits for Make to list a confirmed write before resuming or aborting, and stops on a foreign change', async t => {
     const s = setup(t);
     landChange(s, { 'src/App.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
