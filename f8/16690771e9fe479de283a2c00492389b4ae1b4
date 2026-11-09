@@ -1,0 +1,16 @@
+src/make-deploy.js
+  h_eb882fdf9e0ce8 959-963,965-968,978,982,1274-1283
+tests/make-deploy.test.js
+  h_eb882fdf9e0ce8 1539,1543-1572
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f816690771e9fe479de283a2c00492389b4ae1b4",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}

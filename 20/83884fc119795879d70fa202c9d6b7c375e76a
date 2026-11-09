@@ -1,0 +1,14 @@
+_vaults/figma-cli/wiki/make/deploy.md
+  h_eb882fdf9e0ce8 47-50,54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2083884fc119795879d70fa202c9d6b7c375e76a",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
