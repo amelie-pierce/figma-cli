@@ -149,7 +149,8 @@ class FakeMake {
   // Like live Make, root lockfiles are never listed.
   pending() { return this.changed().filter(path => !path.split('/').some(part => part.startsWith('.')) && !['pnpm-lock.yaml', 'package-lock.json'].includes(path)); }
   async inspect() { return { fileKey: KEY, ...this.ui }; }
-  async settleCheckedStatus(status) {
+  async settleCheckedStatus(status, options = {}) {
+    (this.settleOptions ??= []).push(options);
     this.calls.push(['settle', [...status.persistence.pendingPaths]]);
     await this.hooks.settle?.(status);
     return status;
@@ -454,6 +455,25 @@ describe('make deploy unopened deep-file read-back', () => {
     assert.equal(s.make.deepReadback, 'tree-vfs-sandbox-matched');
     assert.equal(resumed.stage, 'deployed');
     assert.equal(s.make.saved.get(DEEP_PATH).toString(), 'new\n');
+  });
+
+  it('resumes with a written file Make never lists only when its content hash equals the plan', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.afterWrite = path => { if (path === 'src/App.tsx') throw new Error('Make operation timed out.'); };
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+    s.make.hooks.afterWrite = null;
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps);
+    assert.equal(resumed.stage, 'deployed');
+    const receipt = readReceipt(error.receiptPath);
+    const afterSha = path => receipt.plan.files.find(file => file.path === path).afterSha256;
+    // Resume hands the client the planned hash of every file already at main's content, nothing else.
+    const verified = s.make.settleOptions.find(options => options.verifiedContent?.size).verifiedContent;
+    assert.equal(verified.get('src/App.tsx'), afterSha('src/App.tsx'));
+    assert.equal(verified.has('src/Card.tsx'), false);
+    // The save also names only paths this resume confirmed by hash.
+    assert.equal(receipt.completedWrites.some(write => write.path === 'src/App.tsx' && write.confirmedOnResume), true);
   });
 
   it('waits for Make to list a confirmed write before resuming or aborting, and stops on a foreign change', async t => {
