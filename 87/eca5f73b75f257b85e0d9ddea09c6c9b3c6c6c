@@ -1,0 +1,22 @@
+_vaults/figma-cli/wiki/make/deploy.md
+  h_eb882fdf9e0ce8 21
+src/make-client.js
+  h_eb882fdf9e0ce8 65-74,697-703,707,1165,1171
+src/make-deploy.js
+  h_eb882fdf9e0ce8 1045-1049,1060,1209-1211
+tests/make-deploy.test.js
+  h_eb882fdf9e0ce8 152-153,460-478
+tests/make-durable.test.js
+  h_eb882fdf9e0ce8 1494-1514
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "87eca5f73b75f257b85e0d9ddea09c6c9b3c6c6c",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
