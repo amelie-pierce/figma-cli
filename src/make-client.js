@@ -62,6 +62,16 @@ function savedMatches(item, sha, blob) {
   return item ? (item.blob ? item.blob === blob : item.sha256 === sha) : sha == null && blob == null;
 }
 
+// Planned paths that Make does not list as pending although the working copy
+// holds exactly the planned bytes. Only the hash decides, never a backup or a
+// recorded write outcome.
+function contentVerifiedAbsent(status, verifiedContent) {
+  if (!verifiedContent) return [];
+  const pending = status.persistence?.pendingPaths ?? [];
+  return [...verifiedContent].filter(([path, sha]) => typeof sha === 'string' && !pending.includes(path) &&
+    status.workingSha256?.get(path) === sha).map(([path]) => path);
+}
+
 function listedPendingOf(status, overrideMake, plannedPaths = []) {
   const planned = new Set(plannedPaths);
   // A planned dot file below visible folders may be pending; paths inside dot
@@ -684,11 +694,17 @@ export class MakeClient {
   // Wait until Make lists exactly the unsaved paths a checked status holds,
   // before the next mutation or save relies on its pending list. A status
   // whose pending list was stale is read again; its content must be unchanged.
-  async settleCheckedStatus(status, { overrideMake, plannedPaths } = {}) {
+  //
+  // `verifiedContent` maps a planned path to the sha256 it must hold. A path
+  // Make's tracker does not list (it was written by an earlier deploy run, so
+  // the tracker had time to list it) counts as written when the working copy
+  // read just now is byte-equal to that hash. A differing or unread hash
+  // keeps the path required, so the settle fails as before.
+  async settleCheckedStatus(status, { overrideMake, plannedPaths, verifiedContent } = {}) {
     const listed = listedPendingOf(status, overrideMake, plannedPaths);
     if (!listed) return status;
     const settled = await this._operation(deadline => this._settleTracker(status.persistence, listed, deadline,
-      { optionalPaths: UNLISTED_PERSISTED_PATHS, modeOptions: { overrideMake } }));
+      { optionalPaths: [...UNLISTED_PERSISTED_PATHS, ...contentVerifiedAbsent(status, verifiedContent)], modeOptions: { overrideMake } }));
     if (JSON.stringify(settled) === JSON.stringify(status.persistence)) return status;
     const fresh = await this.projectStatus();
     if (JSON.stringify(fresh.persistence) !== JSON.stringify(settled) || fresh.workingTree !== status.workingTree) throw contentChanged();
@@ -1146,13 +1162,13 @@ export class MakeClient {
   // working tree this check read. Normal saves require no pending paths; with
   // `listed` (deploy), createVersion receives Make's listed paths. An override
   // additionally checks the full working-copy diff against its reviewed plan.
-  async saveCheckedVersion(title, expectedPaths, { firstVersion = false, since, listed = false, overrideMake } = {}) {
+  async saveCheckedVersion(title, expectedPaths, { firstVersion = false, since, listed = false, overrideMake, verifiedContent } = {}) {
     saveRequest(title, expectedPaths);
     if (firstVersion && !/^[a-f0-9]{40}$/.test(since || '')) {
       throw new Error('--first-version requires --since <commit>: the sandbox head make status reported before the writes.');
     }
     let before = await this.projectStatus();
-    if (listed) before = await this.settleCheckedStatus(before, { overrideMake, plannedPaths: expectedPaths });
+    if (listed) before = await this.settleCheckedStatus(before, { overrideMake, plannedPaths: expectedPaths, verifiedContent });
     const state = requireGitMode(before.persistence, { firstVersion, overrideMake });
     if (overrideMake) await this._operation(async deadline => {
       const bridge = await this._fileBridge(deadline);

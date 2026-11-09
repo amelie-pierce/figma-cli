@@ -1491,3 +1491,24 @@ test('a tracker change unrelated to the confirmed write is never reconciled into
   await assert.rejects(client.writeDurableConfirmed('src/a.ts', 'new', { expectedSha256: hash('old') }), { code: 'MAKE_TRACKER_CHANGED' });
   assert.equal(calls.filter(([type]) => type === 'write').length, 1);
 });
+
+test('settling a checked status accepts an unlisted planned path only at its verified content hash', async () => {
+  const edited = new Map([...markerWorking, ['tsconfig.json', { mode: '100644', blob: '5'.repeat(40) }]]);
+  const status = savedStatus({ persistence: state(), workingFlat: edited, workingSha256: new Map([['tsconfig.json', hash('main')]]) });
+  const settle = verifiedContent => {
+    const { client } = checkedClient({ before: status });
+    client._operation = fn => fn(Date.now() + 180);
+    client._driftState = async () => ({ state: state() });
+    return client.settleCheckedStatus(status, { plannedPaths: ['tsconfig.json'], verifiedContent });
+  };
+  // Make never lists tsconfig.json, yet the working copy holds exactly main's bytes.
+  assert.equal(await settle(new Map([['tsconfig.json', hash('main')]])), status);
+  // A differing hash, an unrecorded path or no hash keeps the path required.
+  await assert.rejects(settle(new Map([['tsconfig.json', hash('other')]])), { code: 'MAKE_TRACKER_UNSETTLED' });
+  await assert.rejects(settle(new Map([['src/other.ts', hash('main')]])), { code: 'MAKE_TRACKER_UNSETTLED' });
+  await assert.rejects(settle(undefined), { code: 'MAKE_TRACKER_UNSETTLED' });
+  // Another pending path is still refused: the exact-pending rule holds.
+  const { client } = checkedClient({ before: status, drift: [state(['src/x.ts'])] });
+  await assert.rejects(client.settleCheckedStatus(status, { plannedPaths: ['tsconfig.json'],
+    verifiedContent: new Map([['tsconfig.json', hash('main')]]) }), { code: 'MAKE_TRACKER_CHANGED' });
+});

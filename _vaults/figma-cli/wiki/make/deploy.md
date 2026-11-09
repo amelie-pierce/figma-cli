@@ -18,6 +18,7 @@ Updated 2026-11-04: tracked `.npmrc`, mode-only and reloaded Make-only override 
 Updated 2026-11-06: deploy progress and local status are documented in the command reference.
 Updated 2026-11-06: detached deploy details live in the command reference and runner modules.
 Updated 2026-11-08: resume and save pending settlement include planned nested dot files.
+Updated 2026-11-09: a planned file Make never lists as pending (tsconfig.json in the PFD deploy) counts as written on resume and save only when the working copy's sha256 equals the plan's `afterSha256` (`verifiedContent` of `settleCheckedStatus`, `contentVerifiedAbsent` in `src/make-client.js`); every other pending path still must match exactly. It is not added to `UNLISTED_PERSISTED_PATHS`: earlier deploys saved tsconfig.json as an ordinary listed change.
 Updated 2026-11-08: a line-ending-only (CRLF to LF) rewrite by Make's code editor is the deploy's own write.
 
 # make deploy

@@ -1042,6 +1042,11 @@ async function tagAndFinish(ctx, receipt, home, progress = () => {}) {
   }
 }
 
+// Paths an earlier run left at main's content, found again by hash on resume.
+const resumeConfirmed = receipt => new Map(receipt.plan.files
+  .filter(file => receipt.completedWrites.some(write => write.path === file.path && write.confirmedOnResume))
+  .map(file => [file.path, file.afterSha256]));
+
 // After the writes: save one version. Normal deploys then check drift and tag;
 // overrides defer both until a fresh-reload verification.
 async function finish(client, ctx, receipt, mainFlat, home, warn = () => {}, progress = () => {}) {
@@ -1052,7 +1057,7 @@ async function finish(client, ctx, receipt, mainFlat, home, warn = () => {}, pro
   let version;
   try {
     version = await client.saveCheckedVersion(`deploy ${short(plan.mainCommit)}`, plan.files.map(file => file.path),
-      { listed: true, ...(receipt.mode === 'override-make' ? { overrideMake: {
+      { listed: true, verifiedContent: resumeConfirmed(receipt), ...(receipt.mode === 'override-make' ? { overrideMake: {
         ...overridePin(receipt), expectedDiff: plan.expectedDiff, allowedPaths: plan.files.map(file => file.path) } } : {}) });
   } catch (error) {
     if (error.version) {
@@ -1201,7 +1206,9 @@ async function resumable(client, receipt, what, warn = () => {}, plannedBytes) {
   const checked = plannedState(receipt, status, plannedBytes);
   if (checked.problem) fail(`${checked.problem}. ${checked.code === 'DEPLOY_RECEIPT' ? 'Inspect it by hand. ' : ''}Nothing was changed.`, checked.code);
   let settled;
-  try { settled = await client.settleCheckedStatus(status, { overrideMake: overridePin(receipt), plannedPaths: receipt.plan.files.map(file => file.path) }); }
+  // A planned path Make does not list counts as written only at main's exact hash.
+  const verifiedContent = new Map(checked.files.filter(file => file.state === 'after' && file.afterSha256).map(file => [file.path, file.afterSha256]));
+  try { settled = await client.settleCheckedStatus(status, { overrideMake: overridePin(receipt), plannedPaths: receipt.plan.files.map(file => file.path), verifiedContent }); }
   catch (error) { fail(`Make's pending list does not match its checked unsaved content: ${error.message} Nothing was changed.`, 'DEPLOY_MAKE_STATE'); }
   return { status: settled, files: checked.files };
 }
