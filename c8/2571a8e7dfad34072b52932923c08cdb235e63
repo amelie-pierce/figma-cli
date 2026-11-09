@@ -1,0 +1,18 @@
+src/make-client.js
+  h_eb882fdf9e0ce8 75-84,713-716
+src/make-deploy.js
+  h_eb882fdf9e0ce8 1211-1216
+tests/make-deploy.test.js
+  h_eb882fdf9e0ce8 479-527
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c82571a8e7dfad34072b52932923c08cdb235e63",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
