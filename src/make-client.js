@@ -72,6 +72,16 @@ function contentVerifiedAbsent(status, verifiedContent) {
     status.workingSha256?.get(path) === sha).map(([path]) => path);
 }
 
+// A planned path Make lists as pending that this run's expected set lacks, when
+// the caller names it as the receipt's one uncertain write and the working copy
+// holds exactly its planned bytes. Only the hash decides.
+function contentVerifiedListed(status, landedContent) {
+  if (!landedContent) return [];
+  const pending = status.persistence?.pendingPaths ?? [];
+  return [...landedContent].filter(([path, sha]) => typeof sha === 'string' && pending.includes(path) &&
+    status.workingSha256?.get(path) === sha).map(([path]) => path);
+}
+
 function listedPendingOf(status, overrideMake, plannedPaths = []) {
   const planned = new Set(plannedPaths);
   // A planned dot file below visible folders may be pending; paths inside dot
@@ -700,9 +710,10 @@ export class MakeClient {
   // the tracker had time to list it) counts as written when the working copy
   // read just now is byte-equal to that hash. A differing or unread hash
   // keeps the path required, so the settle fails as before.
-  async settleCheckedStatus(status, { overrideMake, plannedPaths, verifiedContent } = {}) {
-    const listed = listedPendingOf(status, overrideMake, plannedPaths);
-    if (!listed) return status;
+  async settleCheckedStatus(status, { overrideMake, plannedPaths, verifiedContent, landedContent } = {}) {
+    const base = listedPendingOf(status, overrideMake, plannedPaths);
+    if (!base) return status;
+    const listed = [...new Set([...base, ...contentVerifiedListed(status, landedContent)])].sort();
     const settled = await this._operation(deadline => this._settleTracker(status.persistence, listed, deadline,
       { optionalPaths: [...UNLISTED_PERSISTED_PATHS, ...contentVerifiedAbsent(status, verifiedContent)], modeOptions: { overrideMake } }));
     if (JSON.stringify(settled) === JSON.stringify(status.persistence)) return status;

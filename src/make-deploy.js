@@ -1208,7 +1208,12 @@ async function resumable(client, receipt, what, warn = () => {}, plannedBytes) {
   let settled;
   // A planned path Make does not list counts as written only at main's exact hash.
   const verifiedContent = new Map(checked.files.filter(file => file.state === 'after' && file.afterSha256).map(file => [file.path, file.afterSha256]));
-  try { settled = await client.settleCheckedStatus(status, { overrideMake: overridePin(receipt), plannedPaths: receipt.plan.files.map(file => file.path), verifiedContent }); }
+  // The one in-flight write the receipt left uncertain may have landed: Make then lists it, and it counts only at main's exact hash.
+  const inFlight = new Set(receipt.completedWrites.filter(write => write.uncertain).map(write => write.path));
+  for (const write of receipt.completedWrites) if (!write.uncertain && !write.backupOnly) inFlight.delete(write.path);
+  const landed = [...inFlight].length === 1 ? checked.files.filter(file => inFlight.has(file.path) && file.state === 'after' && file.afterSha256) : [];
+  const landedContent = new Map(landed.map(file => [file.path, file.afterSha256]));
+  try { settled = await client.settleCheckedStatus(status, { overrideMake: overridePin(receipt), plannedPaths: receipt.plan.files.map(file => file.path), verifiedContent, landedContent }); }
   catch (error) { fail(`Make's pending list does not match its checked unsaved content: ${error.message} Nothing was changed.`, 'DEPLOY_MAKE_STATE'); }
   return { status: settled, files: checked.files };
 }
