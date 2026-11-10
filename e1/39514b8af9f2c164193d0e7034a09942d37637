@@ -1,0 +1,25 @@
+CHANGELOG.md
+  s_a0aef7503ec49f::t_f55d93e9fdd405 40
+README.md
+  s_a0aef7503ec49f::t_fc683cf5bd7e1e 370-371
+REFERENCE.md
+  s_a0aef7503ec49f::t_79e437b0abc1fa 641-642
+skills/atomicaui-upgrade-prototype/SKILL.md
+  s_a0aef7503ec49f::t_50d20e8f476b40 113-115
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e139514b8af9f2c164193d0e7034a09942d37637",
+  "prompts": {},
+  "sessions": {
+    "s_a0aef7503ec49f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c4caa1f1-2470-43aa-81c8-8ad2e9b0e3ea",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
