@@ -902,7 +902,9 @@ export class MakeClient {
         await this._bounded(() => new Promise(resolve => setTimeout(resolve, 100)), deadline);
       }
     } catch (cause) {
-      if (!observed || cause.message !== 'Make operation timed out.') throw cause;
+      // The deadline can also land inside a tree read; either way the views
+      // seen so far are the useful part of the report.
+      if (!observed || !['Make operation timed out.', 'Timed out while reading the Make file tree.'].includes(cause.message)) throw cause;
       const views = Object.entries(observed).map(([name, value]) => `${name} ${value}`).join(', ');
       const error = new Error(`Make read-back for ${path} timed out before every view agreed (${views}).`);
       error.observed = observed;
@@ -1094,6 +1096,34 @@ export class MakeClient {
     }, { durable: true });
   }
 
+  // Every planned path must hold its plan hash now. The inventory hashes most
+  // paths; one it never reads (dot files, root lockfiles) is read from the
+  // client VFS, the content createVersion commits. Never the receipt, never the
+  // pending list. A path that cannot be read back is named and refuses the save.
+  async _requirePlannedContent(status, plannedContent) {
+    const sha = status.workingSha256 ?? new Map();
+    const wrong = [];
+    const unread = [];
+    const read = [];
+    for (const [path, planned] of plannedContent) {
+      if (sha.has(path)) { if (sha.get(path) !== planned) wrong.push(path); }
+      else if (planned !== null || treeHidden(path)) read.push([path, planned]);
+      else continue;
+    }
+    if (read.length) {
+      await this._operation(async deadline => {
+        for (const [path, planned] of read) {
+          let vfs;
+          try { vfs = await this._durable({ type: 'read', path }, deadline); } catch { vfs = null; }
+          if (!vfs || typeof vfs.exists !== 'boolean') unread.push(path);
+          else if ((vfs.exists ? sha256(vfs.content) : null) !== planned) wrong.push(path);
+        }
+      });
+    }
+    if (unread.length) throw new Error(`Make could not read back ${JSON.stringify(unread.sort())} to confirm their content against the plan; version refused.`);
+    if (wrong.length) throw new Error(`Make holds content that differs from the plan in ${wrong.length} path(s) ${JSON.stringify(wrong.sort().slice(0, 20))}; version refused.`);
+  }
+
   // Make does not list these paths as pending, so their bytes are captured
   // from both the client VFS and the session sandbox, which must agree.
   async _unlistedSnapshot(paths, deadline) {
@@ -1173,13 +1203,20 @@ export class MakeClient {
   // working tree this check read. Normal saves require no pending paths; with
   // `listed` (deploy), createVersion receives Make's listed paths. An override
   // additionally checks the full working-copy diff against its reviewed plan.
-  async saveCheckedVersion(title, expectedPaths, { firstVersion = false, since, listed = false, overrideMake, verifiedContent } = {}) {
+  //
+  // `plannedContent` (deploy) maps every planned path to the sha256 it must hold
+  // (null for a delete). Make's pending list is never the proof of a path's
+  // content: before createVersion each one is checked against the working copy
+  // read just now, so a path Make does not list (an unchanged-looking config
+  // file) still has to equal the plan byte for byte.
+  async saveCheckedVersion(title, expectedPaths, { firstVersion = false, since, listed = false, overrideMake, verifiedContent, landedContent, plannedContent } = {}) {
     saveRequest(title, expectedPaths);
     if (firstVersion && !/^[a-f0-9]{40}$/.test(since || '')) {
       throw new Error('--first-version requires --since <commit>: the sandbox head make status reported before the writes.');
     }
     let before = await this.projectStatus();
-    if (listed) before = await this.settleCheckedStatus(before, { overrideMake, plannedPaths: expectedPaths, verifiedContent });
+    if (listed) before = await this.settleCheckedStatus(before, { overrideMake, plannedPaths: expectedPaths, verifiedContent, landedContent });
+    if (plannedContent) await this._requirePlannedContent(before, plannedContent);
     const state = requireGitMode(before.persistence, { firstVersion, overrideMake });
     if (overrideMake) await this._operation(async deadline => {
       const bridge = await this._fileBridge(deadline);

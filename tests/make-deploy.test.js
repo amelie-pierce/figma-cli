@@ -261,7 +261,8 @@ class FakeMake {
     this.savedCommitMissing = false;
     return { versionId: `id-${this.version}`, versionNumber: this.version, gitSha: this.savedVersion, tree: this.tree(this.saved) };
   }
-  async saveCheckedVersion(title, expectedPaths, { listed, overrideMake } = {}) {
+  async saveCheckedVersion(title, expectedPaths, { listed, overrideMake, ...rest } = {}) {
+    (this.saveOptions ??= []).push({ listed, overrideMake, ...rest });
     this.calls.push(['save', title, [...expectedPaths].sort()]);
     assert.equal(listed, true);
     const others = this.pending().filter(path => !(overrideMake ? overrideMake.expectedDiff : expectedPaths).includes(path));
@@ -592,6 +593,27 @@ describe('make deploy unopened deep-file read-back', () => {
       assert.equal(s.make.calls.some(call => call[0] === 'write' && call[1] === 'src/Card.tsx'), false);
       assert.equal(readReceipt(error.receiptPath).outcome, 'uncertain');
     });
+  });
+
+  it('resumes a receipt left at the save straight to the checked save, with no file written again', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'updated\n', 'package.json': '{"name":"x","version":"2","scripts":{"build":"true"}}\n', 'pnpm-lock.yaml': 'lock: 2\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.save = 'refused';
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+    assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+    s.make.hooks.save = null;
+    const receipt = readReceipt(error.receiptPath);
+    receipt.stage = 'saving';
+    writeFileSync(error.receiptPath, JSON.stringify(receipt));
+    const mark = s.make.calls.length;
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps);
+    assert.equal(resumed.stage, 'deployed');
+    const kinds = s.make.calls.slice(mark).map(([kind]) => kind).filter(kind => ['write', 'delete', 'save'].includes(kind));
+    assert.deepEqual(kinds, ['save']);
+    // The save is handed every planned hash to check; a normal deploy never skips one.
+    const saved = s.make.saveOptions.at(-1);
+    assert.equal(saved.plannedContent.size, readReceipt(error.receiptPath).plan.files.length);
   });
 
   it('waits for Make to list a confirmed write before resuming or aborting, and stops on a foreign change', async t => {
