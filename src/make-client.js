@@ -902,7 +902,9 @@ export class MakeClient {
         await this._bounded(() => new Promise(resolve => setTimeout(resolve, 100)), deadline);
       }
     } catch (cause) {
-      if (!observed || cause.message !== 'Make operation timed out.') throw cause;
+      // The deadline can also land inside a tree read; either way the views
+      // seen so far are the useful part of the report.
+      if (!observed || !['Make operation timed out.', 'Timed out while reading the Make file tree.'].includes(cause.message)) throw cause;
       const views = Object.entries(observed).map(([name, value]) => `${name} ${value}`).join(', ');
       const error = new Error(`Make read-back for ${path} timed out before every view agreed (${views}).`);
       error.observed = observed;

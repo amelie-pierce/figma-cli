@@ -995,3 +995,17 @@ test('a read-only timeout names --timeout 120000, or says what to do at the maxi
   const once = timeoutHint(timeoutHint(new Error('Make operation timed out.'), 15000), 15000);
   assert.equal(once.message.match(/--timeout/g).length, 1);
 });
+
+test('a tree read that hits the read-back deadline still reports the views seen so far', async () => {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
+  client._durable = async () => ({ exists: true, content: 'x' });
+  client._fileBridge = async () => ({ dispose: async () => {} });
+  client._bridgeRead = async () => ({ content: 'x' });
+  let reads = 0;
+  client._sourceTree = async () => {
+    if (++reads > 1) throw new Error('Timed out while reading the Make file tree.');
+    return [];
+  };
+  await assert.rejects(client._durableAgreement('src/a.ts', 'x', Date.now() + 1000),
+    /timed out before every view agreed \(vfs matched, sandbox matched, tree absent\)/);
+});
