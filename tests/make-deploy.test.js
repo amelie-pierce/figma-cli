@@ -1440,7 +1440,7 @@ describe('make deploy dry run, apply and verify', () => {
     assert.equal(applied.stage, 'deployed');
     assert.equal(applied.makeAfter.versionNumber, 4);
     assert.equal(applied.verification, 'saved-clean-tree-matched');
-    assert.deepEqual(s.make.writes.map(([kind, path]) => [kind, path]), [['write', 'src/App.tsx'], ['write', 'src/Card.tsx'], ['delete', 'src/old.ts'], ['save', `deploy ${sha.slice(0, 7)}`]]);
+    assert.deepEqual(s.make.writes.map(([kind, path]) => [kind, path]), [['write', 'src/App.tsx'], ['write', 'src/Card.tsx'], ['delete', 'src/old.ts'], ['write', 'src/App.tsx'], ['save', `deploy ${sha.slice(0, 7)}`]]);
     assert.equal(s.make.saved.get('src/Card.tsx').toString(), 'export const Card = 1;\n');
     assert.ok(!s.make.saved.has('src/old.ts'));
     assert.ok(s.make.saved.has(PROJECT_MARKER), 'Make keeps its marker when main has none');
