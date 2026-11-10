@@ -1,0 +1,24 @@
+tests/make-deploy.test.js
+  s_2246434b10ba51::t_8119cbe2ad75ed 218-235
+  s_2246434b10ba51::t_3df9a5229c348f 546-596
+_vaults/figma-cli/wiki/make/deploy.md
+  s_2246434b10ba51::t_869b9b6d5ddcea 23
+src/make-deploy.js
+  s_2246434b10ba51::t_8119cbe2ad75ed 846-848,873
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b8f9f7d69e5e3aac88143c28d8e630c57103e1f9",
+  "prompts": {},
+  "sessions": {
+    "s_2246434b10ba51": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "080f5c9b-2654-433a-9f40-79a24b83654c",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
