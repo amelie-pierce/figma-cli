@@ -1,0 +1,33 @@
+src/make-client.js
+  s_d74deb464085cb::t_832c7425521a9d 905-907,1099-1126,1206-1212,1218-1219
+tests/make-deploy.test.js
+  s_d74deb464085cb::t_832c7425521a9d 264-265,598-616
+  s_d74deb464085cb::t_b3ce7940b93a54 617-618
+src/make-deploy.js
+  s_d74deb464085cb::t_832c7425521a9d 46-49,305,1127-1129,1133-1136,1338,1368-1374
+  s_d74deb464085cb::t_2d3b6b814b3856 1130-1132,1153,1393
+  s_d74deb464085cb::t_35985414dfe481 1375-1376
+_vaults/figma-cli/wiki/make/deploy.md
+  s_d74deb464085cb::t_832c7425521a9d 21
+tests/make-client.test.js
+  s_d74deb464085cb::t_832c7425521a9d 998-1011
+tests/make-durable.test.js
+  s_d74deb464085cb::t_832c7425521a9d 873,875-958
+  s_d74deb464085cb::t_e10dc21e67892e 874
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d332ca8beacc30c37bfecdb2854bfd06b1aeb7a0",
+  "prompts": {},
+  "sessions": {
+    "s_d74deb464085cb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "118a4e52-a68c-440b-bf28-96ae83a9e20c",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
