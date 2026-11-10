@@ -1,0 +1,23 @@
+src/make-deploy.js
+  s_d74deb464085cb::t_31f9f169fec85d 863-864,898,933,936-944,1444-1446
+tests/make-deploy.test.js
+  s_d74deb464085cb::t_e6876580063a15 480,482,491,494,501,503,507,516,518,524,551,559,562,565,573,582,587,599,601,621,623,634
+  s_d74deb464085cb::t_57aaf41d5f7264 1428-1429,2083,2104,2380,2394,2515-2516
+  s_d74deb464085cb::t_6828bd4ca42109 1502,1505,1614-1616,1621
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9d09cfdb5be7e040a494f868017db71716a50468",
+  "prompts": {},
+  "sessions": {
+    "s_d74deb464085cb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "118a4e52-a68c-440b-bf28-96ae83a9e20c",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
