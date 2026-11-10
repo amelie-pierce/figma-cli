@@ -42,6 +42,10 @@ export const DEPLOY_CODES = Object.freeze(['DEPLOY_SOLO', 'DEPLOY_NOT_TEAM', 'DE
 const BLOCKING = Object.freeze(['writing', 'written', 'saving', 'save-uncertain', 'saved-unverified', 'saved', 'tag-pending']);
 const KNOWN_BASE = Object.freeze(['saved-drift', 'tag-clash']);
 const BEFORE_SAVE = Object.freeze(['writing', 'written']);
+// A receipt left at 'saving' (the process died before or inside the save) may
+// also resume: the saved-version guard in resumable() refuses it once Make
+// saved a version, and the save itself pins the saved version.
+const RESUMABLE = Object.freeze([...BEFORE_SAVE, 'saving']);
 
 // Make runs its own install in the sandbox when one of these root files
 // changes, and rewrites the lockfile to match package.json (live, 1 to 2.5 s
@@ -260,7 +264,7 @@ function recoverMissingSaved(status, { fileKey, repo, home, tags, ctx, readBlob,
 
 const recovery = receipt => {
   const where = `--file ${receipt.fileKey} --dir <clone>`;
-  if (BEFORE_SAVE.includes(receipt.stage)) return `figma-cli make deploy ${where} --resume ${receipt.receiptPath} (or --abort to restore Make)`;
+  if (RESUMABLE.includes(receipt.stage)) return `figma-cli make deploy ${where} --resume ${receipt.receiptPath} (or --abort to restore Make)`;
   return `figma-cli make deploy ${where} --verify ${receipt.receiptPath}`;
 };
 
@@ -1049,6 +1053,15 @@ const resumeConfirmed = receipt => new Map(receipt.plan.files
   .filter(file => receipt.completedWrites.some(write => write.path === file.path && write.confirmedOnResume))
   .map(file => [file.path, file.afterSha256]));
 
+// Normal deploy save: every planned path must hold main's exact hash, read
+// from Make just before createVersion. Make may list a planned config path
+// its own pending set lacked, or omit one; both count only at that hash.
+const plannedHashes = plan => {
+  const content = new Map(plan.files.map(file => [file.path, file.op === 'delete' ? null : file.afterSha256]));
+  const present = new Map([...content].filter(([, sha]) => typeof sha === 'string'));
+  return { verifiedContent: present, landedContent: present, plannedContent: content };
+};
+
 // After the writes: save one version. Normal deploys then check drift and tag;
 // overrides defer both until a fresh-reload verification.
 async function finish(client, ctx, receipt, mainFlat, home, warn = () => {}, progress = () => {}) {
@@ -1059,7 +1072,7 @@ async function finish(client, ctx, receipt, mainFlat, home, warn = () => {}, pro
   let version;
   try {
     version = await client.saveCheckedVersion(`deploy ${short(plan.mainCommit)}`, plan.files.map(file => file.path),
-      { listed: true, verifiedContent: resumeConfirmed(receipt), ...(receipt.mode === 'override-make' ? { overrideMake: {
+      { listed: true, verifiedContent: resumeConfirmed(receipt), ...(receipt.mode === 'override-make' ? {} : plannedHashes(plan)), ...(receipt.mode === 'override-make' ? { overrideMake: {
         ...overridePin(receipt), expectedDiff: plan.expectedDiff, allowedPaths: plan.files.map(file => file.path) } } : {}) });
   } catch (error) {
     if (error.version) {
@@ -1190,7 +1203,7 @@ export function classify(receipt, status, plannedBytes) {
 // the deploy started from, and every other path untouched.
 async function resumable(client, receipt, what, warn = () => {}, plannedBytes) {
   if (receipt.fileKey !== client.fileKey) fail(`The receipt is for Make file ${receipt.fileKey}, not ${client.fileKey}.`, 'DEPLOY_RECEIPT');
-  if (receipt.outcome !== 'uncertain' || !BEFORE_SAVE.includes(receipt.stage)) {
+  if (receipt.outcome !== 'uncertain' || !RESUMABLE.includes(receipt.stage)) {
     fail(`This deploy is at stage ${receipt.stage} (${receipt.outcome}); --${what} applies only before a version was saved.` +
       `${receipt.outcome === 'uncertain' ? ` Run ${recovery(receipt)}.` : ''}`, 'DEPLOY_RECEIPT');
   }
@@ -1220,6 +1233,15 @@ async function resumable(client, receipt, what, warn = () => {}, plannedBytes) {
   return { status: settled, files: checked.files };
 }
 
+// A lockfile this deploy's own client write already left at main's content,
+// after the last write of package.json: createVersion commits it, so a resume
+// that only has the save left need not write it again.
+function lockfileWrittenLast(receipt, path) {
+  const done = receipt.completedWrites.filter(write => !write.uncertain && !write.backupOnly && !write.confirmedOnResume);
+  const last = file => done.map(write => write.path).lastIndexOf(file);
+  return last(path) >= 0 && last(path) > last('package.json');
+}
+
 export async function deployResume(client, { dir, receiptPath } = {}, deps = {}) {
   deps = defaults(deps);
   const receipt = readReceipt(receiptPath);
@@ -1236,7 +1258,7 @@ export async function deployResume(client, { dir, receiptPath } = {}, deps = {})
   const mainBytes = blob => deps.readBlob(ctx.root, blob);
   const { status, files } = await resumable(client, receipt, 'resume', deps.warn, mainBytes);
   // An 'after-eol' path is written again with main's exact bytes.
-  const todo = files.filter(file => ['before', 'saved', 'regenerated', 'after-eol'].includes(file.state) || (file.state === 'after' && isLockfile(file.path)))
+  const todo = files.filter(file => ['before', 'saved', 'regenerated', 'after-eol'].includes(file.state) || (file.state === 'after' && isLockfile(file.path) && !lockfileWrittenLast(receipt, file.path)))
     .map(file => ({ ...file, expectedSha256: status.workingSha256.get(file.path) ?? null }));
   const confirmed = new Set(receipt.completedWrites.filter(write => !write.uncertain && !write.backupOnly).map(write => write.path));
   for (const file of files.filter(item => item.state === 'after' && !isLockfile(item.path) && !confirmed.has(item.path))) {

@@ -872,6 +872,92 @@ test('a deploy save (listed) passes exactly Make\'s listed paths and still check
   assert.equal(stray.calls.some(call => call[0] === 'action'), false);
 });
 
+// The RWS shape: the deploy changed package.json, vite.config.ts and tsconfig.json.
+// Make lists the first two as pending but not tsconfig.json.
+const rwsBase = new Map([...markerWorking, ['tsconfig.json', { mode: '100644', blob: '8'.repeat(40) }], ['vite.config.ts', { mode: '100644', blob: '9'.repeat(40) }]]);
+const rwsWorking = new Map([...rwsBase, ['package.json', { mode: '100644', blob: '5'.repeat(40) }],
+  ['tsconfig.json', { mode: '100644', blob: '6'.repeat(40) }], ['vite.config.ts', { mode: '100644', blob: '7'.repeat(40) }]]);
+const rwsPlan = new Map([['package.json', hash('pkg')], ['tsconfig.json', hash('ts')], ['vite.config.ts', hash('vite')]]);
+const rwsPaths = [...rwsPlan.keys()];
+const rwsPending = ['package.json', 'vite.config.ts'];
+const rwsStatus = (sha = {}, pendingPaths = rwsPending) => savedStatus({ persistence: state(pendingPaths), makeFlat: rwsBase, workingFlat: rwsWorking,
+  workingSha256: new Map([...rwsPlan, ...Object.entries(sha)]) });
+// Paths the inventory never reads: planned content is confirmed through the client VFS.
+const hiddenPlan = new Map([['.gitignore', hash('ignore')], ['pnpm-lock.yaml', hash('lock')]]);
+function rwsSave({ sha, pending = rwsPending, drift, plannedContent = rwsPlan, vfs } = {}) {
+  const status = rwsStatus(sha, pending);
+  const { client, calls } = checkedClient({ before: status, drift: drift ?? [state(pending), state(pending), state(pending), { ...state(), savedVersion: next }] });
+  client._operation = fn => fn(Date.now() + 250);
+  if (vfs) {
+    const durable = client._durable;
+    client._durable = async action => {
+      if (action.type !== 'read') return durable(action);
+      const held = vfs[action.path];
+      if (held instanceof Error) throw held;
+      return held === undefined ? { exists: false, content: null } : { exists: true, content: held };
+    };
+  }
+  const queue = [status, { ...afterStatus(), makeFlat: rwsWorking, workingFlat: rwsWorking }];
+  client.projectStatus = async () => (queue.length > 1 ? queue.shift() : queue[0]);
+  const opts = { listed: true, verifiedContent: rwsPlan, landedContent: rwsPlan, plannedContent };
+  return { calls, save: client.saveCheckedVersion('deploy', rwsPaths, opts) };
+}
+
+test('a deploy save settles on what Make lists: listed package.json and vite.config.ts, unlisted tsconfig.json at its plan hash', async () => {
+  const { save, calls } = rwsSave();
+  const result = await save;
+  assert.deepEqual(calls.find(call => call[0] === 'action')[1].expectedPaths, rwsPending);
+  assert.equal(result.verification, 'saved-version-clean-baseline; saved-content-matched');
+});
+
+test('a planned path Make lists but the blob comparison does not expect is accepted only at its plan hash', async () => {
+  // vite.config.ts holds the saved blob in the working copy, yet Make lists it.
+  const same = new Map([...rwsWorking, ['vite.config.ts', rwsBase.get('vite.config.ts')]]);
+  const status = savedStatus({ persistence: state(rwsPending), makeFlat: rwsBase, workingFlat: same, workingSha256: rwsPlan });
+  const settle = landedContent => {
+    const { client } = checkedClient({ before: status, drift: [state(rwsPending)] });
+    client._operation = fn => fn(Date.now() + 180);
+    return client.settleCheckedStatus(status, { plannedPaths: rwsPaths, verifiedContent: rwsPlan, landedContent });
+  };
+  assert.equal(await settle(rwsPlan), status);
+  await assert.rejects(settle(new Map([...rwsPlan, ['vite.config.ts', hash('other')]])), { code: 'MAKE_TRACKER_UNSETTLED' });
+  await assert.rejects(settle(undefined), { code: 'MAKE_TRACKER_UNSETTLED' });
+});
+
+test('a deploy save confirms dot files and the lockfile by reading them from Make, and names any it cannot confirm', async () => {
+  const plannedContent = new Map([...rwsPlan, ...hiddenPlan]);
+  const held = { '.gitignore': 'ignore', 'pnpm-lock.yaml': 'lock' };
+  const ok = rwsSave({ plannedContent, vfs: held });
+  await ok.save;
+  assert.equal(ok.calls.some(call => call[0] === 'action'), true);
+  const differs = rwsSave({ plannedContent, vfs: { ...held, 'pnpm-lock.yaml': 'other' } });
+  await assert.rejects(differs.save, /differs from the plan.*pnpm-lock\.yaml/);
+  const absent = rwsSave({ plannedContent, vfs: { 'pnpm-lock.yaml': 'lock' } });
+  await assert.rejects(absent.save, /differs from the plan.*\.gitignore/);
+  const unreadable = rwsSave({ plannedContent, vfs: { ...held, '.gitignore': new Error('Make source file is missing') } });
+  await assert.rejects(unreadable.save, /could not read back \["\.gitignore"\]/);
+  for (const { calls } of [differs, absent, unreadable]) assert.equal(calls.some(call => call[0] === 'action'), false);
+});
+
+test('a deploy save refuses a foreign pending path, a version change and content that differs from the plan', async () => {
+  const foreign = rwsSave({ pending: [...rwsPending, 'src/x.ts'], drift: [state([...rwsPending, 'src/x.ts'])] });
+  await assert.rejects(foreign.save);
+  const moved = rwsSave({ drift: [{ ...state(rwsPending), savedVersion: next }] });
+  await assert.rejects(moved.save, { code: 'MAKE_TRACKER_CHANGED' });
+  const movedLate = rwsSave({ drift: [state(rwsPending), { ...state(rwsPending), savedVersion: next }] });
+  await assert.rejects(movedLate.save, /Make state changed before the version/);
+  // A listed path whose content differs from the plan.
+  const listedWrong = rwsSave({ sha: { 'vite.config.ts': hash('other') } });
+  await assert.rejects(listedWrong.save, /differs from the plan.*vite\.config\.ts/);
+  // An unlisted path whose content differs from the plan: never confirmed, never skipped.
+  const unlistedWrong = rwsSave({ sha: { 'tsconfig.json': hash('other') } });
+  await assert.rejects(unlistedWrong.save, { code: 'MAKE_TRACKER_UNSETTLED' });
+  // Even when the tracker lists nothing wrong, the plan hash is read from Make before the save.
+  const missing = rwsSave({ plannedContent: new Map([...rwsPlan, ['src/gone.ts', null], ['src/new.ts', hash('new')]]) });
+  await assert.rejects(missing.save, /differs from the plan.*src\/new\.ts/);
+  for (const { calls } of [foreign, moved, movedLate, listedWrong, unlistedWrong, missing]) assert.equal(calls.some(call => call[0] === 'action'), false);
+});
+
 test('a deploy resume save waits for a lagging tracker, but refuses foreign pending paths', async () => {
   const edited = new Map([...markerWorking, ['src/App.tsx', { mode: '100644', blob: '5'.repeat(40) }]]);
   const listed = state(['src/App.tsx']);
