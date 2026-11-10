@@ -477,9 +477,9 @@ describe('make deploy unopened deep-file read-back', () => {
 
   it('resumes with a written file Make never lists only when its content hash equals the plan', async t => {
     const s = setup(t);
-    landChange(s, { 'src/App.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
+    landChange(s, { 'src/Board.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
     const plan = await deployPlan(s.make, s.opts, s.deps);
-    s.make.hooks.afterWrite = path => { if (path === 'src/App.tsx') throw new Error('Make operation timed out.'); };
+    s.make.hooks.afterWrite = path => { if (path === 'src/Board.tsx') throw new Error('Make operation timed out.'); };
     const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
     s.make.hooks.afterWrite = null;
     const resumed = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps);
@@ -488,23 +488,23 @@ describe('make deploy unopened deep-file read-back', () => {
     const afterSha = path => receipt.plan.files.find(file => file.path === path).afterSha256;
     // Resume hands the client the planned hash of every file already at main's content, nothing else.
     const verified = s.make.settleOptions.find(options => options.verifiedContent?.size).verifiedContent;
-    assert.equal(verified.get('src/App.tsx'), afterSha('src/App.tsx'));
+    assert.equal(verified.get('src/Board.tsx'), afterSha('src/Board.tsx'));
     assert.equal(verified.has('src/Card.tsx'), false);
     // The save also names only paths this resume confirmed by hash.
-    assert.equal(receipt.completedWrites.some(write => write.path === 'src/App.tsx' && write.confirmedOnResume), true);
+    assert.equal(receipt.completedWrites.some(write => write.path === 'src/Board.tsx' && write.confirmedOnResume), true);
   });
 
   describe('uncertain in-flight write that landed', () => {
     // Leaves App.tsx at main's content with only an uncertain write recorded, like a write whose reply never came.
     async function interrupted(t, { extraUncertain = false } = {}) {
       const s = setup(t);
-      landChange(s, { 'src/App.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
+      landChange(s, { 'src/Board.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
       const plan = await deployPlan(s.make, s.opts, s.deps);
-      s.make.hooks.afterWrite = path => { if (path === 'src/App.tsx') throw new Error('Make operation timed out.'); };
+      s.make.hooks.afterWrite = path => { if (path === 'src/Board.tsx') throw new Error('Make operation timed out.'); };
       const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
       s.make.hooks.afterWrite = null;
       const receipt = readReceipt(error.receiptPath);
-      const paths = extraUncertain ? ['src/App.tsx', 'src/Card.tsx'] : ['src/App.tsx'];
+      const paths = extraUncertain ? ['src/Board.tsx', 'src/Card.tsx'] : ['src/Board.tsx'];
       receipt.completedWrites = paths.map(path => ({ path, op: 'update', backupPath: null, uncertain: true }));
       writeFileSync(error.receiptPath, JSON.stringify(receipt));
       return { s, receiptPath: error.receiptPath };
@@ -513,15 +513,15 @@ describe('make deploy unopened deep-file read-back', () => {
 
     it('counts the single uncertain write as written when its hash equals the plan', async t => {
       const { s, receiptPath } = await interrupted(t);
-      const afterSha = readReceipt(receiptPath).plan.files.find(file => file.path === 'src/App.tsx').afterSha256;
+      const afterSha = readReceipt(receiptPath).plan.files.find(file => file.path === 'src/Board.tsx').afterSha256;
       await deployResume(s.make, { ...s.opts, receiptPath }, s.deps);
-      assert.equal(landedOf(s)[0].get('src/App.tsx'), afterSha);
+      assert.equal(landedOf(s)[0].get('src/Board.tsx'), afterSha);
       assert.equal(landedOf(s)[0].size, 1);
     });
 
     it('does not accept it when the content hash differs', async t => {
       const { s, receiptPath } = await interrupted(t);
-      s.make.working.set('src/App.tsx', Buffer.from('something else\n'));
+      s.make.working.set('src/Board.tsx', Buffer.from('something else\n'));
       await deployResume(s.make, { ...s.opts, receiptPath }, s.deps).catch(() => {});
       assert.equal(landedOf(s).length, 0);
     });
@@ -548,7 +548,7 @@ describe('make deploy unopened deep-file read-back', () => {
     const uncertain = () => Object.assign(new Error(TREE_CHANGED), { uncertainWrite: { cause: 'Make file tree changed before the requested action.' } });
     async function planned(t) {
       const s = setup(t);
-      landChange(s, { 'src/App.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
+      landChange(s, { 'src/Board.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
       const plan = await deployPlan(s.make, s.opts, s.deps);
       return { s, plan };
     }
@@ -556,13 +556,13 @@ describe('make deploy unopened deep-file read-back', () => {
     it('counts the file as written when Make now holds main\'s exact content, and continues to the next file', async t => {
       const { s, plan } = await planned(t);
       // Make's reply says the tree changed, but the bytes landed (the RWS stop on tokens/generated files).
-      s.make.hooks.afterWrite = path => { if (path === 'src/App.tsx') throw uncertain(); };
+      s.make.hooks.afterWrite = path => { if (path === 'src/Board.tsx') throw uncertain(); };
       const result = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
       assert.equal(result.stage, 'deployed');
-      assert.deepEqual(s.make.calls.filter(call => call[0] === 'write').map(call => call[1]), ['src/App.tsx', 'src/Card.tsx']);
+      assert.deepEqual(s.make.calls.filter(call => call[0] === 'write').map(call => call[1]), ['src/Board.tsx', 'src/Card.tsx']);
       assert.equal(s.make.saved.get('src/Card.tsx').toString(), 'export const Card = 1;\n');
       const receipt = readReceipt(result.receiptPath);
-      const entry = receipt.completedWrites.find(write => write.path === 'src/App.tsx');
+      const entry = receipt.completedWrites.find(write => write.path === 'src/Board.tsx');
       assert.equal(entry.afterUncertain, true);
       assert.notEqual(entry.uncertain, true);
     });
@@ -570,7 +570,7 @@ describe('make deploy unopened deep-file read-back', () => {
     it('stops as before when Make holds other content than the plan', async t => {
       const { s, plan } = await planned(t);
       s.make.hooks.afterWrite = path => {
-        if (path === 'src/App.tsx') { s.make.working.set(path, Buffer.from('a generated rewrite\n')); throw uncertain(); }
+        if (path === 'src/Board.tsx') { s.make.working.set(path, Buffer.from('a generated rewrite\n')); throw uncertain(); }
       };
       const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
       assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
@@ -579,12 +579,12 @@ describe('make deploy unopened deep-file read-back', () => {
       assert.equal(s.make.calls.some(call => call[0] === 'write' && call[1] === 'src/Card.tsx'), false);
       const receipt = readReceipt(error.receiptPath);
       assert.equal(receipt.outcome, 'uncertain');
-      assert.equal(receipt.completedWrites.some(write => write.path === 'src/App.tsx' && !write.uncertain), false);
+      assert.equal(receipt.completedWrites.some(write => write.path === 'src/Board.tsx' && !write.uncertain), false);
     });
 
     it('stops as before when the file cannot be read back', async t => {
       const { s, plan } = await planned(t);
-      s.make.hooks.afterWrite = path => { if (path === 'src/App.tsx') throw uncertain(); };
+      s.make.hooks.afterWrite = path => { if (path === 'src/Board.tsx') throw uncertain(); };
       s.make.hooks.readBack = 'fails';
       const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
       assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
@@ -596,9 +596,9 @@ describe('make deploy unopened deep-file read-back', () => {
 
   it('waits for Make to list a confirmed write before resuming or aborting, and stops on a foreign change', async t => {
     const s = setup(t);
-    landChange(s, { 'src/App.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
+    landChange(s, { 'src/Board.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
     const plan = await deployPlan(s.make, s.opts, s.deps);
-    s.make.hooks.afterWrite = path => { if (path === 'src/App.tsx') throw new Error('Make operation timed out.'); };
+    s.make.hooks.afterWrite = path => { if (path === 'src/Board.tsx') throw new Error('Make operation timed out.'); };
     const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
     s.make.hooks.afterWrite = null;
     s.make.hooks.settle = () => { throw Object.assign(new Error('Make version or unrelated pending files changed while settling the pending tracker.'),
@@ -618,9 +618,9 @@ describe('make deploy unopened deep-file read-back', () => {
 
   it('confirms a timed-out write that landed before resuming', async t => {
     const s = setup(t);
-    landChange(s, { 'src/App.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
+    landChange(s, { 'src/Board.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
     const plan = await deployPlan(s.make, s.opts, s.deps);
-    s.make.hooks.afterWrite = path => { if (path === 'src/App.tsx') throw new Error('Make operation timed out.'); };
+    s.make.hooks.afterWrite = path => { if (path === 'src/Board.tsx') throw new Error('Make operation timed out.'); };
     const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
     assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
     assert.equal(deployStatus({ receiptPath: error.receiptPath }).completedWrites, 0);
@@ -631,7 +631,7 @@ describe('make deploy unopened deep-file read-back', () => {
     const receipt = readReceipt(error.receiptPath);
     assert.equal(resumed.stage, 'deployed');
     assert.equal(deployStatus({ receiptPath: error.receiptPath }).completedWrites, plan.files.length);
-    assert.ok(receipt.completedWrites.some(write => write.path === 'src/App.tsx' && write.confirmedOnResume));
+    assert.ok(receipt.completedWrites.some(write => write.path === 'src/Board.tsx' && write.confirmedOnResume));
     assert.equal(receipt.writeRun.completedWrites, 1);
     assert.ok(lines.includes(`resuming 1/${plan.files.length}`));
     assert.ok(lines.some(line => line.startsWith(`${plan.files.length}/${plan.files.length} src/Card.tsx `)));
@@ -1425,7 +1425,8 @@ describe('make deploy dry run, apply and verify', () => {
     const plan = await deployPlan(s.make, s.opts, s.deps);
     assert.equal(plan.dryRun, true);
     assert.deepEqual(plan.counts, { add: 1, modify: 1, delete: 1 });
-    assert.deepEqual(plan.files, [{ path: 'src/App.tsx', op: 'modify' }, { path: 'src/Card.tsx', op: 'add' }, { path: 'src/old.ts', op: 'delete' }]);
+    // Entry files go last: src/App.tsx is one.
+    assert.deepEqual(plan.files, [{ path: 'src/Card.tsx', op: 'add' }, { path: 'src/old.ts', op: 'delete' }, { path: 'src/App.tsx', op: 'modify' }]);
     assert.deepEqual(plan.excluded.map(entry => entry.path), [PROJECT_MARKER]);
     assert.equal(plan.base.source, 'first-deploy');
     assert.equal(plan.tag, 'make-deploy/0');
@@ -1498,10 +1499,10 @@ describe('make deploy dry run, apply and verify', () => {
     const s = setup(t);
     landChange(s, { 'package.json': { ...PKG, dependencies: { react: '^19.0.0' } }, 'pnpm-lock.yaml': 'lockfileVersion: 9.0\nreact: 19\n', 'src/App.tsx': 'v2\n' });
     const plan = await deployPlan(s.make, s.opts, s.deps);
-    assert.deepEqual(plan.files.map(file => file.path), ['src/App.tsx', 'package.json', 'pnpm-lock.yaml']);
+    assert.deepEqual(plan.files.map(file => file.path), ['package.json', 'pnpm-lock.yaml', 'src/App.tsx']);
     await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
     assert.deepEqual(s.make.calls.filter(([kind]) => ['write', 'idle'].includes(kind)).map(([kind, path]) => path ?? kind).filter((item, i, all) => item !== 'idle' || all[i - 1] !== 'idle'),
-      ['src/App.tsx', 'package.json', 'idle', 'pnpm-lock.yaml', 'idle']);
+      ['src/App.tsx', 'package.json', 'idle', 'pnpm-lock.yaml', 'idle', 'src/App.tsx', 'idle']);
   });
 
   it('deploys a main marker for this file and team mode stays on', async t => {
@@ -1610,12 +1611,14 @@ describe('make deploy recovery', () => {
     const { s, receiptPath } = await interrupted(t);
     const receipt = readReceipt(receiptPath);
     assert.equal(receipt.stage, 'writing');
-    assert.deepEqual(receipt.completedWrites.map(write => write.path), ['src/App.tsx']);
+    // src/App.tsx is an entry file: only its unwired placeholder is in Make, which is not a planned write.
+    assert.deepEqual(receipt.completedWrites.map(write => write.path), []);
+    assert.deepEqual(receipt.unwired, ['src/App.tsx']);
     await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_UNFINISHED', /--resume/);
     await refuses(deployVerify(s.make, { ...s.opts, receiptPath }, s.deps), 'DEPLOY_RECEIPT', /Nothing was saved/);
     const resumed = await deployResume(s.make, { ...s.opts, receiptPath }, s.deps);
     assert.equal(resumed.outcome, 'ok');
-    assert.deepEqual(s.make.writes.filter(([kind]) => kind !== 'save').map(([, path]) => path), ['src/App.tsx', 'src/Card.tsx', 'src/Card.tsx', 'src/old.ts']);
+    assert.deepEqual(s.make.writes.filter(([kind]) => kind !== 'save').map(([, path]) => path), ['src/App.tsx', 'src/Card.tsx', 'src/Card.tsx', 'src/old.ts', 'src/App.tsx']);
     assert.deepEqual(s.p.tags(), ['make-deploy/0']);
     await refuses(deployResume(s.make, { ...s.opts, receiptPath }, s.deps), 'DEPLOY_RECEIPT', /stage deployed/);
   });
@@ -2077,7 +2080,7 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
     assert.equal(applied.outcome, 'ok');
     assert.deepEqual(s.make.writes.filter(([kind]) => kind === 'write').map(([, path]) => path),
-      ['src/App.tsx', 'package.json', 'pnpm-lock.yaml', 'pnpm-lock.yaml'], 'only the reconcile pass writes it again');
+      ['src/App.tsx', 'package.json', 'pnpm-lock.yaml', 'pnpm-lock.yaml', 'src/App.tsx'], 'the unwired entry file first, only the reconcile pass writes the lockfile again, the entry file last');
     assert.equal(s.make.saved.get('pnpm-lock.yaml').toString(), lockFor(NEW_PKG));
   });
 
@@ -2098,7 +2101,7 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
     assert.equal(applied.outcome, 'ok');
     assert.deepEqual(s.make.writes.filter(([kind]) => kind === 'write').map(([, path]) => path),
-      ['src/App.tsx', 'src/App.tsx', 'package.json', 'pnpm-lock.yaml', 'pnpm-lock.yaml']);
+      ['src/App.tsx', 'src/App.tsx', 'package.json', 'pnpm-lock.yaml', 'pnpm-lock.yaml', 'src/App.tsx']);
     assert.equal(s.make.saved.get('package.json').toString(), text(NEW_PKG));
     assert.equal(s.make.saved.get('pnpm-lock.yaml').toString(), lockFor(NEW_PKG));
   });
@@ -2374,7 +2377,7 @@ describe('make deploy ignore list', () => {
     const s = ignoredSetup(t);
     const sha = landChange(s, { ...REPO_DEV, [DEPLOY_IGNORE]: IGNORE, 'src/App.tsx': 'v2\n', 'src/old.ts': null });
     const plan = await deployPlan(s.make, s.opts, s.deps);
-    assert.deepEqual(plan.files, [{ path: 'src/App.tsx', op: 'modify' }, { path: 'src/old.ts', op: 'delete' }]);
+    assert.deepEqual(plan.files, [{ path: 'src/old.ts', op: 'delete' }, { path: 'src/App.tsx', op: 'modify' }]);
     assert.equal(plan.excludedCount, 12);
     assert.deepEqual(plan.excluded.map(entry => entry.path), [DEPLOY_IGNORE, ...Object.keys(MAKE_ONLY), ...Object.keys(REPO_DEV)].sort());
     const reason = path => plan.excluded.find(entry => entry.path === path).reason;
@@ -2388,7 +2391,7 @@ describe('make deploy ignore list', () => {
     const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
     assert.equal(applied.outcome, 'ok');
     assert.equal(applied.excludedCount, 12);
-    assert.deepEqual(s.make.writes.map(([kind, path]) => [kind, path]), [['write', 'src/App.tsx'], ['delete', 'src/old.ts'], ['save', `deploy ${sha.slice(0, 7)}`]]);
+    assert.deepEqual(s.make.writes.map(([kind, path]) => [kind, path]), [['write', 'src/App.tsx'], ['delete', 'src/old.ts'], ['write', 'src/App.tsx'], ['save', `deploy ${sha.slice(0, 7)}`]]);
     for (const [path, content] of Object.entries(MAKE_ONLY)) assert.equal(s.make.saved.get(path).toString(), content, `Make keeps ${path}`);
     assert.ok(![...s.make.saved.keys()].some(path => path in REPO_DEV || path === DEPLOY_IGNORE), 'Make never gets repo-only files');
     const receipt = readReceipt(applied.receiptPath);
@@ -2509,8 +2512,8 @@ describe('make deploy across a top-level folder it empties', () => {
     const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
     assert.equal(applied.stage, 'deployed');
     assert.deepEqual(s.make.writes.filter(([kind]) => kind !== 'save').map(([kind, path]) => `${kind} ${path}`), [
-      'write .github/workflows/build.yml', 'write public/fonts/OFL.txt', 'write public/fonts/inter.css', 'write src/App.tsx',
-      'delete public/favicon.svg', 'write package.json']);
+      'write src/App.tsx', 'write .github/workflows/build.yml', 'write public/fonts/OFL.txt', 'write public/fonts/inter.css',
+      'delete public/favicon.svg', 'write package.json', 'write src/App.tsx']);
     assert.deepEqual([...s.make.saved.keys()].filter(path => path.startsWith('public/')).sort(), Object.keys(FONT).sort());
   });
 

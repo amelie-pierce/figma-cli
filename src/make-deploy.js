@@ -860,7 +860,8 @@ const recordWrite = (receipt, file, backupPath, extra = {}) => {
     receipt.writeRun.completedWrites++;
   }
   const entry = receipt.files.find(item => item.path === file.path);
-  if (entry && backupPath && !extra.uncertain) entry.backupPath = backupPath;
+  // An unwired entry's real write replaces its placeholder, so that backup is not the original.
+  if (entry && backupPath && !extra.uncertain && !receipt.unwired?.includes(file.path)) entry.backupPath = backupPath;
   saveReceipt(receipt);
 };
 
@@ -894,6 +895,7 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps, final 
       content = decode(bytes);
     }
     let expected = file.expectedSha256 !== undefined ? file.expectedSha256 : file.beforeSha256;
+    let lastBackup = null;
     for (let attempt = 1; ; attempt++) {
       let result;
       try {
@@ -928,9 +930,18 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps, final 
         continue;
       }
       if (!file.placeholder) recordWrite(receipt, file, result?.backupPath, result?.uncertainCause ? { afterUncertain: true } : {});
+      else lastBackup = result?.backupPath ?? null;
       break;
     }
-    if (file.placeholder) { deps.progress(`${file.path} unwired`); continue; }
+    if (file.placeholder) {
+      // Not a planned write, but abort must know this path was changed, and keep the original's backup.
+      receipt.unwired = [...new Set([...(receipt.unwired || []), file.path])];
+      const entry = receipt.files.find(item => item.path === file.path);
+      if (entry && !entry.backupPath && lastBackup) entry.backupPath = lastBackup;
+      saveReceipt(receipt);
+      deps.progress(`${file.path} unwired`);
+      continue;
+    }
     const completed = new Set(receipt.completedWrites.filter(write => !write.uncertain && !write.backupOnly).map(write => write.path)).size;
     deps.progress(`${completed}/${receipt.plan.files.length} ${file.path} (${Math.round((Date.now() - writeStarted) / 1000)}s)`);
     if (isDependency(file.path)) await waitIdle(client, receipt, deps);
@@ -1430,8 +1441,9 @@ export async function deployAbort(client, { receiptPath, dir } = {}, deps = {}) 
   if (receipt.restored?.length) {
     for (const file of files) {
       const writes = receipt.completedWrites.filter(write => write.path === file.path && !write.backupOnly);
-      if (file.state !== 'before' || restored.has(file.path) || !writes.length) continue;
-      if (writes.some(write => !write.uncertain)) restored.add(file.path);
+      const unwired = !!receipt.unwired?.includes(file.path);
+      if (file.state !== 'before' || restored.has(file.path) || (!writes.length && !unwired)) continue;
+      if (unwired || writes.some(write => !write.uncertain)) restored.add(file.path);
       else savedUncertain.add(file.path);
     }
   }
