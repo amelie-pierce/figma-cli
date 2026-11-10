@@ -843,7 +843,9 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
         if (file.op === 'delete') result = await client.deleteDurable(file.path, { expectedSha256: expected, backupDir: backupDir(receipt, home),
           overrideMake: overridePin(receipt) });
         else {
-          result = await client.writeDurable(file.path, content, { expectedSha256: expected ?? undefined, backupDir: backupDir(receipt, home),
+          // A write whose outcome is uncertain is confirmed by one fresh read of Make's client VFS and
+          // sandbox, both byte-equal to main's content (writeDurableConfirmed); anything else stops below.
+          result = await client.writeDurableConfirmed(file.path, content, { expectedSha256: expected ?? undefined, backupDir: backupDir(receipt, home),
             rewrite: isLockfile(file.path), baseFolders: baseFolders(receipt.plan),
             overrideMake: overridePin(receipt) });
         }
@@ -868,7 +870,7 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps }) {
         expected = status.workingSha256.get(file.path) ?? null;
         continue;
       }
-      recordWrite(receipt, file, result?.backupPath);
+      recordWrite(receipt, file, result?.backupPath, result?.uncertainCause ? { afterUncertain: true } : {});
       break;
     }
     const completed = new Set(receipt.completedWrites.filter(write => !write.uncertain && !write.backupOnly).map(write => write.path)).size;
