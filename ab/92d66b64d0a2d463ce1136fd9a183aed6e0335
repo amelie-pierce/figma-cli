@@ -1,0 +1,21 @@
+src/make-client.js
+  s_7a8cb0cc5f8c51::t_fd246459a8bc72 905-907
+tests/make-client.test.js
+  s_7a8cb0cc5f8c51::t_4567a41df9b076 998-1011
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ab92d66b64d0a2d463ce1136fd9a183aed6e0335",
+  "prompts": {},
+  "sessions": {
+    "s_7a8cb0cc5f8c51": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2c9d4044-5922-4243-bf29-3a6d28881348",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
