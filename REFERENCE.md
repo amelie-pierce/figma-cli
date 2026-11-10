@@ -549,10 +549,42 @@ or repo (`DEPLOY_MARKER`). Binary files and files over 2 MiB (`DEPLOY_BINARY`),
 LFS paths that differ (`DEPLOY_LFS`), and new or deleted files directly in the
 project root or in a new top-level folder, submodules and symbolic links
 (`DEPLOY_UNSUPPORTED_PATH`) are refused, unless the deploy ignore list names them
-(below). The plan lists paths in write order: new and changed files, then
-deletes, then the root `package.json`, then the root lockfiles. The
+(below). The plan lists paths in write order: new and changed files (a file's
+local imports before the file, path order as the tie-break and for cycles), then
+deletes, then the root `package.json`, then the root lockfiles, then the entry
+files (see **Entry files last**). The
 plan records each path's operation and before/after SHA-256 and git blob, the
 next tag number and a digest; it is written to `~/.figma-cli/deploys/plans/`.
+
+**Entry files last.** `--entry <path>` (dry run only, repeatable; default
+`src/App.tsx` and `src/main.tsx`) names the files that import the whole app
+tree. They are always written last, so Make never compiles a half-written
+app; an entry path the plan does not change is skipped. Every other file is
+written in import order: a file's local imports (relative, `/src/...` and `@/`
+specifiers; static, dynamic and `require()` forms; `import.meta.glob` patterns;
+resolved like Vite with `.mjs .js .mts .ts .jsx .tsx .json` and index files;
+packages ignored) come before it, the smaller path first among files that are
+ready together, and the members of an import cycle in path order. The plan
+records the entry list, the entry files and the mode, and shows the order in
+`files`:
+- **First deploy** (`two-batch`: every entry file is new to Make): batch 1 is
+  everything else, reconciled and saved as version `deploy <sha7> (batch 1)`;
+  the entry files are then written and saved as `deploy <sha7>`. After the
+  batch save, `--abort` refuses (the version exists; restore Make's earlier
+  version from its history by hand) and `--resume` writes the entry files.
+- **Existing app** (`unwire`: an entry file already in Make): each such entry
+  file is first replaced by a placeholder that imports nothing from the app
+  tree (a mounting `main`/`index`/`entry` renders nothing; any other entry is a
+  component returning `null`, exported by name and as default); then the
+  updates; then the real entry files; then one save. The placeholder is never
+  saved, and `--abort` restores the original entry files from the backups.
+- An override saves once, so an override whose entry files are all new only
+  orders them last.
+Receipts record `phase` (`unwire`, `updates`, `wire`, `batch1`, `batch1-save`,
+`batch2`) and, after the first batch's save, `batchSaved`. A receipt written by
+an earlier release has neither: it resumes in the order its plan recorded. A
+first batch whose save outcome is unknown is settled by `--verify`, then
+`--resume`.
 
 **Deploy ignore list.** `main` may commit `.figma-cli/deploy-ignore`: gitignore
 patterns (comments with `#`, `!` negation, a trailing `/` for a folder, a leading

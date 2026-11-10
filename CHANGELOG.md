@@ -53,6 +53,7 @@
 
 ### Changed
 
+- `make deploy` writes the entry files (`src/App.tsx` and `src/main.tsx` by default; `--entry <path>` on the dry run) last, and every other file in import order (a file's local imports before the file), so Make never compiles a half-written app or an importer without its module. A first deploy saves everything else first and then the entry files; an existing app has its entry files replaced by an unwired placeholder while it is updated and wired back last. Receipts from the old order still resume in the order they recorded. Live Make behaviour is unverified.
 - `make drift` inventories large vendor trees in bounded renderer batches and checks `generated.manifest.json` against the full generated tree when present.
 - Make mode detection reads direct provider props so large unrelated React state no longer hides snapshot or git mode.
 - Make writes (`make replace`, `create`, `import`, `remove`) are session-only: they reach the open session's working copy and are lost when the file is reopened unless saved in Make, which figma-cli never does. They now refuse unless `--session-only` is passed, and report `persistence: "session-only"` with `verification: "session-readback-matched"` or `"session-delete-accepted"` instead of `server-acknowledged` / `acknowledged`, which wrongly implied a save. Import errors list `sessionWrites` instead of `acknowledged`. Docs, the figma-make skill and help text say that reads (`read`, `files`, `verify`) see the same working copy
