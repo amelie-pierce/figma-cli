@@ -215,6 +215,24 @@ class FakeMake {
     await this.hooks.afterWrite?.(path);
     return { path, changed: true, backupPath };
   }
+  // Mirrors MakeClient.writeDurableConfirmed: an uncertain write is confirmed only when a fresh read
+  // of the working copy equals the target bytes.
+  async writeDurableConfirmed(path, content, options) {
+    try { return await this.writeDurable(path, content, options); }
+    catch (error) {
+      if (!error.uncertainWrite) throw error;
+      if (this.hooks.readBack === 'fails') {
+        error.message += ' The read-back after it also failed: Make operation timed out.';
+        throw error;
+      }
+      const current = this.working.get(path);
+      if (current && current.equals(Buffer.from(content))) {
+        return { path, changed: true, backupPath: error.backupPath ?? null, uncertainCause: error.uncertainWrite.cause,
+          verification: 'vfs-sandbox-matched-after-uncertain-write' };
+      }
+      throw error;
+    }
+  }
   async deleteDurable(path, { expectedSha256, backupDir } = {}) {
     this.calls.push(['delete', path]);
     this.hooks.beforeWrite?.(path);
@@ -522,6 +540,57 @@ describe('make deploy unopened deep-file read-back', () => {
       s.make.working.set('src/Card.tsx', Buffer.from('export const Card = 1;\n'));
       await deployResume(s.make, { ...s.opts, receiptPath }, s.deps).catch(() => {});
       assert.equal(landedOf(s).length, 0);
+    });
+  });
+
+  describe('write whose outcome is uncertain at the write step', () => {
+    const TREE_CHANGED = 'Make durable write outcome is uncertain: Make file tree changed before the requested action. Run the command again.. Inspect before retrying.';
+    const uncertain = () => Object.assign(new Error(TREE_CHANGED), { uncertainWrite: { cause: 'Make file tree changed before the requested action.' } });
+    async function planned(t) {
+      const s = setup(t);
+      landChange(s, { 'src/App.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
+      const plan = await deployPlan(s.make, s.opts, s.deps);
+      return { s, plan };
+    }
+
+    it('counts the file as written when Make now holds main\'s exact content, and continues to the next file', async t => {
+      const { s, plan } = await planned(t);
+      // Make's reply says the tree changed, but the bytes landed (the RWS stop on tokens/generated files).
+      s.make.hooks.afterWrite = path => { if (path === 'src/App.tsx') throw uncertain(); };
+      const result = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+      assert.equal(result.stage, 'deployed');
+      assert.deepEqual(s.make.calls.filter(call => call[0] === 'write').map(call => call[1]), ['src/App.tsx', 'src/Card.tsx']);
+      assert.equal(s.make.saved.get('src/Card.tsx').toString(), 'export const Card = 1;\n');
+      const receipt = readReceipt(result.receiptPath);
+      const entry = receipt.completedWrites.find(write => write.path === 'src/App.tsx');
+      assert.equal(entry.afterUncertain, true);
+      assert.notEqual(entry.uncertain, true);
+    });
+
+    it('stops as before when Make holds other content than the plan', async t => {
+      const { s, plan } = await planned(t);
+      s.make.hooks.afterWrite = path => {
+        if (path === 'src/App.tsx') { s.make.working.set(path, Buffer.from('a generated rewrite\n')); throw uncertain(); }
+      };
+      const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+      assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+      assert.match(error.message, /Make durable write outcome is uncertain/);
+      assert.match(error.message, /--resume/);
+      assert.equal(s.make.calls.some(call => call[0] === 'write' && call[1] === 'src/Card.tsx'), false);
+      const receipt = readReceipt(error.receiptPath);
+      assert.equal(receipt.outcome, 'uncertain');
+      assert.equal(receipt.completedWrites.some(write => write.path === 'src/App.tsx' && !write.uncertain), false);
+    });
+
+    it('stops as before when the file cannot be read back', async t => {
+      const { s, plan } = await planned(t);
+      s.make.hooks.afterWrite = path => { if (path === 'src/App.tsx') throw uncertain(); };
+      s.make.hooks.readBack = 'fails';
+      const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+      assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+      assert.match(error.message, /read-back after it also failed/);
+      assert.equal(s.make.calls.some(call => call[0] === 'write' && call[1] === 'src/Card.tsx'), false);
+      assert.equal(readReceipt(error.receiptPath).outcome, 'uncertain');
     });
   });
 
