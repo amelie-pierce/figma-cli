@@ -1,0 +1,19 @@
+tests/make-deploy.test.js
+  s_d74deb464085cb::t_dc7461f97c4298 1443
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "adef8e83c3ccbbdbe42f590d39eb5b0eaa4fba86",
+  "prompts": {},
+  "sessions": {
+    "s_d74deb464085cb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "118a4e52-a68c-440b-bf28-96ae83a9e20c",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
