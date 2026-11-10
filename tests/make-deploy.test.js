@@ -2655,7 +2655,12 @@ describe('make deploy entry files last', () => {
     const plan = await deployPlan(s.make, s.opts, s.deps);
     assert.equal(plan.entry.mode, 'two-batch');
     assert.deepEqual(plan.files.map(file => file.path), ['src/Card.tsx', 'src/App.tsx', 'src/main.tsx']);
+    const hashed = [];
+    const save = s.make.saveCheckedVersion.bind(s.make);
+    s.make.saveCheckedVersion = (title, paths, options) => { hashed.push([...options.plannedContent.keys()]); return save(title, paths, options); };
     const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    // Each save's exact-hash check covers only what that save commits.
+    assert.deepEqual(hashed, [['src/Card.tsx'], ['src/App.tsx', 'src/main.tsx']]);
     const sha7 = plan.mainCommit.slice(0, 7);
     assert.deepEqual(sequence(s.make), ['write src/Card.tsx', `save deploy ${sha7} (batch 1) src/Card.tsx`, 'write src/App.tsx', 'write src/main.tsx',
       `save deploy ${sha7} src/App.tsx,src/main.tsx`]);
