@@ -1,0 +1,57 @@
+src/make-deploy-order.js
+  s_d74deb464085cb::t_ff647f1a5b6385 1-55,57-111
+  s_d74deb464085cb::t_60611d208ab6f7 56
+src/commands/make.js
+  s_d74deb464085cb::t_21da96a86e806d 436-437,451,486
+CHANGELOG.md
+  s_d74deb464085cb::t_a320da72e720c1 56
+_vaults/figma-cli/wiki/make/deploy.md
+  s_d74deb464085cb::t_e0671846b2a78a 24,108,111-120
+  s_d74deb464085cb::t_3a33e0e5905740 121
+tests/make-deploy.test.js
+  s_d74deb464085cb::t_c39e479a68e7df 2767,2770-2771,2773-2776
+  s_d74deb464085cb::t_51bb851d88a8e5 9,2581-2610,2612-2766,2768-2769,2772,2777-2849
+  s_7a8cb0cc5f8c51::t_2901372598f717 2611,2850
+tests/make-deploy-order.test.js
+  s_d74deb464085cb::t_de8437f51f1226 58-59
+  s_d74deb464085cb::t_07bf3a92197746 1-57,60-67
+src/make-deploy.js
+  s_d74deb464085cb::t_7e5874575eea76 1108-1109,1114-1117,1119-1120,1122,1124,1127-1128,1132,1143-1151,1193-1207,1209,1211-1217,1219-1221,1223,1225-1232,1262,1359,1371
+  s_d74deb464085cb::t_acf132b7aa9f12 1288-1291,1293,1301
+  s_d74deb464085cb::t_13edf32f857563 729-735,758-759
+  s_d74deb464085cb::t_140650cebe660e 12,69-105,475,483,528-530,545,580,1233
+  s_d74deb464085cb::t_9337a6f98c4021 871-875,880-881,888-889,910,923-924,930,933,938
+  s_d74deb464085cb::t_f43b9ac4952c4f 777-779,831-832,1025-1026,1028-1029,1038,1324-1325
+  s_d74deb464085cb::t_8e555c58f7a7c2 1302-1304
+  s_d74deb464085cb::t_bcdeebd717f687 1208,1210,1218,1222,1224
+  s_d74deb464085cb::t_8e83f094919c56 647,721,740,744,749,1247
+  s_d74deb464085cb::t_4088fd73a2cd7c 1404-1407,1423,1537,1567-1585
+  s_d74deb464085cb::t_31280ae1e82c3b 1234
+REFERENCE.md
+  s_d74deb464085cb::t_a320da72e720c1 552-555,559-587
+  s_d74deb464085cb::t_62d8f3d43414f0 588
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2af2f18ff5d87b2645d90fe6ec1ed7ed255bce01",
+  "prompts": {},
+  "sessions": {
+    "s_7a8cb0cc5f8c51": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2c9d4044-5922-4243-bf29-3a6d28881348",
+        "model": "unknown"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_d74deb464085cb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "118a4e52-a68c-440b-bf28-96ae83a9e20c",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
