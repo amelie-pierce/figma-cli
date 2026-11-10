@@ -110,7 +110,9 @@ on GitHub). This skill does not merge. Wait until the person says it is merged.
    `figma-cli make deploy --file KEY --dir <clone>`. If it lists more than the
    upgrade (other merged work on `main`), say so: a deploy always brings all of `main`.
 4. On their yes: `figma-cli make deploy --file KEY --dir <clone> --apply <planPath>`.
-   It saves one version and tags `make-deploy/<n>`; keep `receiptPath`.
+   A first deploy (every entry file new to Make) saves two versions, `deploy <sha7> (batch 1)` then
+   `deploy <sha7>` with the entry files; an app already in Make saves one. It tags `make-deploy/<n>`;
+   keep `receiptPath`.
 5. Verify after a fresh reload: `figma-cli make deploy --file KEY --dir <clone> --verify <receiptPath>`
    must report `fresh-sandbox-verified` in its verification.
 6. Ask everyone who has the Make file open to reload it.

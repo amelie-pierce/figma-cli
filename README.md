@@ -367,8 +367,8 @@ to connect; it never starts, quits or patches Figma Desktop.
 
 A repo admin deploys merged `main` into the team-mode Make file with
 `make deploy --file KEY` in their clone. The default is a dry run that writes a
-reviewable plan; a normal `--apply PLAN` re-plans, writes the planned files, saves one
-version `deploy <sha7>`, checks the whole project against `main`, writes a private
+reviewable plan; a normal `--apply PLAN` re-plans, writes the planned files (entry files last), saves
+version `deploy <sha7>` (a first deploy saves `deploy <sha7> (batch 1)` first, then the entry files), checks the whole project against `main`, writes a private
 receipt under `~/.figma-cli/deploys/` and pushes the annotated tag
 `make-deploy/<n>`. `--verify RECEIPT` confirms it after a fresh reload;
 `--resume` and `--abort` finish or undo an interrupted deploy. For long applies,

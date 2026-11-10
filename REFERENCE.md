@@ -638,7 +638,8 @@ planned content (only a planned dependency file may hold what Make's install
 regenerated), and tries that path again. Before the save, a dependency file
 Make regenerated is written again; when Make keeps changing it after three
 rounds, the deploy stops without saving. It then
-saves one version `deploy <sha7>` whose saved tree must equal the checked working
+saves the version `deploy <sha7>` (a first deploy saves `deploy <sha7> (batch 1)` first, then
+this one; see **Entry files last**) whose saved tree must equal the checked working
 tree (Make may list only planned paths as pending). Resume and the final save
 include planned nested dot files, such as
 `src/vendor/atomic-aui/tokens/generated/.generated`, when checking that pending
