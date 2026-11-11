@@ -45,7 +45,8 @@ function folder(name, children, expanded = false) { return { name, kind: 'folder
 /** Minimal DOM fixture: execute the production scripts against real virtualized
  * behavior, rather than replacing their return values with hand-authored rows. */
 function fixture(nodes, { clientHeight = 64, skipPath, onAction, rejectSelection = false,
-  missingRootReadsAfterClick = 0 } = {}) {
+  missingRootReadsAfterClick = 0, lazyMs = 0 } = {}) {
+  let clock = 0; // fake page clock: the page's setTimeout advances it
   let selectedPath = null;
   let position = 0;
   let missingRootReads = 0;
@@ -54,7 +55,7 @@ function fixture(nodes, { clientHeight = 64, skipPath, onAction, rejectSelection
   function flatten(children = nodes, prefix = '', level = 1) {
     return children.flatMap((node) => {
       const path = prefix ? `${prefix}/${node.name}` : node.name;
-      return [{ node, path, level }, ...(node.kind === 'folder' && node.expanded ? flatten(node.children, path, level + 1) : [])];
+      return [{ node, path, level }, ...(node.kind === 'folder' && node.expanded && clock >= (node.readyAt ?? 0) ? flatten(node.children, path, level + 1) : [])];
     });
   }
   const content = { style: {} };
@@ -81,7 +82,11 @@ function fixture(nodes, { clientHeight = 64, skipPath, onAction, rejectSelection
         click: () => {
           clicks.push(path);
           missingRootReads = missingRootReadsAfterClick;
-          if (node.kind === 'folder') node.expanded = !node.expanded;
+          if (node.kind === 'folder') {
+            node.expanded = !node.expanded;
+            // Make shows the folder expanded at once, its children later.
+            if (node.expanded) node.readyAt = clock + lazyMs;
+          }
           else if (!rejectSelection) selectedPath = path;
         },
       };
@@ -100,7 +105,8 @@ function fixture(nodes, { clientHeight = 64, skipPath, onAction, rejectSelection
   viewport.parentElement = root;
   const context = { document: { querySelectorAll: () => missingRootReads-- > 0 ? [] : [root] },
     getComputedStyle: (element) => element.style,
-    setTimeout: (callback) => { callback(); return 1; } };
+    Date: { now: () => clock },
+    setTimeout: (callback, ms = 0) => { clock += ms; callback(); return 1; } };
   return {
     nodes, actions, clicks, viewport,
     get selectedPath() { return selectedPath; },
@@ -498,6 +504,20 @@ describe('Make tree scan with many collapsed folders', () => {
     // folder would need well over folders x viewports.
     assert.ok(transport.actions.length <= 160 + viewports + 10,
       `expected O(rows) evaluations, got ${transport.actions.length}`);
+  });
+
+  it('waits for lazily loaded children after each click: complete scan, no restarts', async () => {
+    const transport = fixture(bigTree(), { clientHeight: 320, lazyMs: 400 });
+    const entries = await listMakeFiles(transport, { maxEntries: 1000 });
+    assert.equal(entries.length, 160 * 3);
+    assert.equal(transport.clicks.length, 160);
+    const viewports = Math.ceil((160 * 3 * 32) / (320 * 0.75));
+    // Each wait happens inside the click's single evaluation, so the count
+    // stays O(folders + rows) and every pass starts from the top only once.
+    assert.ok(transport.actions.length <= 160 + viewports + 10,
+      `expected O(folders+rows) evaluations, got ${transport.actions.length}`);
+    assert.equal(transport.actions.filter(action => action.type === 'scroll' && action.top === 0).length, 1);
+    assert.ok(transport.actions.filter(action => action.type === 'expand').every(action => action.waitMs > 0));
   });
 
   it('rescans an already expanded tree without clicks, in viewport steps only', async () => {

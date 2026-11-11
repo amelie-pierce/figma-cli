@@ -220,7 +220,20 @@ async function treeDOMAction(action) {
     }
     row.control.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
-    return snapshot(await stableInspect());
+    let next = await stableInspect();
+    // Make marks the folder expanded at once but fills its children lazily over
+    // the filesystem bridge. Wait (bounded by action.waitMs) until the folder
+    // shows expanded and the content grew; on the cap, return what is there.
+    if (action.type === 'expand' && action.waitMs > 0) {
+      const until = Date.now() + action.waitMs;
+      for (;;) {
+        const clicked = next.rows.find((candidate) => candidate.top === row.top && candidate.name === row.name);
+        if ((clicked?.expanded === true && next.contentHeight > state.contentHeight) || Date.now() >= until) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        next = await stableInspect();
+      }
+    }
+    return snapshot(next);
   }
   if (action.type !== 'snapshot') throw new Error('Unknown Make tree action.');
   return snapshot(state);
@@ -241,6 +254,9 @@ async function evaluateTree(transport, action, deadline) {
     clearTimeout(timer);
   }
 }
+
+// Longest wait for a clicked folder's lazily loaded children (~0.4 s per request in Make).
+const EXPAND_WAIT_MS = 2000;
 
 async function scanTree(transport, { deadline, maxEntries, targetPath }) {
   let expansions = 0;
@@ -293,8 +309,12 @@ async function scanTree(transport, { deadline, maxEntries, targetPath }) {
         // no change, so read the tree again from the top.
         let after;
         try {
+          // Only an expand without a target waits for lazy children; it stays
+          // inside the caller's remaining time.
+          const waitMs = !targetPath && folderAction.type === 'expand'
+            ? Math.max(0, Math.min(EXPAND_WAIT_MS, deadline - Date.now() - 500)) : 0;
           after = await evaluateTree(transport, { type: folderAction.type, row: folderAction.row, contentHeight,
-            expectedRows: state.rows }, deadline);
+            expectedRows: state.rows, waitMs }, deadline);
         } catch (error) {
           if (!/Make file tree changed before the requested action/.test(error?.message)) throw error;
         }
