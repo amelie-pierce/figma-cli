@@ -1,0 +1,23 @@
+_vaults/figma-cli/wiki/make/size-and-timeouts.md
+  s_c7acba3f6e213a::t_f05cd60b1e652a 29,36-37
+src/make-client.js
+  s_c7acba3f6e213a::t_b171ac6ff53a67 566-568
+src/make-deploy.js
+  s_c7acba3f6e213a::t_3513c2386f8d18 1244
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "dee28cde9b2b4392762f041a7fda8c998a30233f",
+  "prompts": {},
+  "sessions": {
+    "s_c7acba3f6e213a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f789f56a-6889-470a-bee9-a598bdf8d242",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
