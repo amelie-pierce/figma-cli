@@ -618,7 +618,11 @@ meets every guard; a list that is not UTF-8 refuses with `DEPLOY_IGNORE`.
 
 `--apply` runs every guard again and re-plans: the digest must match the reviewed
 plan, `origin/main` must still be the planned commit (`DEPLOY_MAIN_MOVED`) and
-the tag number must be free (`DEPLOY_TAG_CLASH`). It then writes each path with
+the tag number must be free (`DEPLOY_TAG_CLASH`). Before the first write (on
+`--apply` and `--resume`) it expands every folder of Make's file tree once, as
+its own operation with its own timeout rather than inside a write's 120 s cap;
+if that fails or times out the deploy stops with `DEPLOY_WRITE_FAILED` before
+writing anything in that run, so `--resume` is safe. It then writes each path with
 the durable client-VFS write (backups under `~/.figma-cli/deploys/backups/`).
 Deletes run after the new and changed files: deleting a top-level folder's only
 file drops the folder from Make's file tree, and a create below it would then
