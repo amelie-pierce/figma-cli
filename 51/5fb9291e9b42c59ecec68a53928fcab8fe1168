@@ -1,0 +1,18 @@
+_vaults/figma-cli/wiki/make/size-and-timeouts.md
+  h_eb882fdf9e0ce8 26-31
+src/make-tree.js
+  h_eb882fdf9e0ce8 249,294-298,300-312
+tests/make-tree.test.js
+  h_eb882fdf9e0ce8 485-514
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "515fb9291e9b42c59ecec68a53928fcab8fe1168",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
