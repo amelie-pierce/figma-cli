@@ -1,0 +1,27 @@
+src/make-client.js
+  s_c7acba3f6e213a::t_21a77a4d6620e5 563-575
+src/make-deploy.js
+  s_c7acba3f6e213a::t_2a0f42dab644cb 1234-1245
+src/make-tree.js
+  s_c7acba3f6e213a::t_ba5c332a3c4cf8 223-236,258-260,312-315,317
+tests/make-deploy.test.js
+  s_c7acba3f6e213a::t_f2792549cd4e5d 158-163,456-479
+tests/make-tree.test.js
+  s_c7acba3f6e213a::t_f0c0cfd4ed5a70 48-49,58,85-89,108-109,509-522
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c6ad693f87de5448567e4a7dcc33a2d75f4a344f",
+  "prompts": {},
+  "sessions": {
+    "s_c7acba3f6e213a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f789f56a-6889-470a-bee9-a598bdf8d242",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
