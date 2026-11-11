@@ -560,6 +560,19 @@ export class MakeClient {
     });
   }
 
+  // Expand every folder of the tree as its own operation (its own timeout), so
+  // a later write's pre-write scan finds an already expanded tree. Reads and
+  // clicks folders only; it writes nothing.
+  expandTree() {
+    return this._operation(async (deadline) => {
+      await this._ensureCode(deadline);
+      const entries = await this._bounded(() => listMakeFiles(this._treeTransport(deadline), {
+        timeoutMs: this._remaining(deadline), maxEntries: this.maxEntries,
+      }), deadline);
+      return { entries: entries.length, folders: entries.filter(entry => entry.kind === 'folder').length };
+    });
+  }
+
   // The session's working copy through the filesystem bridge; the editor is only a fallback
   // when no filesystem connection can be observed, and never for --remote.
   read(path, { remote = false } = {}) {

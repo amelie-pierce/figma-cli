@@ -1231,6 +1231,18 @@ async function writePlan(client, ctx, receipt, todo, mainFlat, { mainBytes, home
   const rest = todo.filter(file => !isEntry(file));
   let heads = todo.filter(isEntry);
   const setPhase = phase => { receipt.phase = phase; saveReceipt(receipt); };
+  // One read-only expand-all, as its own operation with its own timeout, before
+  // the first write. Every write is a separate 120 s operation that rescans the
+  // tree; on a cold (collapsed) tab that scan would spend the write's budget on
+  // expanding folders. Nothing is written yet, so a failure stops the deploy cleanly.
+  deps.progress('expanding the Make file tree');
+  try {
+    const expanded = await client.expandTree();
+    receipt.expandTree = { entries: expanded.entries, folders: expanded.folders };
+    saveReceipt(receipt);
+  } catch (error) {
+    stop(receipt, error, receipt.stage, `Could not expand the Make file tree before writing: ${error.message} No file was written and no version was saved. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
+  }
   if (entry?.mode === 'two-batch' && !receipt.batchSaved) {
     setPhase('batch1');
     await writeFiles(client, receipt, rest, { ...options, final: false });

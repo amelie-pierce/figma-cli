@@ -155,6 +155,12 @@ class FakeMake {
     await this.hooks.settle?.(status);
     return status;
   }
+  // Mirrors MakeClient.expandTree: a read-only expand-all, its own operation.
+  async expandTree() {
+    this.calls.push(['expand-tree']);
+    await this.hooks.expandTree?.();
+    return { entries: this.working.size, folders: 0 };
+  }
   async projectMarker() { return this.working.get(PROJECT_MARKER) ?? null; }
   async projectStatus({ classifyText = false, savedInventory = false, savedProtected = () => false } = {}) {
     this.calls.push(['status']);
@@ -447,6 +453,30 @@ describe('make deploy unopened deep-file read-back', () => {
     assert.ok(lines.includes('saving'));
     assert.ok(lines.includes('deployed'));
   });
+  it('expands the tree once, as its own step, before the first write', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'updated\n', 'src/New.tsx': 'new\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    const lines = [];
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, { ...s.deps, progress: line => lines.push(line) });
+    const kinds = s.make.calls.map(([kind]) => kind);
+    assert.equal(kinds.filter(kind => kind === 'expand-tree').length, 1);
+    assert.ok(kinds.indexOf('expand-tree') < kinds.indexOf('write'));
+    assert.ok(lines.includes('expanding the Make file tree'));
+    assert.deepEqual(Object.keys(readReceipt(applied.receiptPath).expandTree), ['entries', 'folders']);
+  });
+
+  it('stops before any write when the expand-all fails', async t => {
+    const s = setup(t);
+    landChange(s, { 'src/App.tsx': 'updated\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.expandTree = () => { throw new Error('Timed out while reading the Make file tree.'); };
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+    assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+    assert.match(error.message, /Could not expand the Make file tree before writing: Timed out/);
+    assert.deepEqual(s.make.writes, []);
+  });
+
   it('applies and saves a deep file with three matching views', async t => {
     const s = setup(t, { files: { ...BASE, [DEEP_PATH]: 'old\n' } });
     landChange(s, { [DEEP_PATH]: 'new\n' });
