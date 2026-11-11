@@ -482,3 +482,33 @@ describe('Make durable writes and deletes across a guarded tree refresh', () => 
       /durable delete outcome is uncertain: Make file tree changed before/);
   });
 });
+
+describe('Make tree scan with many collapsed folders', () => {
+  const bigTree = () => Array.from({ length: 160 }, (_, i) =>
+    folder(`dir${i}`, [file(`a${i}.ts`), file(`b${i}.ts`)]));
+
+  it('expands 150+ collapsed folders in one pass, O(rows) evaluations, every entry returned', async () => {
+    const transport = fixture(bigTree(), { clientHeight: 320 });
+    const entries = await listMakeFiles(transport, { maxEntries: 1000 });
+    assert.equal(entries.length, 160 * 3);
+    assert.equal(transport.clicks.length, 160);
+    const rows = 160 * 3;
+    const viewports = Math.ceil((rows * 32) / (320 * 0.75));
+    // One evaluation per click plus one per viewport step; a restart per
+    // folder would need well over folders x viewports.
+    assert.ok(transport.actions.length <= 160 + viewports + 10,
+      `expected O(rows) evaluations, got ${transport.actions.length}`);
+  });
+
+  it('rescans an already expanded tree without clicks, in viewport steps only', async () => {
+    const transport = fixture(bigTree(), { clientHeight: 320 });
+    await listMakeFiles(transport, { maxEntries: 1000 });
+    transport.actions.length = 0;
+    transport.clicks.length = 0;
+    const entries = await listMakeFiles(transport, { maxEntries: 1000 });
+    assert.equal(entries.length, 160 * 3);
+    assert.equal(transport.clicks.length, 0);
+    assert.ok(transport.actions.every(action => action.type === 'scroll'));
+    assert.ok(transport.actions.length <= Math.ceil((160 * 3 * 32) / (320 * 0.75)) + 5);
+  });
+});

@@ -246,7 +246,7 @@ async function scanTree(transport, { deadline, maxEntries, targetPath }) {
   let expansions = 0;
   for (;;) {
     let state = await evaluateTree(transport, { type: 'scroll', top: 0 }, deadline);
-    const contentHeight = state.contentHeight;
+    let contentHeight = state.contentHeight;
     const observed = new Map();
     let restart = false;
     for (;;) {
@@ -291,10 +291,25 @@ async function scanTree(transport, { deadline, maxEntries, targetPath }) {
         if (++expansions > maxEntries) throw new Error('Make file tree exceeded the folder expansion limit.');
         // Make re-renders the tree after a write. A refused folder click made
         // no change, so read the tree again from the top.
-        await evaluateTree(transport, { type: folderAction.type, row: folderAction.row, contentHeight,
-          expectedRows: state.rows }, deadline).catch((error) => {
+        let after;
+        try {
+          after = await evaluateTree(transport, { type: folderAction.type, row: folderAction.row, contentHeight,
+            expectedRows: state.rows }, deadline);
+        } catch (error) {
           if (!/Make file tree changed before the requested action/.test(error?.message)) throw error;
-        });
+        }
+        // Without a target, an expand only adds rows below the folder. When the
+        // click's own re-read shows exactly that, keep what lies above it and
+        // continue this pass from the new rows instead of restarting from the
+        // top (which made a scan O(folders x rows)). Anything else restarts.
+        const clicked = after?.rows?.find(candidate => candidate.top === folderAction.row.top);
+        if (!targetPath && after && Number.isFinite(after.contentHeight) && after.contentHeight > contentHeight &&
+            clicked?.name === folderAction.row.name && clicked.kind === 'folder' && clicked.expanded === true) {
+          for (const top of [...observed.keys()]) if (top >= folderAction.row.top) observed.delete(top);
+          contentHeight = after.contentHeight;
+          state = after;
+          continue;
+        }
         restart = true;
         break;
       }

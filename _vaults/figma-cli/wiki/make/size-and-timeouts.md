@@ -23,3 +23,9 @@ Make reads and saves every file whole over its filesystem socket ([filesystem-br
 - `make deploy` dry run and apply check every file of `main` that is not deploy-ignored, reading content (`prepare`, `src/make-deploy.js:620`); the dry-run result carries `sizeWarnings`. The plan and digest do not change.
 - `make status` knows only byte sizes (`workingBytes`, `src/make-client.js:1315`), so it checks size alone (`src/commands/make.js:220`). Warnings go to stderr and the JSON; the exit code is unchanged.
 - Designer-facing wording lives in `skills/figma-make-team/SKILL.md` ("Keep files small").
+
+## Tree scan on a mostly collapsed tree (Updated 2026-11-11)
+
+- Before every `writeDurable`, `_durableAgreement` does a full `scanTree` (`src/make-tree.js:245`, `src/make-client.js:795`). With no `targetPath` it expands each collapsed folder it meets. It used to restart the whole pass after every click, so a tree of ~160 collapsed folders cost O(folders x rows) evaluations and outlived the 120 s operation cap ("Timed out while reading the Make file tree.").
+- Now, when a click's own re-read shows the folder expanded and the content taller, the scan drops only the rows at or below that folder and continues the same pass. Any other result still restarts from the top. `targetPath` scans (selection) are unchanged. Cost is one evaluation per folder plus one per viewport step (test: `tests/make-tree.test.js`, "Make tree scan with many collapsed folders").
+- Scans are not shared across writes of one deploy: each write is its own `_operation` with its own deadline, and the pre-write scan is the live tree view of the three-view agreement. A cached snapshot from the previous write could not prove the tree is unchanged without rescanning, so each write keeps its own (now cheap) scans; within one write the ancestor check's listing is already reused (`treeState.prefetched`).
