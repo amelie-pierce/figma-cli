@@ -1241,7 +1241,7 @@ async function writePlan(client, ctx, receipt, todo, mainFlat, { mainBytes, home
     receipt.expandTree = { entries: expanded.entries, folders: expanded.folders };
     saveReceipt(receipt);
   } catch (error) {
-    stop(receipt, error, receipt.stage, `Could not expand the Make file tree before writing: ${error.message} No file was written and no version was saved. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
+    stop(receipt, error, receipt.stage, `Could not expand the Make file tree before writing: ${error.message} This run wrote no file and saved no version. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
   }
   if (entry?.mode === 'two-batch' && !receipt.batchSaved) {
     setPhase('batch1');
