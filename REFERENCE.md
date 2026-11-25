@@ -181,7 +181,8 @@ held (`readBack`), and nothing is written again. A write the page refused, or
 one whose last check saw a mounted editor with different bytes or a new file
 missing from the tree, is not read back.
 A new file must sit below an existing top-level folder: the write proves
-absence by listing an existing ancestor folder, never the project root, so a
+absence by listing an existing ancestor folder, never the project root (it starts at
+the nearest folder the file tree shows, so a new folder costs no 5 s timeouts), so a
 root-level write is refused before anything changes. Snapshot-mode files are refused. A pending
 write is not saved.
 

@@ -791,17 +791,39 @@ export class MakeClient {
         (await this._durable({ type: 'read', path }, deadline)).exists) refuse();
   }
 
-  // Make never answers a listing of a missing directory; try the parent.
-  async _sandboxAbsent(bridge, path) {
+  // Make never answers a listing of a missing directory, and each unanswered
+  // listing costs the 5 s request cap. treeEntries, when given, is a tree
+  // listing taken in this operation: the check starts at the nearest ancestor
+  // that listing shows as a folder, so a new folder two levels deep needs no
+  // timed-out request. A listing that succeeds there and lacks the next
+  // segment proves the path absent, as the walk-up's first answer would. One
+  // that holds the next segment descends a level; one that fails falls back to
+  // the walk-up from the parent, unchanged.
+  async _sandboxAbsent(bridge, path, treeEntries) {
     const segments = path.split('/');
-    for (let depth = segments.length - 1; depth >= 0; depth--) {
+    const list = async depth => {
       const remotePath = ['code', ...segments.slice(0, depth)].join('/');
       const listing = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
         'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
       ]).catch(() => null);
-      if (listing?.success === true && listing.data?.path === remotePath && Array.isArray(listing.data.files)) {
-        return !listing.data.files.some(entry => entry?.name === segments[depth]);
+      return listing?.success === true && listing.data?.path === remotePath && Array.isArray(listing.data.files)
+        ? listing.data.files : null;
+    };
+    const folders = new Set((treeEntries ?? []).filter(entry => entry.kind === 'folder').map(entry => entry.path));
+    let start = segments.length - 2;
+    while (start >= 1 && !folders.has(segments.slice(0, start).join('/'))) start--;
+    // Only an ancestor above the parent saves a request; the parent is the walk-up's first listing.
+    if (start >= 1 && start < segments.length - 1) {
+      for (let depth = start; depth < segments.length; depth++) {
+        const files = await list(depth);
+        if (!files) break;
+        if (!files.some(entry => entry?.name === segments[depth])) return true;
+        if (depth === segments.length - 1) return false;
       }
+    }
+    for (let depth = segments.length - 1; depth >= 0; depth--) {
+      const files = await list(depth);
+      if (files) return !files.some(entry => entry?.name === segments[depth]);
     }
     return false;
   }
@@ -824,14 +846,14 @@ export class MakeClient {
           ? { requestTimeoutMs: Math.min(5000, this._remaining(deadline)) } : undefined);
         let sandbox;
         let absentInSandbox = false;
-        try {
-          if (expectedContent === null) absentInSandbox = await this._sandboxAbsent(bridge, path);
-          else sandbox = await this._bridgeRead(bridge, path).catch(() => null);
-        }
-        finally { await bridge.dispose(); }
         // A pre-write absence check may start from the listing its ancestor
         // check just made in the same operation; every later pass lists again.
         const prefetched = expectedContent === null && !expectedChange ? treeState?.prefetched : undefined;
+        try {
+          if (expectedContent === null) absentInSandbox = await this._sandboxAbsent(bridge, path, prefetched?.tree);
+          else sandbox = await this._bridgeRead(bridge, path).catch(() => null);
+        }
+        finally { await bridge.dispose(); }
         if (treeState) delete treeState.prefetched;
         let tree;
         if (prefetched?.tree) {
