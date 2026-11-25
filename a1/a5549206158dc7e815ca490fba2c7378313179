@@ -1,0 +1,28 @@
+CHANGELOG.md
+  h_eb882fdf9e0ce8 7
+REFERENCE.md
+  h_eb882fdf9e0ce8 193-195,486,488-491
+_vaults/figma-cli/wiki/make/deploy.md
+  h_eb882fdf9e0ce8 24
+_vaults/figma-cli/wiki/make/write-cost.md
+  h_eb882fdf9e0ce8 42,51
+src/commands/make-atomicaui.js
+  h_eb882fdf9e0ce8 107
+src/make-deploy.js
+  h_eb882fdf9e0ce8 7,872,993-996,1004
+tests/make-batch-fake.js
+  h_eb882fdf9e0ce8 1-2,6-7,9-11
+tests/make-deploy.test.js
+  h_eb882fdf9e0ce8 8,259-261,3133-3161
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a1a5549206158dc7e815ca490fba2c7378313179",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
