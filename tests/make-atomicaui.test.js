@@ -24,6 +24,26 @@ function remoteReader(files, batches) {
     },
   };
 }
+// Routes a fake client's reads through a real MakeClient, which refuses a
+// second operation while one is running; only its page transport and sandbox
+// bridge are faked. Records single reads, batches, the writes made before each
+// batch and how many sandbox reads were in flight together.
+function guardReads(client, files, writes = []) {
+  const make = new MakeClient({ transport: { close() {}, evaluate: async () => true, send: async () => ({}) }, timeoutMs: 5000 });
+  make.fileKey = client.fileKey;
+  const log = { singleReads: [], batches: [], writesBefore: [], peak: 0 };
+  let active = 0;
+  make._fileBridge = async () => ({ dispose: async () => {} });
+  make._bridgeRead = async (_bridge, path) => {
+    log.peak = Math.max(log.peak, ++active);
+    await new Promise(resolve => setTimeout(resolve, 2));
+    active--; return { content: files.get(path).toString() };
+  };
+  const plainRead = client.read;
+  client.read = path => { log.singleReads.push(path); return make._operation(() => plainRead(path)); };
+  client.readRemoteFiles = paths => { log.batches.push(paths); log.writesBefore.push([...writes]); return make.readRemoteFiles(paths); };
+  return log;
+}
 const KIT_PACKAGE = Buffer.from(JSON.stringify({ dependencies: { '@base-ui/react': '^1.2.0', react: '^19.1.0' } }));
 function fixture(version = '7.0.0') {
   const source = new Map([
@@ -401,29 +421,15 @@ test('fake solo Make client writes provider, stylesheet, sass, dependencies and 
       return { contents, inventory: new Map([...contents].map(([path, bytes]) => [path, { bytes: bytes.length, sha256: hash(bytes) }])), state };
     },
   };
-  // Reads go through a real MakeClient, which refuses a second operation
-  // while one is running; only its page transport and sandbox bridge are faked.
-  const make = new MakeClient({ transport: { close() {}, evaluate: async () => true, send: async () => ({}) }, timeoutMs: 5000 });
-  make.fileKey = client.fileKey;
-  const singleReads = [], batches = [];
-  let bridgeActive = 0, bridgePeak = 0;
-  make._fileBridge = async () => ({ dispose: async () => {} });
-  make._bridgeRead = async (_bridge, path) => {
-    bridgePeak = Math.max(bridgePeak, ++bridgeActive);
-    await new Promise(resolve => setTimeout(resolve, 2));
-    bridgeActive--; return { content: files.get(path).toString() };
-  };
-  const plainRead = client.read;
-  client.read = path => { singleReads.push(path); return make._operation(() => plainRead(path)); };
-  client.readRemoteFiles = paths => { batches.push(paths); return make.readRemoteFiles(paths); };
+  const log = guardReads(client, files);
   await Promise.all([client.read('package.json'), assert.rejects(client.read('package.json'), /already running/)]);
-  singleReads.length = 0;
+  log.singleReads.length = 0;
   const result = await installSoloRelease(client, payload, { mode: 'add' });
   // The current-content reads are one operation whose two sandbox reads
   // overlap; neither file is then read again on its own.
-  assert.deepEqual(batches[0], ['src/main.tsx', 'package.json']);
-  assert.equal(bridgePeak, 2);
-  assert.deepEqual(singleReads, []);
+  assert.deepEqual(log.batches, [['src/main.tsx', 'package.json']]);
+  assert.equal(log.peak, 2);
+  assert.deepEqual(log.singleReads, []);
   assert.equal(result.savedVersion, 4);
   assert.equal(saves.length, 1);
   assert.deepEqual(saves[0], [...files.keys()].filter(path => path.startsWith('src/vendor/atomic-aui/') || path === 'src/main.tsx' || path === 'package.json').sort());
@@ -596,7 +602,11 @@ test('interrupted solo add resumes after wiring or VENDOR.json was written, and 
     const files = plainApp();
     for (const path of written) files.set(path, finished.get(path));
     const make = soloMake(files, written, plainApp());
+    const log = guardReads(make.client, make.files);
     const result = await installSoloRelease(make.client, payload, { mode: 'add', resume: true });
+    assert.deepEqual(log.batches, [['src/main.tsx', 'package.json', 'src/App.tsx']]);
+    assert.equal(log.peak, 3);
+    assert.deepEqual(log.singleReads, []);
     assert.deepEqual(make.writes, changedPaths.filter(path => !written.includes(path)));
     assert.deepEqual([...make.saves[0]].sort(), [...changedPaths].sort());
     assert.deepEqual(result.report.added, ['src/index.ts', 'tokens/index.scss']);
@@ -627,7 +637,14 @@ test('interrupted solo upgrade resumes from the saved version and refuses foreig
     const files = new Map(savedFiles);
     for (const path of done) if (complete.files.has(path)) files.set(path, complete.files.get(path)); else files.delete(path);
     const make = soloMake(files, done, savedFiles);
+    const log = guardReads(make.client, make.files, make.writes);
     const result = await installSoloRelease(make.client, newer, { mode: 'upgrade', resume: true });
+    // Only vendor paths are pending, so the app files are first read for
+    // their writes: one batch, after the remaining vendor files, before VENDOR.json.
+    assert.deepEqual(log.batches, [['src/main.tsx', 'package.json']]);
+    assert.deepEqual(log.writesBefore, [steps.filter(path => !done.includes(path) && path !== vendorPath)]);
+    assert.equal(log.peak, 2);
+    assert.deepEqual(log.singleReads, []);
     assert.deepEqual([result.report.from, result.report.added, result.report.changed, result.report.removed],
       ['7.0.0', ['src/new.ts'], ['src/index.ts'], ['src/old.ts']]);
     assert.deepEqual(make.writes, steps.filter(path => !done.includes(path)));

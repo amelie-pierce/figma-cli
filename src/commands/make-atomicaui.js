@@ -411,12 +411,16 @@ export async function installSoloRelease(client, release, { mode, resume = false
     if (!reads.has(path)) reads.set(path, await client.read(path, { remote: true }));
     return reads.get(path);
   };
-  // Warm the memo with one batch whose sandbox reads overlap. A failed batch
-  // is left for the ordered reads below, which then fail exactly as before.
+  // Warm the memo for paths not read yet, in batches whose sandbox reads
+  // overlap. A failed batch is left for the ordered reads below, which then
+  // fail exactly as before.
   const prefetchCurrent = async paths => {
-    const present = paths.filter(path => names.has(path));
-    if (!present.length) return;
-    try { for (const [path, file] of await client.readRemoteFiles(present)) reads.set(path, file); } catch {}
+    const unread = paths.filter(path => names.has(path) && !reads.has(path));
+    try {
+      for (let offset = 0; offset < unread.length; offset += 16) {
+        for (const [path, file] of await client.readRemoteFiles(unread.slice(offset, offset + 16))) reads.set(path, file);
+      }
+    } catch {}
   };
   if (!resume) await prefetchCurrent(appPaths);
   const baseContent = async path => resume ? savedText.get(path) : (await readCurrent(path)).content;
@@ -464,6 +468,7 @@ export async function installSoloRelease(client, release, { mode, resume = false
         vendorTreeFallback: true });
       writes.push(`${ATOMICAUI_ROOT}/${path}`);
     }
+    await prefetchCurrent([...appWrites.keys()]);
     for (const [path, content] of appWrites) {
       const current = await readCurrent(path);
       if (content !== current.content) await write(path, content, current.sha256);
