@@ -1,3 +1,4 @@
+import { batchThrough } from './make-batch-fake.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -262,6 +263,7 @@ test('fake Make client receives an immutable release folder and one exact save',
     files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
     ...remoteReader(files, remoteBatches),
     inventoryVendor: async () => ({ inventory, contents, state }),
+    writeDurableBatch(items, options) { return batchThrough(this, items, options); },
     writeDurable: async (path, content, { expectedSha256 } = {}) => {
       assert.ok(expectedSha256 == null);
       assert.ok(path.startsWith('public/atomicaui/'), path);
@@ -296,6 +298,7 @@ test('an older release keeps its folder but leaves latest.json at the newest rel
     files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
     ...remoteReader(files, remoteBatches),
     inventoryVendor: async () => ({ inventory, contents, state }),
+    writeDurableBatch(items, options) { return batchThrough(this, items, options); },
     writeDurable: async (path, content, { expectedSha256 } = {}) => {
       assert.equal(expectedSha256 || null, files.has(path) ? hash(files.get(path)) : null);
       written.push(path); files.set(path, Buffer.from(content)); return { changed: true };
@@ -369,6 +372,7 @@ test('interrupted release keeps a matching part, rewrites a mismatched part and 
     files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
     ...remoteReader(files, remoteBatches),
     inventoryVendor: async () => ({ inventory, contents, state }),
+    writeDurableBatch(items, options) { return batchThrough(this, items, options); },
     writeDurable: async (path, content, { expectedSha256 } = {}) => {
       assert.equal(expectedSha256 || null, files.has(path) ? hash(files.get(path)) : null);
       writes.push(path); files.set(path, Buffer.from(content));
@@ -409,6 +413,7 @@ test('fake solo Make client writes provider, stylesheet, sass, dependencies and 
     files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
     read: async path => ({ content: files.get(path).toString(), sha256: hash(files.get(path)) }),
     readRemoteFiles: async paths => new Map(paths.map(path => [path, { content: files.get(path).toString(), sha256: hash(files.get(path)) }])),
+    writeDurableBatch(items, options) { return batchThrough(this, items, options); },
     writeDurable: async (path, content, { expectedSha256, vendorTreeFallback } = {}) => {
       assert.equal(expectedSha256 || null, files.has(path) ? hash(files.get(path)) : null);
       assert.equal(vendorTreeFallback, path.startsWith('src/vendor/atomic-aui/'));
@@ -512,6 +517,7 @@ test('solo add resumes only exact pending release files and saves them once', as
       return { contents, inventory: new Map([...contents].map(([path, bytes]) =>
         [path, { bytes: bytes.length, sha256: hash(bytes) }])), state };
     },
+    writeDurableBatch(items, options) { return batchThrough(this, items, options); },
     writeDurable: async (path, content, { expectedSha256, vendorTreeFallback } = {}) => {
       assert.equal(expectedSha256 || null, files.has(path) ? hash(files.get(path)) : null);
       assert.equal(vendorTreeFallback, path.startsWith('src/vendor/atomic-aui/'));
@@ -566,6 +572,7 @@ function soloMake(files, pendingPaths = [], saved = new Map(files)) {
     readRemoteFiles: async paths => new Map(paths.map(path => [path, { content: files.get(path).toString(), sha256: hash(files.get(path)) }])),
     inventoryVendor: async () => vendorScan(),
     readSaved: async paths => new Map(paths.map(path => [path, saved.has(path) ? saved.get(path).toString() : null])),
+    writeDurableBatch(items, options) { return batchThrough(this, items, options); },
     writeDurable: async (path, content, { expectedSha256 } = {}) => {
       assert.equal(expectedSha256 || null, files.has(path) ? hash(files.get(path)) : null);
       writes.push(path); files.set(path, Buffer.from(content)); touch(path);
@@ -875,6 +882,7 @@ function soloProviderClient(files) {
     files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
     read: async path => ({ content: files.get(path).toString(), sha256: hash(files.get(path)) }),
     readRemoteFiles: async paths => new Map(paths.map(path => [path, { content: files.get(path).toString(), sha256: hash(files.get(path)) }])),
+    writeDurableBatch(items, options) { return batchThrough(this, items, options); },
     writeDurable: async (path, content) => { files.set(path, Buffer.from(content)); return { changed: true }; },
     saveVersion: async (_title, paths) => { saves.push(paths); return { versionNumber: 4, gitSha: 'b'.repeat(40) }; },
     inventoryVendor: async () => {
@@ -917,4 +925,112 @@ test('team add keeps a provider the app renders outside src/main.tsx', async t =
   const main = team.git(team.clone, 'show', `${BRANCH}:src/main.tsx`);
   assert.doesNotMatch(main, /AuiIdentityProvider/);
   assert.match(main, /tokens\/index.scss/);
+});
+
+const VENDOR_DIR = 'src/vendor/atomic-aui';
+const manySources = (count, text = 'one') => Object.fromEntries(Array.from({ length: count }, (_, i) =>
+  [`src/c${String(i).padStart(2, '0')}.ts`, `export const c${i} = '${text}'\n`]));
+
+test('a solo add writes its vendor files in batches of 25, then package.json alone, and VENDOR.json alone and last', async () => {
+  const payload = soloPayload('7.0.0', manySources(60));
+  const make = soloMake(plainApp());
+  await installSoloRelease(make.client, payload, { mode: 'add' });
+  const batched = make.client.batchLog;
+  const vendorOrder = [...payload.files.keys()].filter(path => path !== 'VENDOR.json').map(path => `${VENDOR_DIR}/${path}`);
+  assert.deepEqual(batched.slice(0, 3).map(paths => paths.length), [25, 25, 10]);
+  assert.deepEqual(batched.slice(0, 3).flat(), vendorOrder);
+  // The app files in their own batch; package.json (a dependency file) and VENDOR.json never inside one.
+  assert.deepEqual(batched.slice(3), [['src/main.tsx']]);
+  assert.equal(batched.flat().includes('package.json'), false);
+  assert.equal(batched.flat().includes(`${VENDOR_DIR}/VENDOR.json`), false);
+  // The ordered write list is the one-file-at-a-time order: vendor files, app files, VENDOR.json last.
+  assert.deepEqual(make.writes.slice(0, 60), vendorOrder);
+  assert.deepEqual(make.writes.slice(60), ['src/main.tsx', 'package.json', `${VENDOR_DIR}/VENDOR.json`]);
+  assert.equal(make.saves.length, 1);
+});
+
+test('a solo upgrade batches changed, added and removed vendor files together, deletes after the writes, and keeps VENDOR.json last', async () => {
+  const older = soloPayload('7.0.0', manySources(40, 'one'));
+  const next = { ...manySources(40, 'one'), ...Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`src/c${String(i).padStart(2, '0')}.ts`, `export const c${i} = 'two'\n`])),
+    'src/added.ts': 'export const added = 1\n' };
+  for (let i = 30; i < 40; i++) delete next[`src/c${i}.ts`];
+  const newer = soloPayload('7.0.1', next);
+  const installed = soloMake(plainApp());
+  await installSoloRelease(installed.client, older, { mode: 'add' });
+  const make = soloMake(new Map(installed.files));
+  const result = await installSoloRelease(make.client, newer, { mode: 'upgrade' });
+  assert.deepEqual([result.report.changed.length, result.report.added.length, result.report.removed.length], [12, 1, 10]);
+  const wrote = [...newer.files.keys()].filter(path => path !== 'VENDOR.json' && older.files.get(path)?.toString() !== newer.files.get(path).toString())
+    .map(path => `${VENDOR_DIR}/${path}`);
+  const removed = result.report.removed.map(path => `${VENDOR_DIR}/${path}`);
+  assert.deepEqual(make.client.batchLog.flat(), [...wrote, ...removed]);
+  assert.deepEqual(make.client.batchLog.map(paths => paths.length), [23]);
+  assert.deepEqual(make.writes, [...wrote, ...removed, `${VENDOR_DIR}/VENDOR.json`]);
+  assert.deepEqual([...make.saves[0]].sort(), [...wrote, ...removed, `${VENDOR_DIR}/VENDOR.json`].sort());
+  assert.equal(make.client.batchLog.flat().includes(`${VENDOR_DIR}/VENDOR.json`), false);
+});
+
+test('a solo upgrade whose batch stops reports the confirmed prefix, writes nothing after it, and never reaches VENDOR.json', async () => {
+  const older = soloPayload('7.0.0', manySources(30, 'one'));
+  const newer = soloPayload('7.0.1', manySources(30, 'two'));
+  const installed = soloMake(plainApp());
+  await installSoloRelease(installed.client, older, { mode: 'add' });
+  const make = soloMake(new Map(installed.files));
+  const write = make.client.writeDurable;
+  make.client.writeDurable = async (path, ...rest) => {
+    if (path === `${VENDOR_DIR}/src/c04.ts`) throw new Error('Make operation timed out.');
+    return write(path, ...rest);
+  };
+  const error = await installSoloRelease(make.client, newer, { mode: 'upgrade' }).catch(cause => cause);
+  assert.match(error.message, /timed out/);
+  assert.deepEqual(error.completedWrites.map(item => item.path), Array.from({ length: 4 }, (_, i) => `${VENDOR_DIR}/src/c0${i}.ts`));
+  assert.equal(make.writes.includes(`${VENDOR_DIR}/src/c05.ts`), false);
+  assert.equal(make.writes.includes(`${VENDOR_DIR}/VENDOR.json`), false);
+  assert.equal(make.saves.length, 0);
+});
+
+test('local edits to the vendor refuse a solo upgrade before the first batch', async () => {
+  const older = soloPayload('7.0.0', manySources(30, 'one'));
+  const newer = soloPayload('7.0.1', manySources(30, 'two'));
+  const installed = soloMake(plainApp());
+  await installSoloRelease(installed.client, older, { mode: 'add' });
+  const files = new Map(installed.files);
+  files.set(`${VENDOR_DIR}/src/c07.ts`, Buffer.from('edited by hand\n'));
+  const make = soloMake(files, [], installed.files);
+  await assert.rejects(installSoloRelease(make.client, newer, { mode: 'upgrade' }), /Local AtomicAUI edits refuse upgrade: changed src\/c07\.ts/);
+  assert.deepEqual([make.writes, make.client.batchLog ?? []], [[], []]);
+});
+
+test('a release writes its files in batches of at most 25 in output order, with every sha256 precondition on its own file', async () => {
+  // Incompressible text and small archive parts make one release span far more than 25 files.
+  const bytes = new Map(Array.from({ length: 80 }, (_, i) => [`src/c${String(i).padStart(2, '0')}.ts`,
+    Buffer.from(`export const c${i} = '${createHash('sha512').update(String(i)).digest('hex')}'\n`)]));
+  const vendor = Buffer.from(JSON.stringify({ schema: 1, name: 'atomic-aui', files: [...bytes].map(([path, value]) => ({ path, bytes: value.length, sha256: hash(value) })) }));
+  const contents = new Map([...bytes, ['VENDOR.json', vendor]]);
+  const inventory = new Map([...contents].map(([path, value]) => [path, { path, bytes: value.length, sha256: hash(value) }]));
+  const files = new Map([['package.json', KIT_PACKAGE]]);
+  const state = { mode: 'git', hasBaseline: true, savedVersion: 'a'.repeat(40), pendingPaths: [], isLoading: false, error: false, pendingCount: 0 };
+  const written = [], remoteBatches = [];
+  const client = {
+    fileKey: 'atomicaui-release-batches', projectMarker: async () => null,
+    _driftState: async () => ({ state }),
+    files: async () => [...files.keys()].map(path => ({ kind: 'file', path })),
+    ...remoteReader(files, remoteBatches),
+    inventoryVendor: async () => ({ inventory, contents, state }),
+    writeDurableBatch(items, options) { return batchThrough(this, items, options); },
+    writeDurable: async (path, content, { expectedSha256, releaseAsset } = {}) => {
+      assert.equal(expectedSha256 || null, files.has(path) ? hash(files.get(path)) : null);
+      assert.equal(releaseAsset, true);
+      written.push(path); files.set(path, Buffer.from(content)); return { changed: true };
+    },
+    saveVersion: async () => ({ versionNumber: 1, gitSha: 'a'.repeat(40) }),
+    verifyFiles: async entries => ({ verification: 'remote-content-matched', files: entries }),
+  };
+  const result = await releaseAtomicaui(client, { requestedVersion: '7.0.0', partBase64Bytes: 256 });
+  assert.ok(result.releasePaths > 50, `${result.releasePaths} release files`);
+  assert.equal(result.releasePaths, written.length);
+  assert.ok(client.batchLog.length >= 3);
+  assert.ok(client.batchLog.every(paths => paths.length <= 25));
+  assert.deepEqual(client.batchLog.slice(0, -1).map(paths => paths.length), client.batchLog.slice(0, -1).map(() => 25));
+  assert.deepEqual(client.batchLog.flat(), written, 'the output order is kept');
 });

@@ -180,6 +180,23 @@ client VFS and the session sandbox. Both equal to the target confirm the write
 held (`readBack`), and nothing is written again. A write the page refused, or
 one whose last check saw a mounted editor with different bytes or a new file
 missing from the tree, is not read back.
+Deploys, solo `make atomicaui add`/`upgrade`, `make sync --apply` and
+`make atomicaui release` write their files in batches of at most 25 files (and
+8 MiB) instead of one durable operation per file. A batch scans the file tree
+once before and once after, reads its files' current content concurrently,
+writes them one at a time in the given order, reads every file back from the
+client VFS and the sandbox, and settles Make's change tracker once; about 1 s per
+file instead of 5-9 s. Each file keeps its own `--expected-sha256` check and its
+own byte-equality read-back, the tree after the batch must differ from the tree
+before it only by the written and removed paths (and their folders), and
+`package.json`, lockfiles and `VENDOR.json` are never inside a batch: they stay
+single writes. A kit install or upgrade and `make sync` write `VENDOR.json` last,
+after the files it vouches for are confirmed; a deploy writes it alone at its
+plan position, as before. A failure after a batch's first write, a
+cleanup failure after a complete batch included, reports `completedWrites` (read
+back equal) and `uncertainWrites` (may have landed); nothing is retried or
+continued inside the batch. `make write` and `make delete` still write one file
+per call.
 A new file must sit below an existing top-level folder: the write proves
 absence by listing an existing ancestor folder, never the project root (it starts at
 the nearest folder the file tree shows, so a new folder costs no 5 s timeouts), so a
@@ -466,7 +483,26 @@ figma-cli make deploy status (--receipt RECEIPT | --file KEY) [--json]
 ```
 
 During apply and resume, deploy prints a short `deploy: n/total path (seconds)` line
-on stderr after each completed write, plus plan, save and verification stages.
+on stderr after each completed write (a batch of up to 25 files
+prints its lines when the batch completes), plus plan, save and verification
+stages. Consecutive files are written as one batched operation in
+plan order; `package.json`, lockfiles, any `VENDOR.json`, unwired entry
+placeholders and every `--override-make` write keep one operation per file at
+their plan position. The receipt marks every file
+of a batch `uncertain` before it starts and confirms them after it. If a batch's
+writes or the read-back after them fail, one fresh read-only operation reads every
+file the batch wrote from the client VFS and the sandbox and settles Make's change
+tracker (as for a single uncertain write): when every one holds main's content the
+deploy counts them written and goes on, writing any file the batch never reached
+in a new batch. That holds whether the failed operation had already read the
+files back itself (Make reported a changed file tree, say) or could not (a
+deadline timeout confirms nothing inside the failed operation). As for a single
+write, nothing is confirmed when the read-back that timed out last saw Make's
+editor differ from a written file or the file tree not show the change. Then,
+and when Make refuses a write, the tracker or the cleanup fails after the writes,
+or a file is not at main's content, the deploy stops (`DEPLOY_WRITE_FAILED`) with
+the confirmed files confirmed and the rest uncertain, and `--resume` continues
+from what Make holds.
 `--detach` starts the same guarded apply in a background process, then returns its
 run ID, PID and private log path after the child acknowledges startup. The child
 writes progress and its final JSON to that log. Startup failure is recorded and
@@ -506,8 +542,9 @@ A live lease does not prove that Make has saved a version; use the receipt and
 fresh reload verification for that proof. Older receipts have no runner record.
 
 A durable write or delete never selects a file in Make's editor, so it does not
-collapse the Files tree; the per-file VFS, sandbox and tree checks run before and
-after each write as before, and the editor buffer is compared only when that
+collapse the Files tree; each file's VFS and sandbox checks and the tree check
+still run before and after a write (the tree once per batch for batched files,
+above), and the editor buffer is compared only when that
 exact file is already the mounted editor. On a scratch Make file with 11
 folders this took an edit from 9.3 s to 1.7 s and a new file from 5.3 s to 2.7 s.
 

@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { digest, sourcePath, vendorManifest, verifyGeneratedManifest } from './make-drift.js';
+import { batchBarred, writeInOrder } from './make-batch.js';
 import { requireGitMode } from './make-durable.js';
 
 const HASH = /^[a-f0-9]{64}$/;
@@ -370,13 +371,30 @@ export async function applySync(client, { plan, vendorBytes, packageData, candid
   const vendorContent = plan.vendorBefore.sha256 !== plan.vendorAfter.sha256 ? exactText(vendorBytes) : null;
   const writes = [];
   try {
-    for (const { action, content } of prepared) {
-      const result = action.operation === 'delete'
-        ? await client.deleteDurable(action.path, { expectedSha256: action.before.sha256, backupDir, vendorTreeFallback: true })
-        : await client.writeDurable(action.path, content, { expectedSha256: action.before?.sha256, backupDir,
-          vendorTreeFallback: true });
-      writes.push({ path: action.path, before: action.before, after: action.after, backupPath: result.backupPath });
-    }
+    // Planned files go in the order given, consecutive ones through batched
+    // operations of at most 25; VENDOR.json is written alone, after them.
+    const record = (action, result) => writes.push({ path: action.path, before: action.before, after: action.after, backupPath: result.backupPath });
+    const byPath = new Map(prepared.map(item => [item.action.path, item.action]));
+    await writeInOrder(prepared, {
+      batchable: ({ action }) => !batchBarred(action.path),
+      single: async ({ action, content }) => {
+        record(action, action.operation === 'delete'
+          ? await client.deleteDurable(action.path, { expectedSha256: action.before.sha256, backupDir, vendorTreeFallback: true })
+          : await client.writeDurable(action.path, content, { expectedSha256: action.before?.sha256, backupDir, vendorTreeFallback: true }));
+      },
+      batch: async chunk => {
+        let results;
+        try {
+          results = await client.writeDurableBatch(chunk.map(({ action, content }) => (action.operation === 'delete'
+            ? { path: action.path, delete: true, expectedSha256: action.before.sha256 }
+            : { path: action.path, content, expectedSha256: action.before?.sha256 })), { backupDir });
+        } catch (error) {
+          for (const done of error.completedWrites ?? []) record(byPath.get(done.path), done);
+          throw error;
+        }
+        for (const result of results) record(byPath.get(result.path), result);
+      },
+    });
     if (vendorContent !== null) {
       const result = await client.writeDurable(`${VENDOR_ROOT}/VENDOR.json`, vendorContent,
         { expectedSha256: plan.vendorBefore.sha256, backupDir, vendorTreeFallback: true });

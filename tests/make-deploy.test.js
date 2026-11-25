@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gitBlobSha, gitTreeSha } from '../src/git-tree.js';
+import { batchBarred } from '../src/make-batch.js';
 import { MakeClient } from '../src/make-client.js';
 import { DEPLOY_IGNORE, classify, defaultReadBlob, deployDir, deployAbort, deployApply, deployPlan, deployResume, deployVerify, driftProblems, entryPlaceholder, ignoreMatcher, ignorePatterns, planDigest, readReceipt } from '../src/make-deploy.js';
 import { markerContent } from '../src/make-mode.js';
@@ -249,6 +250,82 @@ class FakeMake {
     this.working.delete(path);
     this.clientWrote.add(path);
     return { path, backupPath };
+  }
+  // Mirrors MakeClient.writeDurableBatch: every precondition and backup before the first write, then the
+  // files strictly in order. A failure after the first write carries what was written and the file in flight;
+  // nothing is written again. As the real client's errors do, a failure of the write loop or of the read-back
+  // after it carries batchTracker; a page refusal (hooks.refuseAt) and a cleanup failure do not.
+  async writeDurableBatch(items, { backupDir, baseFolders } = {}) {
+    for (const item of items) {
+      if (batchBarred(item.path)) throw new Error(`Make batch never holds ${item.path}: dependency files and VENDOR.json are written one at a time.`);
+    }
+    this.calls.push(['batch', items.map(item => item.path)]);
+    this.landUnder('write');
+    for (const item of items) {
+      const current = this.working.get(item.path);
+      if (item.delete) {
+        if (!current || sha256(current) !== item.expectedSha256) throw new Error(`Make source is missing or changed; delete refused: ${item.path}.`);
+        continue;
+      }
+      if ((current != null) !== (item.expectedSha256 != null)) throw new Error(`Expected SHA-256 is required for an existing file and forbidden for a new file: ${item.path}.`);
+      if (current && sha256(current) !== item.expectedSha256) throw new Error(`Make source changed; SHA-256 does not match: ${item.path}.`);
+      if (!current) await this.requireAncestor(item.path, baseFolders);
+    }
+    const backups = new Map(items.filter(item => this.working.has(item.path)
+      && (item.delete || !this.working.get(item.path).equals(Buffer.from(item.content)))).map(item => [item.path, this.backup(item.path, this.working.get(item.path), backupDir)]));
+    const results = [];
+    for (const item of items) {
+      const current = this.working.get(item.path);
+      if (!item.delete && current && current.equals(Buffer.from(item.content))) { results.push({ path: item.path, changed: false, backupPath: null }); continue; }
+      const written = () => results.filter(result => result.changed).map(result => ({ ...result }));
+      if (this.hooks.refuseAt === item.path) {
+        throw Object.assign(new Error(`Make refused the batch write at ${item.path}: Make source changed at ${item.path}. ${written().length} of ${items.length} file(s) were written before it.`),
+          { batchWritesStarted: true, completedWrites: written(), uncertainWrites: [] });
+      }
+      this.calls.push([item.delete ? 'delete' : 'write', item.path]);
+      try {
+        await this.hooks.beforeWrite?.(item.path);
+        if (item.delete) this.working.delete(item.path); else this.working.set(item.path, Buffer.from(item.content));
+        this.clientWrote.add(item.path);
+        if (!item.delete) await this.hooks.afterWrite?.(item.path);
+      } catch (cause) {
+        const error = new Error(`Make durable batch write outcome is uncertain: ${cause.message}. Inspect before retrying.`);
+        error.batchWritesStarted = true;
+        error.completedWrites = written();
+        error.uncertainWrites = [{ path: item.path, backupPath: backups.get(item.path) ?? null }];
+        error.batchTracker = { expectedPaths: [...written().map(result => result.path), item.path] };
+        throw error;
+      }
+      results.push({ path: item.path, changed: true, backupPath: backups.get(item.path) ?? null });
+    }
+    // The read-back after the writes fails (hooks.afterBatch returns its cause). With time left the real client
+    // reads every written file back itself: all in completedWrites, none uncertain. A read-back that timed out
+    // (the cause carries the last views as `observed`) confirms nothing inside the operation.
+    const cause = this.hooks.afterBatch?.(results);
+    if (cause) {
+      const written = results.filter(result => result.changed).map(result => ({ ...result }));
+      throw Object.assign(new Error(`Make durable batch write outcome is uncertain: ${cause.message}. Inspect before retrying.`),
+        { batchWritesStarted: true, completedWrites: cause.observed ? [] : written, uncertainWrites: cause.observed ? written : [],
+          batchTracker: { expectedPaths: written.map(result => result.path) }, ...(cause.observed ? { observed: cause.observed } : {}) });
+    }
+    if (this.hooks.cleanupFailure) {
+      // _operation replaces a complete batch's result with this error; the client attaches what was written.
+      throw Object.assign(new Error('Make operation completed. Temporary Make focus emulation could not be disabled: connection lost'),
+        { batchWritesStarted: true, completedWrites: results.filter(result => result.changed).map(result => ({ ...result })), uncertainWrites: [] });
+    }
+    return results;
+  }
+  // Mirrors MakeClient.confirmDurableBatch: one read-only look at each file's working copy against its target;
+  // the tracker it is given is the one it settles.
+  async confirmDurableBatch(items, { tracker } = {}) {
+    this.calls.push(['confirm', items.map(item => item.path)]);
+    (this.confirmTrackers ??= []).push(tracker);
+    if (this.hooks.readBack === 'fails') throw new Error('Make operation timed out.');
+    return items.map(item => {
+      const current = this.working.get(item.path);
+      const confirmed = item.delete ? !current : !!current && current.equals(Buffer.from(item.content));
+      return { path: item.path, vfs: confirmed ? 'matched' : 'different', sandbox: confirmed ? 'matched' : 'different', confirmed };
+    });
   }
   commitVersion() {
     const saved = new Map(this.working);
@@ -512,8 +589,10 @@ describe('make deploy unopened deep-file read-back', () => {
     landChange(s, { 'src/Board.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
     const plan = await deployPlan(s.make, s.opts, s.deps);
     s.make.hooks.afterWrite = path => { if (path === 'src/Board.tsx') throw new Error('Make operation timed out.'); };
+    s.make.hooks.readBack = 'fails'; // Make stays unreachable, so the batch's follow-up read cannot confirm the file either
     const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
     s.make.hooks.afterWrite = null;
+    s.make.hooks.readBack = null;
     const resumed = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps);
     assert.equal(resumed.stage, 'deployed');
     const receipt = readReceipt(error.receiptPath);
@@ -533,8 +612,10 @@ describe('make deploy unopened deep-file read-back', () => {
       landChange(s, { 'src/Board.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
       const plan = await deployPlan(s.make, s.opts, s.deps);
       s.make.hooks.afterWrite = path => { if (path === 'src/Board.tsx') throw new Error('Make operation timed out.'); };
+      s.make.hooks.readBack = 'fails'; // Make stays unreachable, so the batch's follow-up read cannot confirm the file either
       const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
       s.make.hooks.afterWrite = null;
+      s.make.hooks.readBack = null;
       const receipt = readReceipt(error.receiptPath);
       const paths = extraUncertain ? ['src/Board.tsx', 'src/Card.tsx'] : ['src/Board.tsx'];
       receipt.completedWrites = paths.map(path => ({ path, op: 'update', backupPath: null, uncertain: true }));
@@ -585,18 +666,112 @@ describe('make deploy unopened deep-file read-back', () => {
       return { s, plan };
     }
 
-    it('counts the file as written when Make now holds main\'s exact content, and continues to the next file', async t => {
+    it('counts the file as written when Make now holds main\'s exact content, and writes the file the batch never reached', async t => {
       const { s, plan } = await planned(t);
       // Make's reply says the tree changed, but the bytes landed (the RWS stop on tokens/generated files).
-      s.make.hooks.afterWrite = path => { if (path === 'src/Board.tsx') throw uncertain(); };
+      let failed = false;
+      s.make.hooks.afterWrite = path => { if (path === 'src/Board.tsx' && !failed) { failed = true; throw uncertain(); } };
       const result = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
       assert.equal(result.stage, 'deployed');
+      // One fresh read-only confirmation, then the unreached file in a batch of its own; nothing is written twice.
       assert.deepEqual(s.make.calls.filter(call => call[0] === 'write').map(call => call[1]), ['src/Board.tsx', 'src/Card.tsx']);
+      assert.deepEqual(s.make.calls.filter(call => call[0] === 'confirm'), [['confirm', ['src/Board.tsx']]]);
       assert.equal(s.make.saved.get('src/Card.tsx').toString(), 'export const Card = 1;\n');
       const receipt = readReceipt(result.receiptPath);
       const entry = receipt.completedWrites.find(write => write.path === 'src/Board.tsx');
       assert.equal(entry.afterUncertain, true);
       assert.notEqual(entry.uncertain, true);
+      assert.equal(receipt.completedWrites.some(write => write.uncertain), false);
+    });
+
+    it('goes on when the read-back after the writes fails with time left and every written file holds main\'s content: one confirmation settles the tracker', async t => {
+      const { s, plan } = await planned(t);
+      // Make's tree scan after the batch says the tree changed, but every file landed and the client read each one back.
+      let failed = false;
+      s.make.hooks.afterBatch = () => (failed ? null : (failed = true, new Error('Make file tree changed before the requested action. Run the command again.')));
+      const result = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+      assert.equal(result.stage, 'deployed');
+      assert.deepEqual(s.make.calls.filter(call => call[0] === 'write').map(call => call[1]), ['src/Board.tsx', 'src/Card.tsx'], 'nothing is written twice');
+      assert.deepEqual(s.make.calls.filter(call => call[0] === 'confirm'), [['confirm', ['src/Board.tsx', 'src/Card.tsx']]]);
+      assert.deepEqual(s.make.confirmTrackers, [{ expectedPaths: ['src/Board.tsx', 'src/Card.tsx'] }], 'the confirmation settles the failed batch\'s tracker');
+      assert.equal(s.make.saved.get('src/Board.tsx').toString(), 'updated\n');
+      assert.equal(s.make.saved.get('src/Card.tsx').toString(), 'export const Card = 1;\n');
+      const receipt = readReceipt(result.receiptPath);
+      assert.deepEqual(receipt.completedWrites.map(write => [write.path, write.uncertain === true]), [['src/Board.tsx', false], ['src/Card.tsx', false]]);
+    });
+
+    it('stops when the files read back inside the operation no longer hold main\'s content at the confirmation', async t => {
+      const { s, plan } = await planned(t);
+      s.make.hooks.afterBatch = () => {
+        s.make.working.set('src/Card.tsx', Buffer.from('a generated rewrite\n'));
+        return new Error('Make file tree changed before the requested action. Run the command again.');
+      };
+      const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+      assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+      assert.match(error.message, /Read-back after it: src\/Card\.tsx client VFS different/);
+      assert.equal(s.make.calls.some(call => call[0] === 'save'), false);
+    });
+
+    for (const [name, view] of [
+      ['Make\'s editor differ from a written file', { path: 'src/Board.tsx', ok: false, vfs: 'matched', sandbox: 'matched', tree: 'present', editor: 'different' }],
+      ['the file tree not show a new file', { path: 'src/Card.tsx', ok: false, vfs: 'matched', sandbox: 'matched', tree: 'absent' }],
+    ]) {
+      it(`does not confirm a batch whose timed-out read-back last saw ${name}: it stops with the files uncertain, and a resume completes`, async t => {
+        const { s, plan } = await planned(t);
+        const observed = [{ path: 'src/Board.tsx', ok: true, vfs: 'matched', sandbox: 'matched', tree: 'present' },
+          { path: 'src/Card.tsx', ok: true, vfs: 'matched', sandbox: 'matched', tree: 'present' }].map(seen => (seen.path === view.path ? view : seen));
+        s.make.hooks.afterBatch = () => Object.assign(new Error(`Make read-back for ${view.path} timed out before every view agreed`), { observed });
+        const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+        assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+        // Both files hold main's bytes in the working copy, so a read-back would have confirmed them: it must not run.
+        assert.equal(s.make.working.get('src/Card.tsx').toString(), 'export const Card = 1;\n');
+        assert.deepEqual(s.make.calls.filter(call => call[0] === 'confirm'), []);
+        assert.equal(s.make.calls.some(call => call[0] === 'save'), false);
+        const stopped = readReceipt(error.receiptPath);
+        assert.deepEqual(stopped.completedWrites.map(write => [write.path, write.uncertain === true]), [['src/Board.tsx', true], ['src/Card.tsx', true]]);
+        s.make.hooks.afterBatch = null;
+        const resumed = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps);
+        assert.equal(resumed.stage, 'deployed');
+      });
+    }
+
+    it('confirms a batch whose timed-out read-back last saw only a lagging sandbox copy, as for one file', async t => {
+      const { s, plan } = await planned(t);
+      let failed = false;
+      const observed = [{ path: 'src/Board.tsx', ok: false, vfs: 'matched', sandbox: 'different', tree: 'present' },
+        { path: 'src/Card.tsx', ok: true, vfs: 'matched', sandbox: 'matched', tree: 'present' }];
+      s.make.hooks.afterBatch = () => (failed ? null : (failed = true, Object.assign(new Error('Make read-back for src/Board.tsx timed out before every view agreed'), { observed })));
+      const result = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+      assert.equal(result.stage, 'deployed');
+      assert.deepEqual(s.make.calls.filter(call => call[0] === 'confirm'), [['confirm', ['src/Board.tsx', 'src/Card.tsx']]]);
+      const receipt = readReceipt(result.receiptPath);
+      assert.deepEqual(receipt.completedWrites.map(write => [write.path, write.afterUncertain === true, write.uncertain === true]),
+        [['src/Board.tsx', true, false], ['src/Card.tsx', true, false]]);
+    });
+
+    it('stops at a page refusal without a confirmation: the files written before it stay confirmed, the refused file is not written', async t => {
+      const { s, plan } = await planned(t);
+      s.make.hooks.refuseAt = 'src/Card.tsx';
+      const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+      assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+      assert.match(error.message, /Make refused the batch write at src\/Card\.tsx/);
+      assert.deepEqual(s.make.calls.filter(call => call[0] === 'confirm'), []);
+      assert.equal(s.make.working.has('src/Card.tsx'), false);
+      assert.deepEqual(readReceipt(error.receiptPath).completedWrites.map(write => [write.path, write.uncertain === true]), [['src/Board.tsx', false]]);
+    });
+
+    it('carries a batch that fully landed through a cleanup failure: every file confirmed in the receipt, none lost, and the deploy stops', async t => {
+      const { s, plan } = await planned(t);
+      s.make.hooks.cleanupFailure = true;
+      const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+      assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+      assert.match(error.message, /focus emulation could not be disabled/);
+      assert.deepEqual(s.make.calls.filter(call => call[0] === 'confirm'), []);
+      const stopped = readReceipt(error.receiptPath);
+      assert.deepEqual(stopped.completedWrites.map(write => [write.path, write.uncertain === true]), [['src/Board.tsx', false], ['src/Card.tsx', false]]);
+      s.make.hooks.cleanupFailure = false;
+      const resumed = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps);
+      assert.equal(resumed.stage, 'deployed');
     });
 
     it('stops as before when Make holds other content than the plan', async t => {
@@ -606,7 +781,8 @@ describe('make deploy unopened deep-file read-back', () => {
       };
       const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
       assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
-      assert.match(error.message, /Make durable write outcome is uncertain/);
+      assert.match(error.message, /Make durable batch write outcome is uncertain/);
+      assert.match(error.message, /Read-back after it: src\/Board\.tsx client VFS different/);
       assert.match(error.message, /--resume/);
       assert.equal(s.make.calls.some(call => call[0] === 'write' && call[1] === 'src/Card.tsx'), false);
       const receipt = readReceipt(error.receiptPath);
@@ -614,15 +790,25 @@ describe('make deploy unopened deep-file read-back', () => {
       assert.equal(receipt.completedWrites.some(write => write.path === 'src/Board.tsx' && !write.uncertain), false);
     });
 
-    it('stops as before when the file cannot be read back', async t => {
+    it('stops as before when the file cannot be read back, leaves it uncertain, and a resume counts it by its content hash', async t => {
       const { s, plan } = await planned(t);
       s.make.hooks.afterWrite = path => { if (path === 'src/Board.tsx') throw uncertain(); };
       s.make.hooks.readBack = 'fails';
       const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
       assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
       assert.match(error.message, /read-back after it also failed/);
-      assert.equal(s.make.calls.some(call => call[0] === 'write' && call[1] === 'src/Card.tsx'), false);
-      assert.equal(readReceipt(error.receiptPath).outcome, 'uncertain');
+      // Nothing is written again inside a batch, and the file after the uncertain one was never attempted.
+      assert.deepEqual(s.make.calls.filter(call => call[0] === 'write').map(call => call[1]), ['src/Board.tsx']);
+      assert.equal(s.make.working.has('src/Card.tsx'), false);
+      const stopped = readReceipt(error.receiptPath);
+      assert.equal(stopped.outcome, 'uncertain');
+      assert.deepEqual(stopped.completedWrites.map(write => [write.path, write.uncertain === true]), [['src/Board.tsx', true]]);
+      s.make.hooks.afterWrite = null;
+      s.make.hooks.readBack = null;
+      const resumed = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps);
+      assert.equal(resumed.stage, 'deployed');
+      assert.equal(s.make.saved.get('src/Board.tsx').toString(), 'updated\n');
+      assert.equal(s.make.saved.get('src/Card.tsx').toString(), 'export const Card = 1;\n');
     });
   });
 
@@ -652,8 +838,10 @@ describe('make deploy unopened deep-file read-back', () => {
     landChange(s, { 'src/Board.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
     const plan = await deployPlan(s.make, s.opts, s.deps);
     s.make.hooks.afterWrite = path => { if (path === 'src/Board.tsx') throw new Error('Make operation timed out.'); };
+    s.make.hooks.readBack = 'fails'; // Make stays unreachable, so the batch's follow-up read cannot confirm the file either
     const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
     s.make.hooks.afterWrite = null;
+    s.make.hooks.readBack = null;
     s.make.hooks.settle = () => { throw Object.assign(new Error('Make version or unrelated pending files changed while settling the pending tracker.'),
       { code: 'MAKE_TRACKER_CHANGED' }); };
     const mark = s.make.calls.length;
@@ -674,10 +862,12 @@ describe('make deploy unopened deep-file read-back', () => {
     landChange(s, { 'src/Board.tsx': 'updated\n', 'src/Card.tsx': 'export const Card = 1;\n' });
     const plan = await deployPlan(s.make, s.opts, s.deps);
     s.make.hooks.afterWrite = path => { if (path === 'src/Board.tsx') throw new Error('Make operation timed out.'); };
+    s.make.hooks.readBack = 'fails'; // Make stays unreachable, so the batch's follow-up read cannot confirm the file either
     const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
     assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
     assert.equal(deployStatus({ receiptPath: error.receiptPath }).completedWrites, 0);
     s.make.hooks.afterWrite = null;
+    s.make.hooks.readBack = null;
     const lines = [];
     const resumed = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath },
       { ...s.deps, progress: line => lines.push(line) });
@@ -699,9 +889,11 @@ describe('make deploy unopened deep-file read-back', () => {
     s.make.pending = () => s.make.changed().filter(path => path === hidden ||
       (!path.split('/').some(part => part.startsWith('.')) && !['pnpm-lock.yaml', 'package-lock.json'].includes(path)));
     s.make.hooks.afterWrite = path => { if (path === hidden) throw new Error('Make operation timed out.'); };
+    s.make.hooks.readBack = 'fails'; // Make stays unreachable, so the batch's follow-up read cannot confirm the file either
     const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
     assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
     s.make.hooks.afterWrite = null;
+    s.make.hooks.readBack = null;
     assert.deepEqual(s.make.pending(), [hidden]);
     const checked = new MakeClient({ transport: { close() {} }, timeoutMs: 500 });
     checked._operation = fn => fn(Date.now() + 500);
@@ -1665,7 +1857,8 @@ describe('make deploy recovery', () => {
     const receipt = readReceipt(receiptPath);
     assert.equal(receipt.stage, 'writing');
     // src/App.tsx is an entry file: only its unwired placeholder is in Make, which is not a planned write.
-    assert.deepEqual(receipt.completedWrites.map(write => write.path), []);
+    // The batch [Card.tsx, old.ts] failed at its first write: Card.tsx is the one write left uncertain, nothing is confirmed.
+    assert.deepEqual(receipt.completedWrites.map(write => [write.path, write.uncertain === true]), [['src/Card.tsx', true]]);
     assert.deepEqual(receipt.unwired, ['src/App.tsx']);
     await refuses(deployPlan(s.make, s.opts, s.deps), 'DEPLOY_UNFINISHED', /--resume/);
     await refuses(deployVerify(s.make, { ...s.opts, receiptPath }, s.deps), 'DEPLOY_RECEIPT', /Nothing was saved/);
@@ -1850,11 +2043,13 @@ describe('make deploy recovery', () => {
         throw Object.assign(new Error('Make operation timed out.'), { backupPath: join(s.p.home, 'uncertain-board') });
       }
     };
+    s.make.hooks.readBack = 'fails';
     let receiptPath;
     await assert.rejects(deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps), error => {
       receiptPath = error.receiptPath;
       return error.code === 'DEPLOY_WRITE_FAILED';
     });
+    s.make.hooks.readBack = null;
     assert.equal(s.make.working.get('src/Board.tsx').toString(), 'board\n', 'the uncertain write landed');
     // The partial abort removes the board, then reports an error and stops.
     s.make.hooks.beforeWrite = path => {
@@ -2907,5 +3102,264 @@ describe('make deploy entry files last', () => {
         ['write src/App.tsx', 'write src/Card.tsx', 'write src/main.tsx', 'delete src/old.ts', 'save deploy']);
       savedEqualsMain(s);
     });
+  });
+});
+
+describe('make deploy batched writes', () => {
+  const NAMES = Array.from({ length: 6 }, (_, i) => `src/gen/f0${i}.ts`);
+  const OLD = Object.fromEntries(NAMES.map((path, i) => [path, `export const f${i} = "old";\n`]));
+  const NEW = Object.fromEntries(NAMES.map((path, i) => [path, `export const f${i} = "new";\n`]));
+  const batches = make => make.calls.filter(([kind]) => kind === 'batch').map(([, paths]) => paths);
+  const order = make => make.calls.filter(([kind]) => ['write', 'delete'].includes(kind)).map(([kind, path]) => `${kind} ${path}`);
+  const receiptFile = s => join(s.p.home, '.figma-cli', 'deploys', readdirReceipt(s.p.home));
+  const savedIs = (s, contents) => { for (const [path, content] of Object.entries(contents)) assert.equal(s.make.saved.get(path)?.toString(), content, path); assert.deepEqual(s.make.pending(), []); };
+
+  it('writes non-dependency files in batches of at most 25 in planned order, and each dependency file alone at its own position', async t => {
+    const s = setup(t);
+    const many = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`src/gen/g${String(i).padStart(2, '0')}.ts`, `export const g${i} = ${i};\n`]));
+    landChange(s, { ...many, 'src/old.ts': null, 'package.json': { ...PKG, dependencies: { react: '^19.0.0' } }, 'pnpm-lock.yaml': 'lockfileVersion: 9.0\nreact: 19\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.stage, 'deployed');
+    // 30 adds and the delete form one run, cut at 25; package.json and the lockfile follow, each alone.
+    assert.deepEqual(batches(s.make).map(paths => paths.length), [25, 6]);
+    assert.equal(batches(s.make).flat().some(path => ['package.json', 'pnpm-lock.yaml'].includes(path)), false);
+    assert.deepEqual(order(s.make), plan.files.map(file => `${file.op === 'delete' ? 'delete' : 'write'} ${file.path}`));
+    assert.deepEqual(order(s.make).slice(-2), ['write package.json', 'write pnpm-lock.yaml']);
+    assert.deepEqual(batches(s.make).flat(), plan.files.map(file => file.path).filter(path => !['package.json', 'pnpm-lock.yaml'].includes(path)));
+    assert.deepEqual([...s.make.saved.keys()].filter(path => path.startsWith('src/gen/')).length, 30);
+  });
+
+  it('writes a VENDOR.json alone at its plan position, between the batches of the files around it, and a resume does the same', async t => {
+    const VENDOR = 'src/vendor/atomic-aui/VENDOR.json';
+    const before = { 'src/vendor/atomic-aui/Button.tsx': 'export const Button = "old";\n', [VENDOR]: '{"commit":"old","files":{}}\n', 'src/vendor/atomic-aui/tokens.ts': 'export const tokens = "old";\n' };
+    const after = { 'src/vendor/atomic-aui/Button.tsx': 'export const Button = "new";\n', [VENDOR]: '{"commit":"new","files":{}}\n', 'src/vendor/atomic-aui/tokens.ts': 'export const tokens = "new";\n',
+      'src/vendor/atomic-aui/zoom.ts': 'export const zoom = 1;\n' };
+    const run = async (t2, interrupt) => {
+      const s = setup(t2, { files: { ...BASE, ...before } });
+      landChange(s, after);
+      const plan = await deployPlan(s.make, s.opts, s.deps);
+      const paths = plan.files.map(file => file.path);
+      const at = paths.indexOf(VENDOR);
+      assert.ok(at > 0 && at < paths.length - 1, 'the plan writes files before and after VENDOR.json');
+      let result;
+      if (interrupt) {
+        s.make.hooks.beforeWrite = path => { if (path === VENDOR) throw new Error('Make page connection closed.'); };
+        const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+        assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+        s.make.hooks.beforeWrite = null;
+        result = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps);
+      } else result = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+      assert.equal(result.stage, 'deployed');
+      assert.deepEqual(batches(s.make), [paths.slice(0, at), paths.slice(at + 1)], 'VENDOR.json is in no batch and cuts the run');
+      assert.deepEqual([...new Set(order(s.make))], paths.map(path => `write ${path}`), 'the files are written in plan order');
+      savedIs(s, after);
+    };
+    await run(t, false);
+    await t.test('after an interruption at VENDOR.json', t2 => run(t2, true));
+  });
+
+  it('records one confirmed write per file after a batch: no uncertain mark is left, and each modified file keeps its backup', async t => {
+    const s = setup(t, { files: { ...BASE, ...OLD } });
+    landChange(s, NEW);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    const receipt = readReceipt(applied.receiptPath);
+    assert.deepEqual(batches(s.make), [plan.files.map(file => file.path)]);
+    assert.deepEqual(receipt.completedWrites.map(write => write.path), plan.files.map(file => file.path));
+    assert.equal(receipt.completedWrites.some(write => write.uncertain || write.batch), false);
+    assert.ok(receipt.completedWrites.every(write => existsSync(write.backupPath)));
+    assert.equal(receipt.writeRun.completedWrites, NAMES.length);
+    assert.ok(receipt.files.every(file => existsSync(file.backupPath)));
+    savedIs(s, NEW);
+  });
+
+  it('marks every file of a batch uncertain before it starts', async t => {
+    const s = setup(t, { files: { ...BASE, ...OLD } });
+    landChange(s, NEW);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    let atStart;
+    const write = s.make.writeDurableBatch.bind(s.make);
+    s.make.writeDurableBatch = async (...args) => { atStart = readReceipt(receiptFile(s)).completedWrites; return write(...args); };
+    await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.deepEqual(atStart.map(item => [item.path, item.uncertain === true, item.backupPath]), plan.files.map(file => [file.path, true, null]));
+    assert.equal(new Set(atStart.map(item => item.batch)).size, 1);
+  });
+
+  it('a hard stop after the third write leaves the whole batch uncertain; a resume counts what landed by hash and completes to main\'s bytes', async t => {
+    const s = setup(t, { files: { ...BASE, ...OLD } });
+    landChange(s, NEW);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    let seen = 0;
+    let snapshot;
+    s.make.hooks.readBack = 'fails'; // the process is gone: nothing reads the batch back
+    s.make.hooks.afterWrite = () => {
+      if (++seen === 3) { snapshot = readFileSync(receiptFile(s), 'utf8'); throw new Error('process killed'); }
+    };
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+    assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+    s.make.hooks.afterWrite = null;
+    s.make.hooks.readBack = null;
+    // As after kill -9: the receipt is what it was when the third write finished.
+    writeFileSync(error.receiptPath, snapshot);
+    const killed = readReceipt(error.receiptPath);
+    assert.deepEqual(killed.completedWrites.map(item => [item.path, item.uncertain === true]), NAMES.map(path => [path, true]));
+    assert.equal(new Set(killed.completedWrites.map(item => item.batch)).size, 1);
+    assert.equal(NAMES.filter(path => s.make.working.get(path).toString() === NEW[path]).length, 3, 'three writes landed');
+    assert.deepEqual(deployStatus({ receiptPath: error.receiptPath }).completedWrites, 0);
+    const mark = s.make.calls.length;
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps);
+    assert.equal(resumed.stage, 'deployed');
+    // Only the three files that had not landed are written again.
+    assert.deepEqual(s.make.calls.slice(mark).filter(([kind]) => kind === 'write').map(([, path]) => path), NAMES.slice(3));
+    const landed = s.make.settleOptions.find(options => options.landedContent?.size).landedContent;
+    assert.deepEqual([...landed.keys()].sort(), NAMES.slice(0, 3));
+    savedIs(s, NEW);
+    const final = readReceipt(error.receiptPath);
+    assert.equal(final.outcome, 'ok');
+  });
+
+  it('prints a progress line for every file of a confirmed batch, then for the files it never reached', async t => {
+    const s = setup(t, { files: { ...BASE, ...OLD } });
+    landChange(s, NEW);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    // The third write's reply is lost but its bytes landed: the batch is confirmed and the last three files follow in a new batch.
+    let failed = false;
+    s.make.hooks.afterWrite = path => { if (path === NAMES[2] && !failed) { failed = true; throw new Error('Make page connection closed.'); } };
+    const lines = [];
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, { ...s.deps, progress: line => lines.push(line) });
+    assert.equal(applied.stage, 'deployed');
+    assert.deepEqual(batches(s.make), [NAMES, NAMES.slice(3)]);
+    assert.deepEqual(lines.filter(line => /^\d+\/\d+ /.test(line)).map(line => line.replace(/ \(\d+s\)$/, '')),
+      plan.files.map((file, index) => `${index + 1}/${plan.files.length} ${file.path}`));
+    savedIs(s, NEW);
+  });
+
+  // A receipt as two interruptions leave it: `earlier` are the uncertain entries of the first one, then the
+  // second batch marked all six files again and was killed after its third write.
+  async function interruptedTwice(t, earlier) {
+    const s = setup(t, { files: { ...BASE, ...OLD } });
+    landChange(s, NEW);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    let seen = 0;
+    s.make.hooks.readBack = 'fails';
+    s.make.hooks.afterWrite = () => { if (++seen === 3) throw new Error('process killed'); };
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+    s.make.hooks.afterWrite = null;
+    s.make.hooks.readBack = null;
+    const receipt = readReceipt(error.receiptPath);
+    const mark = (file, batch) => ({ path: file.path, op: file.op, backupPath: null, uncertain: true, ...(batch ? { batch } : {}) });
+    receipt.completedWrites = [...earlier(receipt.plan.files, mark), ...receipt.plan.files.map(file => mark(file, '2026-11-26T10:00:00.000Z'))];
+    writeFileSync(error.receiptPath, JSON.stringify(receipt));
+    return { s, receiptPath: error.receiptPath };
+  }
+  const landedPaths = s => [...((s.make.settleOptions ?? []).find(options => options.landedContent?.size)?.landedContent.keys() ?? [])].sort();
+
+  it('a second interrupted batch over the files of the first still counts what landed: each path is judged by its latest uncertain entry', async t => {
+    const { s, receiptPath } = await interruptedTwice(t, (files, mark) => files.map(file => mark(file, '2026-11-26T09:00:00.000Z')));
+    assert.equal(NAMES.filter(path => s.make.working.get(path).toString() === NEW[path]).length, 3, 'three writes landed');
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath }, s.deps);
+    assert.deepEqual(landedPaths(s), NAMES.slice(0, 3));
+    assert.equal(resumed.stage, 'deployed');
+    savedIs(s, NEW);
+  });
+
+  it('an older uncertain entry without a batch stamp does not hide the interrupted batch that held its file again', async t => {
+    const { s, receiptPath } = await interruptedTwice(t, (files, mark) => [mark(files[0])]);
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath }, s.deps);
+    assert.deepEqual(landedPaths(s), NAMES.slice(0, 3));
+    assert.equal(resumed.stage, 'deployed');
+    savedIs(s, NEW);
+  });
+
+  it('an uncertain write outside the interrupted batch still disables the rule', async t => {
+    const { s, receiptPath } = await interruptedTwice(t, () => [{ path: 'src/App.tsx', op: 'modify', backupPath: null, uncertain: true }]);
+    await deployResume(s.make, { ...s.opts, receiptPath }, s.deps).catch(() => {});
+    assert.deepEqual(landedPaths(s), []);
+  });
+
+  it('a stop after the third write leaves the first two confirmed, the third uncertain and the rest unwritten, and a resume completes', async t => {
+    const s = setup(t, { files: { ...BASE, ...OLD } });
+    landChange(s, NEW);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    s.make.hooks.afterWrite = path => { if (path === NAMES[2]) throw new Error('Make operation timed out.'); };
+    s.make.hooks.readBack = 'fails'; // Make stays unreachable, so the follow-up read cannot confirm the third file
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+    assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+    assert.match(error.message, /Make durable batch write outcome is uncertain: Make operation timed out/);
+    assert.match(error.message, /The read-back after it also failed/);
+    const receipt = readReceipt(error.receiptPath);
+    assert.deepEqual(receipt.completedWrites.map(item => [item.path, item.uncertain === true]), [[NAMES[0], false], [NAMES[1], false], [NAMES[2], true]]);
+    assert.ok(receipt.completedWrites.every(item => existsSync(item.backupPath)), 'every recorded write keeps its backup');
+    assert.deepEqual(NAMES.slice(3).map(path => s.make.working.get(path).toString()), NAMES.slice(3).map(path => OLD[path]));
+    assert.equal(s.make.calls.some(call => call[0] === 'write' && NAMES.slice(3).includes(call[1])), false, 'nothing after the failure is written');
+    s.make.hooks.afterWrite = null;
+    s.make.hooks.readBack = null;
+    const resumed = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps);
+    assert.equal(resumed.stage, 'deployed');
+    savedIs(s, NEW);
+  });
+
+  it('an abort after a hard stop mid-batch restores every file of the batch to its original bytes', async t => {
+    const s = setup(t, { files: { ...BASE, ...OLD } });
+    landChange(s, NEW);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    let seen = 0;
+    let snapshot;
+    s.make.hooks.readBack = 'fails';
+    s.make.hooks.afterWrite = () => { if (++seen === 3) { snapshot = readFileSync(receiptFile(s), 'utf8'); throw new Error('process killed'); } };
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+    s.make.hooks.afterWrite = null;
+    s.make.hooks.readBack = null;
+    writeFileSync(error.receiptPath, snapshot);
+    await deployAbort(s.make, { receiptPath: error.receiptPath, dir: s.p.clone }, s.deps);
+    for (const path of NAMES) assert.equal(s.make.working.get(path).toString(), OLD[path], path);
+    assert.deepEqual(s.make.pending(), []);
+  });
+
+  it('a file that changed before the batch refuses it before any write, and leaves no uncertain mark', async t => {
+    const s = setup(t, { files: { ...BASE, ...OLD } });
+    landChange(s, NEW);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    // Someone edits one file after the plan was checked and before the first write.
+    s.make.hooks.expandTree = () => { s.make.working.set(NAMES[4], Buffer.from('edited by hand\n')); };
+    const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+    assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+    assert.match(error.message, /SHA-256 does not match: src\/gen\/f04\.ts/);
+    assert.match(error.message, /No version was saved/);
+    assert.equal(s.make.calls.some(call => ['write', 'delete'].includes(call[0])), false);
+    assert.deepEqual(readReceipt(error.receiptPath).completedWrites, []);
+    assert.equal(NAMES.every(path => path === NAMES[4] || s.make.working.get(path).toString() === OLD[path]), true);
+  });
+
+  it('an override deploy keeps one write at a time, each after its own check of Make against the plan, with no batch', async t => {
+    const s = setup(t, { files: { ...BASE, ...OLD } });
+    landChange(s, { 'src/App.tsx': 'export const App = 2;\n' });
+    const first = await deployPlan(s.make, s.opts, s.deps);
+    rmSync((await deployApply(s.make, { ...s.opts, planPath: first.planPath }, s.deps)).receiptPath);
+    landChange(s, NEW);
+    s.make.head = 'b'.repeat(40);
+    s.make.sandbox = new Map(s.make.working);
+    s.make.savedCommitMissing = true;
+    const plan = await deployPlan(s.make, { ...s.opts, overrideMake: true }, s.deps);
+    const mark = s.make.calls.length;
+    await deployApply(s.make, { ...s.opts, planPath: plan.planPath, confirmOverride: plan.digest.slice(0, 12) }, s.deps);
+    const calls = s.make.calls.slice(mark);
+    assert.equal(calls.some(([kind]) => kind === 'batch'), false);
+    assert.deepEqual(calls.filter(([kind]) => kind === 'write').map(([, path]) => path), NAMES);
+    // Before every write the whole of Make is read again and checked against the plan.
+    assert.ok(calls.filter(([kind]) => kind === 'status').length >= NAMES.length);
+  });
+
+  it('writes the first batch, saves it, and then the entry files alone at the end', async t => {
+    const s = setup(t, { files: { ...BASE, ...OLD, 'src/main.tsx': 'import { App } from "./App";\n' } });
+    landChange(s, { ...NEW, 'src/App.tsx': 'export const App = () => "v2";\n', 'src/main.tsx': 'import { App } from "./App";\nimport "./gen/f00";\n' });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    const entries = ['src/App.tsx', 'src/main.tsx'];
+    // The placeholders go alone first; then the updates in one batch; then the entry files, the last batch.
+    assert.deepEqual(batches(s.make).map(paths => paths.slice().sort()), [NAMES, entries]);
+    assert.deepEqual(order(s.make).slice(-2).map(line => line.split(' ')[1]).sort(), entries);
+    savedIs(s, { ...NEW, 'src/App.tsx': 'export const App = () => "v2";\n' });
   });
 });

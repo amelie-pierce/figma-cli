@@ -41,6 +41,7 @@ function failure(error) {
     ...(error.receiptPath ? { receiptPath: error.receiptPath } : {}),
     ...(error.version ? { version: error.version } : {}),
     ...(error.completedWrites ? { completedWrites: error.completedWrites } : {}),
+    ...(error.uncertainWrites?.length ? { uncertainWrites: error.uncertainWrites } : {}),
     ...(error.readBack ? { readBack: error.readBack } : {}),
     ...(error.code === 'MAKE_SESSION_ONLY_REQUIRED' || error.code === 'MAKE_VENDOR_LOCKED' || MODE_CODES.includes(error.code) || LOCAL_CODES.includes(error.code) ||
       DEPLOY_CODES.includes(error.code) ? { code: error.code } : {}),
