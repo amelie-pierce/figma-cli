@@ -1,0 +1,26 @@
+_vaults/figma-cli/wiki/make/filesystem-bridge.md
+  h_eb882fdf9e0ce8 48
+src/commands/make-atomicaui.js
+  h_eb882fdf9e0ce8 414-420
+src/lib/map-limit.js
+  h_eb882fdf9e0ce8 2-4,8,10,13,17
+tests/make-atomicaui.test.js
+  h_eb882fdf9e0ce8 13,404-412,414,416-420,422-426
+tests/make-durable.test.js
+  h_eb882fdf9e0ce8 1586-1588,1593,1601-1606
+tests/make-sandbox-git.test.js
+  h_eb882fdf9e0ce8 81,85-86
+tests/map-limit.test.js
+  h_eb882fdf9e0ce8 21,25,27,29,32-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "34703b44f8086af004ed43cf967fcf2719282098",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
