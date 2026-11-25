@@ -56,3 +56,5 @@ and [deploy.md](deploy.md).
 
 Use the offline Make suite for this repair. Broad `npm test` can reach a live
 Design file through the roundtrip test; see [test-layout.md](../testing/test-layout.md).
+
+Updated 2026-11-25: `writeDurableBatch` (up to 25 files per operation, one tree scan before and after, per-file read-back) uses the same page action for each write and delete, with the same `expectedContent` guard per file; see [write-cost.md](write-cost.md).

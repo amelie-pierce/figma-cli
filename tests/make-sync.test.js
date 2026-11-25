@@ -1,3 +1,4 @@
+import { batchThrough } from './make-batch-fake.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
@@ -317,7 +318,8 @@ test('apply uses durable paths, saves exact set and checks drift; unresolved ref
     const { plan, vendorBytes } = planSync(f.args);
     const calls = [];
     const written = new Map();
-    const client = { writeDurable: async (name, value, options) => {
+    const client = { writeDurableBatch(items, options) { return batchThrough(this, items, options); },
+      writeDurable: async (name, value, options) => {
       written.set(name, value);
       assert.equal(options.vendorTreeFallback, true);
       calls.push(['write', name, options.expectedSha256]);
@@ -416,7 +418,8 @@ test('apply writes BOM-prefixed candidate bytes exactly', async () => {
     f.args.request.files[0].workspaceSha256 = digest(bom);
     const { plan, vendorBytes } = planSync(f.args);
     const written = new Map();
-    const client = { writeDurable: async (name, value) => { written.set(name, value); return {}; },
+    const client = { writeDurableBatch(items, options) { return batchThrough(this, items, options); },
+      writeDurable: async (name, value) => { written.set(name, value); return {}; },
       saveVersion: async () => ({ versionNumber: 2 }), drift: async () => ({ ok: true }) };
     await applySync(client, { plan, vendorBytes, packageData: f.args.packageData, candidateDir: f.directory, title: 'Sync' });
     assert.deepEqual(Buffer.from(written.get(path)), bom);
@@ -534,6 +537,8 @@ test('an unbound plan applies through the same writes, save and drift as a bound
     const { plan, vendorBytes } = planSync(f.args);
     const calls = [];
     const client = {
+      writeDurableBatch(items, options) { return batchThrough(this, items, options); },
+      writeDurableBatch(items, options) { return batchThrough(this, items, options); },
       writeDurable: async (target, content, options) => { calls.push(['write', target, options.expectedSha256]); return { backupPath: '/private/b' }; },
       deleteDurable: async () => { throw new Error('no delete planned'); },
       saveVersion: async (_title, paths) => { calls.push(['save', paths]); return { versionNumber: 3, gitSha: saved }; },
@@ -603,4 +608,51 @@ test('a bound package records its generation manifest binding in the plan and re
     const receipt = syncReceipt({ request: f.args.request, plan, fileKey: 'Scratch', version: {}, writes: [] });
     assert.deepEqual(receipt.generationManifest, plan.generationManifest);
   } finally { f.dispose(); }
+});
+
+test('apply writes the planned files in batches of at most 25 in plan order, deletes among them, and VENDOR.json alone and last', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'make-sync-batch-'));
+  try {
+    const actions = [];
+    for (let i = 0; i < 40; i++) {
+      const file = `${root}/lib/f${String(i).padStart(2, '0')}.ts`;
+      const remove = i % 10 === 9;
+      const before = i % 4 === 0 ? null : text(`old ${i}`);
+      const after = remove ? null : text(`new ${i}`);
+      if (after) { mkdirSync(join(directory, dirname(file)), { recursive: true }); writeFileSync(join(directory, file), after); }
+      actions.push({ path: file, operation: remove ? 'delete' : 'write', before: remove ? info(text(`old ${i}`)) : info(before), after: info(after) });
+    }
+    const vendorBytes = text('{"vendor":"after"}\n');
+    const plan = { unresolved: [], outOfScopeDrift: [], actions, vendorBefore: info(text('{"vendor":"before"}\n')), vendorAfter: info(vendorBytes) };
+    const calls = [];
+    const client = {
+      writeDurableBatch(items, options) { return batchThrough(this, items, options); },
+      writeDurable: async (name, value, options) => { calls.push(['write', name, options.expectedSha256]); return { backupPath: `/private/backup/${name}` }; },
+      deleteDurable: async (name, options) => { calls.push(['delete', name, options.expectedSha256]); return { backupPath: `/private/backup/${name}` }; },
+      saveVersion: async (_title, paths) => { calls.push(['save', paths]); return { versionNumber: 2, gitSha: 'e'.repeat(40) }; },
+      drift: async () => ({ ok: true, counts: {} }),
+    };
+    const result = await applySync(client, { plan, vendorBytes, packageData: { files: new Map() }, candidateDir: directory, generationManifestBytes: null, title: 'Sync' });
+    assert.deepEqual(client.batchLog.map(paths => paths.length), [25, 15]);
+    assert.deepEqual(client.batchLog.flat(), actions.map(action => action.path));
+    // One file at a time through the client, in plan order, each with its own sha256 precondition; VENDOR.json last.
+    assert.deepEqual(calls.slice(0, 40).map(call => [call[0], call[1], call[2]]), actions.map(action => [action.operation === 'delete' ? 'delete' : 'write', action.path, action.before?.sha256]));
+    assert.deepEqual(calls.slice(40).map(call => call[0]), ['write', 'save']);
+    assert.equal(calls[40][1], `${root}/VENDOR.json`);
+    assert.equal(client.batchLog.flat().includes(`${root}/VENDOR.json`), false);
+    assert.deepEqual(result.writes.map(write => write.path), [...actions.map(action => action.path), `${root}/VENDOR.json`]);
+    assert.equal(result.writes[0].backupPath, `/private/backup/${actions[0].path}`);
+    assert.deepEqual(calls[41][1], [...actions.map(action => action.path), `${root}/VENDOR.json`]);
+
+    // A failure in the second batch reports the first batch and the confirmed part of the second, and never writes VENDOR.json.
+    const failing = { ...client, batchLog: undefined, writeDurable: async (name, ...rest) => {
+      if (name === actions[30].path) throw new Error('Make operation timed out.');
+      return client.writeDurable(name, ...rest);
+    } };
+    calls.length = 0;
+    const error = await applySync(failing, { plan, vendorBytes, packageData: { files: new Map() }, candidateDir: directory, generationManifestBytes: null, title: 'Sync' }).catch(cause => cause);
+    assert.match(error.message, /timed out/);
+    assert.deepEqual(error.completedWrites.map(write => write.path), actions.slice(0, 30).map(action => action.path));
+    assert.equal(calls.some(call => call[1] === `${root}/VENDOR.json` || call[0] === 'save'), false);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });

@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { isIgnored, parseIgnore } from './git-tree.js';
+import { chunkBatch, DEPENDENCY_FILES } from './make-batch.js';
 import { requireGitMode, TREE_HIDDEN_ROOT_FILES } from './make-durable.js';
 import { requireLocalVendorUnedited } from './make-vendor-lock.js';
 import { isSizeChecked, sizeWarnings } from './make-size.js';
@@ -56,7 +57,6 @@ const RESUMABLE = Object.freeze([...BEFORE_SAVE, 'saving']);
 // files and the lockfiles go last, each written through the client even when
 // Make's install already holds main's content; Make is waited on until idle
 // after each, and a planned one Make regenerated is written again.
-const DEPENDENCY_FILES = Object.freeze([...TREE_HIDDEN_ROOT_FILES, 'package.json']);
 export const isDependency = path => DEPENDENCY_FILES.includes(path);
 const isLockfile = path => TREE_HIDDEN_ROOT_FILES.includes(path);
 // A lockfile Make's install already rewrote to main's content before the
@@ -869,6 +869,70 @@ const recordWrite = (receipt, file, backupPath, extra = {}) => {
   saveReceipt(receipt);
 };
 
+// A run of consecutive non-dependency files, written as one batched durable
+// operation (client.writeDurableBatch) instead of one operation per file. The
+// receipt marks every file of the batch uncertain before it starts, so an
+// interruption anywhere inside leaves each of them uncertain for resume and
+// abort, and replaces the marks with what the batch confirmed after it. Nothing
+// is written again inside a batch: a failure after its first write stops the
+// deploy, and --resume continues from what Make holds.
+async function writeBatch(client, receipt, files, { mainBytes, home, deps }) {
+  const writeStarted = Date.now();
+  const byPath = new Map(files.map(file => [file.path, file]));
+  const expectedOf = (file, status) => (status ? status.workingSha256.get(file.path) ?? null
+    : file.expectedSha256 !== undefined ? file.expectedSha256 : file.beforeSha256);
+  const itemsFor = status => files.map(file => {
+    let content = null;
+    if (file.op !== 'delete') {
+      const bytes = mainBytes(file.afterBlob);
+      if (sha256(bytes) !== file.afterSha256) {
+        stop(receipt, null, 'writing', `main's ${file.path} no longer has its planned content. No version was saved. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
+      }
+      content = decode(bytes);
+    }
+    const expected = expectedOf(file, status);
+    return file.op === 'delete' ? { path: file.path, delete: true, expectedSha256: expected }
+      : { path: file.path, content, expectedSha256: expected ?? undefined };
+  });
+  const names = `${files[0].path}${files.length > 1 ? ` and ${files.length - 1} more of its batch` : ''}`;
+  let status;
+  for (let attempt = 1; ; attempt++) {
+    const items = itemsFor(status);
+    const batch = new Date().toISOString();
+    const marks = files.map(file => ({ path: file.path, op: file.op, backupPath: null, uncertain: true, batch }));
+    receipt.completedWrites.push(...marks);
+    saveReceipt(receipt);
+    const unmark = () => { receipt.completedWrites = receipt.completedWrites.filter(write => !marks.includes(write)); };
+    let results;
+    try {
+      results = await client.writeDurableBatch(items, { backupDir: backupDir(receipt, home), baseFolders: baseFolders(receipt.plan) });
+    } catch (error) {
+      unmark();
+      if (error.batchWritesStarted) {
+        for (const done of error.completedWrites ?? []) recordWrite(receipt, byPath.get(done.path), done.backupPath ?? null);
+        for (const unsure of error.uncertainWrites ?? []) recordWrite(receipt, byPath.get(unsure.path), unsure.backupPath ?? null, { uncertain: true, batch });
+      } else saveReceipt(receipt);
+      if (error.batchWritesStarted || attempt >= ROUNDS || error.code !== 'MAKE_PENDING_CHANGED') {
+        stop(receipt, error, 'writing', `Deploy stopped while writing ${names}: ${error.message} No version was saved. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
+      }
+      // Nothing of the batch was written: once Make is idle and every unsaved path still matches the plan, it starts again.
+      status = await settledStatus(client, receipt, deps);
+      const checked = plannedState(receipt, status, mainBytes);
+      if (checked.problem) {
+        stop(receipt, error, 'writing', `Deploy stopped while writing ${names}: ${error.message} Once Make was idle: ${checked.problem}. ` +
+          `No version was saved. Run ${recovery(receipt)}.`, checked.code === 'DEPLOY_MAKE_AHEAD' ? 'DEPLOY_MAKE_AHEAD' : 'DEPLOY_WRITE_FAILED');
+      }
+      continue;
+    }
+    unmark();
+    for (const result of results) recordWrite(receipt, byPath.get(result.path), result?.backupPath);
+    break;
+  }
+  const completed = new Set(receipt.completedWrites.filter(write => !write.uncertain && !write.backupOnly).map(write => write.path)).size;
+  const seconds = Math.round((Date.now() - writeStarted) / 1000);
+  files.forEach((file, index) => deps.progress(`${completed - files.length + index + 1}/${receipt.plan.files.length} ${file.path} (${seconds}s)`));
+}
+
 // Write each file to main's content. A file starts from its planned before
 // content, or from file.expectedSha256 (Make's regenerated dependency file).
 // When Make's state moves under a write, wait until it is idle, re-check
@@ -883,7 +947,18 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps, final 
     saveReceipt(receipt);
   }
   const position = new Map(receipt.plan.files.map((file, index) => [file.path, index]));
+  // Consecutive non-dependency files go through one batched operation each (at
+  // most MAX_BATCH_FILES); a dependency file, an unwired placeholder or an
+  // override-make write keeps its own single operation at its own position.
+  let run = [];
+  const flush = async () => {
+    const chunks = chunkBatch(run, file => file.bytes ?? 0);
+    run = [];
+    for (const chunk of chunks) await writeBatch(client, receipt, chunk, { mainBytes, home, deps });
+  };
   for (const file of [...todo].sort((a, b) => position.get(a.path) - position.get(b.path))) {
+    if (receipt.mode !== 'override-make' && !file.placeholder && !isDependency(file.path)) { run.push(file); continue; }
+    await flush();
     const writeStarted = Date.now();
     if (receipt.mode === 'override-make') {
       const checked = plannedState(receipt, await client.projectStatus(), mainBytes);
@@ -950,6 +1025,7 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps, final 
     deps.progress(`${completed}/${receipt.plan.files.length} ${file.path} (${Math.round((Date.now() - writeStarted) / 1000)}s)`);
     if (isDependency(file.path)) await waitIdle(client, receipt, deps);
   }
+  await flush();
   if (!final) return;
   receipt.stage = 'written';
   saveReceipt(receipt);
@@ -1367,10 +1443,13 @@ async function resumable(client, receipt, what, warn = () => {}, plannedBytes) {
   let settled;
   // A planned path Make does not list counts as written only at main's exact hash.
   const verifiedContent = new Map(checked.files.filter(file => file.state === 'after' && file.afterSha256).map(file => [file.path, file.afterSha256]));
-  // The one in-flight write the receipt left uncertain may have landed: Make then lists it, and it counts only at main's exact hash.
+  // The one in-flight write the receipt left uncertain, or the files of one interrupted batch, may have landed: Make then lists it, and it counts only at main's exact hash.
   const inFlight = new Set(receipt.completedWrites.filter(write => write.uncertain).map(write => write.path));
   for (const write of receipt.completedWrites) if (!write.uncertain && !write.backupOnly) inFlight.delete(write.path);
-  const landed = [...inFlight].length === 1 ? checked.files.filter(file => inFlight.has(file.path) && file.state === 'after' && file.afterSha256) : [];
+  // Exactly one uncertain write, or every uncertain file of the one batch that was interrupted: never an unrelated set.
+  const batches = new Set(receipt.completedWrites.filter(write => write.uncertain && inFlight.has(write.path)).map(write => write.batch));
+  const landed = inFlight.size === 1 || (batches.size === 1 && !batches.has(undefined))
+    ? checked.files.filter(file => inFlight.has(file.path) && file.state === 'after' && file.afterSha256) : [];
   const landedContent = new Map(landed.map(file => [file.path, file.afterSha256]));
   try { settled = await client.settleCheckedStatus(status, { overrideMake: overridePin(receipt), plannedPaths: receipt.plan.files.map(file => file.path), verifiedContent, landedContent }); }
   catch (error) { fail(`Make's pending list does not match its checked unsaved content: ${error.message} Nothing was changed.`, 'DEPLOY_MAKE_STATE'); }

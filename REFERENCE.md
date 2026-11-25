@@ -180,6 +180,20 @@ client VFS and the session sandbox. Both equal to the target confirm the write
 held (`readBack`), and nothing is written again. A write the page refused, or
 one whose last check saw a mounted editor with different bytes or a new file
 missing from the tree, is not read back.
+Deploys, solo `make atomicaui add`/`upgrade`, `make sync --apply` and
+`make atomicaui release` write their files in batches of at most 25 files (and
+8 MiB) instead of one durable operation per file. A batch scans the file tree
+once before and once after, reads its files' current content concurrently,
+writes them one at a time in the given order, reads every file back from the
+client VFS and the sandbox, and settles Make's change tracker once; about 1 s per
+file instead of 5-9 s. Each file keeps its own `--expected-sha256` check and its
+own byte-equality read-back, the tree after the batch must differ from the tree
+before it only by the written and removed paths (and their folders), and
+`package.json`, lockfiles and `VENDOR.json` are never inside a batch: they stay
+single writes, `VENDOR.json` last. A failure after a batch's first write reports
+`completedWrites` (read back equal), `uncertainWrites` (may have landed) and
+`unwrittenPaths`; nothing is retried or continued inside the batch. `make write`
+and `make delete` still write one file per call.
 A new file must sit below an existing top-level folder: the write proves
 absence by listing an existing ancestor folder, never the project root (it starts at
 the nearest folder the file tree shows, so a new folder costs no 5 s timeouts), so a
@@ -466,7 +480,15 @@ figma-cli make deploy status (--receipt RECEIPT | --file KEY) [--json]
 ```
 
 During apply and resume, deploy prints a short `deploy: n/total path (seconds)` line
-on stderr after each completed write, plus plan, save and verification stages.
+on stderr after each completed write (a batch of up to 25 non-dependency files
+prints its lines when the batch completes), plus plan, save and verification
+stages. Consecutive non-dependency files are written as one batched operation in
+plan order; `package.json`, lockfiles, unwired entry placeholders and every
+`--override-make` write keep one operation per file. The receipt marks every file
+of a batch `uncertain` before it starts and confirms them after it; if a batch
+stops after its first write the deploy stops (`DEPLOY_WRITE_FAILED`) with the
+confirmed files confirmed and the file in flight uncertain, and `--resume`
+continues from what Make holds.
 `--detach` starts the same guarded apply in a background process, then returns its
 run ID, PID and private log path after the child acknowledges startup. The child
 writes progress and its final JSON to that log. Startup failure is recorded and

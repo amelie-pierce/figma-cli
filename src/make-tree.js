@@ -350,9 +350,17 @@ async function scanTree(transport, { deadline, maxEntries, targetPath }) {
 
 const TREE_CHANGED = /Make file tree changed (?:before the requested action|during traversal)\./;
 
-function checkChangedTree({ beforeEntries, beforeRows, writtenPath, removedPath }, afterEntries, afterRows) {
-  const path = writtenPath ?? removedPath;
-  if (!Array.isArray(beforeEntries) || !Array.isArray(beforeRows) || typeof path !== 'string') {
+// The one change a write or delete may make to the rendered tree: the written
+// paths appear (with their new ancestor folders), the removed paths vanish (with
+// any folder they empty), and every other entry keeps its kind, level and row
+// height. A batch passes writtenPaths / removedPaths; one file passes
+// writtenPath / removedPath. Edited files are no part of either list: they must
+// stay exactly as they were.
+export function checkChangedTree({ beforeEntries, beforeRows, writtenPath, removedPath, writtenPaths, removedPaths }, afterEntries, afterRows) {
+  const written = writtenPaths ?? (writtenPath === undefined ? [] : [writtenPath]);
+  const removed = removedPaths ?? (removedPath === undefined ? [] : [removedPath]);
+  if (!Array.isArray(beforeEntries) || !Array.isArray(beforeRows) || ![...written, ...removed].every(path => typeof path === 'string') ||
+      !(written.length || removed.length || writtenPaths || removedPaths) || new Set([...written, ...removed]).size !== written.length + removed.length) {
     throw new Error('Make file tree changed before the requested action. Run the command again.');
   }
   const before = new Map(beforeEntries.map(entry => [entry.path, entry.kind]));
@@ -365,16 +373,35 @@ function checkChangedTree({ beforeEntries, beforeRows, writtenPath, removedPath 
   const afterMetadata = new Map(afterEntries.map(entry => [entry.path, {
     level: entry.level, height: afterByTop.get(entry.top)?.height,
   }]));
-  const parts = path.split('/');
-  const allowed = new Map(parts.map((_, index) => [parts.slice(0, index + 1).join('/'),
-    index === parts.length - 1 ? 'file' : 'folder']));
-  const unexpected = (removedPath !== undefined ? before.get(removedPath) !== 'file' : before.has(writtenPath)) ||
-    (after.has(path) && after.get(path) !== 'file');
+  const chain = paths => {
+    const kinds = new Map();
+    for (const path of paths) {
+      const parts = path.split('/');
+      parts.forEach((_, index) => {
+        const entry = parts.slice(0, index + 1).join('/');
+        const kind = index === parts.length - 1 ? 'file' : 'folder';
+        if (kinds.get(entry) && kinds.get(entry) !== kind) {
+          throw new Error('Make file tree changed before the requested action. Run the command again.');
+        }
+        kinds.set(entry, kind);
+      });
+    }
+    return kinds;
+  };
+  const allowedAdded = chain(written);
+  const allowedRemoved = chain(removed);
+  const unexpected = written.some(path => before.has(path) || (after.has(path) && after.get(path) !== 'file')) ||
+    removed.some(path => before.get(path) !== 'file' || (after.has(path) && after.get(path) !== 'file'));
   if (unexpected) throw new Error('Make file tree changed before the requested action. Run the command again.');
-  const emptied = folder => ![...after.keys()].some(entry => entry.startsWith(`${folder}/`));
+  const occupied = new Set();
+  for (const entry of after.keys()) {
+    const parts = entry.split('/');
+    parts.slice(0, -1).forEach((_, index) => occupied.add(parts.slice(0, index + 1).join('/')));
+  }
+  const removable = (entry, kind) => allowedRemoved.get(entry) === kind &&
+    (removed.includes(entry) || !occupied.has(entry));
   for (const [entry, kind] of before) {
-    if (removedPath !== undefined && !after.has(entry) && allowed.get(entry) === kind &&
-        (entry === removedPath || emptied(entry))) continue;
+    if (!after.has(entry) && removable(entry, kind)) continue;
     if (after.get(entry) !== kind || beforeMetadata.get(entry).level !== afterMetadata.get(entry)?.level ||
         !Number.isFinite(beforeMetadata.get(entry).height) ||
         beforeMetadata.get(entry).height !== afterMetadata.get(entry)?.height) {
@@ -382,7 +409,7 @@ function checkChangedTree({ beforeEntries, beforeRows, writtenPath, removedPath 
     }
   }
   for (const [entry, kind] of after) {
-    if (!before.has(entry) && (removedPath !== undefined || allowed.get(entry) !== kind)) {
+    if (!before.has(entry) && allowedAdded.get(entry) !== kind) {
       throw new Error('Make file tree changed before the requested action. Run the command again.');
     }
   }

@@ -18,6 +18,7 @@ import { lfsMatcher, PROJECT_EXCLUDES, PROJECT_MARKER, treeOf, workingFlat } fro
 import { notInventoried } from './make-unread.js';
 import { SandboxGit } from './sandbox-git.js';
 import { READ_CONCURRENCY, mapLimit } from './lib/map-limit.js';
+import { MAX_BATCH_BYTES, MAX_BATCH_FILES, batchBarred } from './make-batch.js';
 
 const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
 // Make serves the live session preview from *.makeproxy-<x>.figma.site and the
@@ -27,6 +28,36 @@ const PREVIEW_HOST = /(\.makeproxy-[a-z]+|-figmacachedpreview)\.figma\.site$/;
 const sameIgnoringLineEndings = (a, b) => typeof a === 'string' && typeof b === 'string' &&
   a.replace(/\r\n/g, '\n') === b.replace(/\r\n/g, '\n');
 const treeHidden = path => path.split('/').some(part => part.startsWith('.')) || TREE_HIDDEN_ROOT_FILES.includes(path);
+
+// The validated, normalised form of a batch's items; throws before anything is read or written.
+function batchPlan(items) {
+  if (!Array.isArray(items) || !items.length || items.length > MAX_BATCH_FILES) {
+    throw new Error(`A Make batch holds 1–${MAX_BATCH_FILES} files.`);
+  }
+  const seen = new Set();
+  let bytes = 0;
+  const plan = items.map(item => {
+    sourcePath(item.path);
+    if (seen.has(item.path)) throw new Error(`Make batch lists ${item.path} twice.`);
+    seen.add(item.path);
+    if (batchBarred(item.path)) throw new Error(`Make batch never holds ${item.path}: dependency files and VENDOR.json are written one at a time.`);
+    if (item.releaseAsset && !item.path.startsWith('public/atomicaui/')) {
+      throw new Error('Three-view release verification is limited to public/atomicaui/.');
+    }
+    const del = item.delete === true;
+    if (del ? item.content !== undefined : typeof item.content !== 'string') {
+      throw new Error(del ? `Make batch delete of ${item.path} carries no content.` : 'Make durable write requires UTF-8 text.');
+    }
+    if (del ? !/^[a-fA-F0-9]{64}$/.test(item.expectedSha256 || '') : item.expectedSha256 != null && !/^[a-fA-F0-9]{64}$/.test(item.expectedSha256)) {
+      throw new Error(del ? 'Make durable delete requires expected SHA-256.' : 'Invalid expected SHA-256.');
+    }
+    bytes += Buffer.byteLength(item.content ?? '');
+    return { path: item.path, del, content: item.content ?? null, expectedSha256: item.expectedSha256?.toLowerCase() ?? null,
+      releaseAsset: item.releaseAsset === true, hidden: treeHidden(item.path) };
+  });
+  if (plan.length > 1 && bytes > MAX_BATCH_BYTES) throw new Error(`A Make batch holds at most ${MAX_BATCH_BYTES} bytes of content.`);
+  return plan;
+}
 
 // createVersion may have run: the caller must inspect, never retry the save.
 function uncertainSave(message) {
@@ -779,14 +810,21 @@ export class MakeClient {
   // follows can use it as its first tree view instead of listing again.
   async _requireListableAncestor(path, deadline, baseFolders = [], treeState) {
     const [top, ...rest] = path.split('/');
+    if (!rest.length || top.startsWith('.')) return this._requireTreeAncestor(path, [], deadline, baseFolders);
+    const tree = await this._sourceTree(deadline, undefined, treeState
+      ? snapshot => { treeState.prefetched = { entries: snapshot.entries, rows: snapshot.rows }; } : undefined);
+    if (treeState?.prefetched) treeState.prefetched.tree = tree;
+    return this._requireTreeAncestor(path, tree, deadline, baseFolders);
+  }
+
+  // The check of _requireListableAncestor against a tree listing already taken.
+  async _requireTreeAncestor(path, tree, deadline, baseFolders = []) {
+    const [top, ...rest] = path.split('/');
     const refuse = () => {
       throw new Error(`Make cannot prove ${path} absent: only files below an existing top-level folder can be created or deleted.`);
     };
     if (!rest.length) refuse();
     if (top.startsWith('.')) return;
-    const tree = await this._sourceTree(deadline, undefined, treeState
-      ? snapshot => { treeState.prefetched = { entries: snapshot.entries, rows: snapshot.rows }; } : undefined);
-    if (treeState?.prefetched) treeState.prefetched.tree = tree;
     if (tree.some(entry => entry.kind === 'folder' && entry.path === top)) return;
     if (!baseFolders.includes(top) || tree.some(entry => entry.path === top) ||
         (await this._durable({ type: 'read', path }, deadline)).exists) refuse();
@@ -1100,6 +1138,236 @@ export class MakeClient {
       catch (error) { error.backupPath = backupPath; error.confirmedDelete = { path }; throw error; }
       return { fileKey: this.fileKey, path, beforeSha256: sha256(original.content), backupPath,
         verification: 'tree-vfs-sandbox-delete-matched', persistence: 'pending-version' };
+    }, { durable: true });
+  }
+
+  // What each of `items` shows in the client VFS and the sandbox against what
+  // `wanted(item)` says it must hold (null: absent). Independent reads overlap.
+  // treeEntries lets a new file's absence check start at the nearest listed ancestor.
+  _batchReads(items, wanted, { readBridge, absentBridge, treeEntries }, deadline) {
+    return mapLimit(items, READ_CONCURRENCY, async item => {
+      const want = wanted(item);
+      const vfs = await this._durable({ type: 'read', path: item.path }, deadline);
+      if (want === null) {
+        const absent = await this._sandboxAbsent(absentBridge, item.path, treeEntries);
+        return { vfs: vfs.exists ? 'present' : 'absent', sandbox: absent ? 'absent' : 'present or unlisted' };
+      }
+      const sandbox = await this._bridgeRead(readBridge, item.path).catch(() => null);
+      const view = (exists, content) => !exists ? 'absent' : content === want ? 'matched' : 'different';
+      return { vfs: view(vfs.exists, vfs.content), sandbox: sandbox ? view(true, sandbox.content) : 'unreadable' };
+    });
+  }
+
+  // Runs `use(bridges)` with a sandbox bridge for reads and, when an item is
+  // expected absent, one with the short per-request cap an absence check needs.
+  async _withBatchBridges(items, wanted, deadline, use) {
+    let readBridge;
+    let absentBridge;
+    try {
+      if (items.some(item => wanted(item) !== null)) readBridge = await this._fileBridge(deadline);
+      if (items.some(item => wanted(item) === null)) {
+        absentBridge = await this._fileBridge(deadline, { requestTimeoutMs: Math.min(5000, this._remaining(deadline)) });
+      }
+      return await use({ readBridge, absentBridge });
+    } finally {
+      await Promise.all([absentBridge, readBridge].map(bridge => bridge?.dispose().catch(() => {})));
+    }
+  }
+
+  // The batch's read-back agreement, one pass of every view per round until all
+  // agree or the deadline: the client VFS and the sandbox per file, then the
+  // rendered tree once. phase 'before' holds each file's original content (a new
+  // file absent) and also proves every new or deleted file has a listable
+  // ancestor; phase 'after' holds the target content (a deleted file absent) and
+  // checks the tree against expectedChange. Returns path -> verification.
+  async _agreeBatch(state, phase, deadline, { treeState, baseFolders = [], expectedChange } = {}) {
+    const after = phase === 'after';
+    const items = after ? state.filter(item => !item.unchanged) : state;
+    const wanted = item => (after ? item.content : item.original);
+    let observed = null;
+    let editorDisagreed = false;
+    try {
+      return await this._withBatchBridges(items, wanted, deadline, async bridges => {
+        for (;;) {
+          const tree = await this._sourceTree(deadline, expectedChange, treeState
+            ? snapshot => { treeState.entries = snapshot.entries; treeState.rows = snapshot.rows; } : undefined);
+          if (!after) {
+            for (const item of items) if (item.del || item.original === null) await this._requireTreeAncestor(item.path, tree, deadline, baseFolders);
+          }
+          const listed = new Set(tree.filter(entry => entry.kind === 'file').map(entry => entry.path));
+          const views = await this._batchReads(items, wanted, { ...bridges, treeEntries: after ? undefined : tree }, deadline);
+          observed = items.map((item, index) => {
+            const inTree = listed.has(item.path);
+            const view = views[index];
+            if (wanted(item) === null) return { path: item.path, ok: view.vfs === 'absent' && view.sandbox === 'absent' && !inTree,
+              ...view, tree: inTree ? 'present' : 'absent' };
+            return { path: item.path, ok: view.vfs === 'matched' && view.sandbox === 'matched' && (inTree || item.hidden), ...view,
+              tree: inTree ? 'present' : item.hidden ? 'omits hidden files' : 'absent' };
+          });
+          if (observed.every(view => view.ok)) {
+            const verification = new Map(items.map(item => [item.path, !after ? null
+              : item.del ? 'tree-vfs-sandbox-delete-matched' : item.hidden ? 'vfs-sandbox-matched'
+                : item.releaseAsset ? 'tree-vfs-sandbox-release-matched' : 'tree-vfs-sandbox-matched']));
+            // As in a single write: the editor is a bonus view, compared only when it already shows one of these files.
+            const eligible = after ? items.filter(item => !item.del && !item.hidden && !item.releaseAsset) : [];
+            if (!eligible.length) return verification;
+            try {
+              const editor = await this._editor({ type: 'inspect' }, deadline);
+              const target = editor.editorCount > 0 ? eligible.find(item => item.path === editor.editorPath) : null;
+              if (target) {
+                const current = await this._editor({ type: 'read-mounted', path: target.path }, deadline);
+                const same = current.content === target.content ? 'matched'
+                  : sameIgnoringLineEndings(current.content, target.content) ? 'matched-lf' : 'different';
+                if (same !== 'different') {
+                  verification.set(target.path, same === 'matched' ? 'editor-tree-vfs-sandbox-matched' : 'editor-lf-tree-vfs-sandbox-matched');
+                  return verification;
+                }
+                editorDisagreed = true;
+                observed.find(view => view.path === target.path).editor = 'different';
+              } else if (!editorDisagreed) return verification;
+            } catch { /* the editor view is unavailable this round; the next round asks again, as a single write does */ }
+          }
+          await this._bounded(() => new Promise(resolve => setTimeout(resolve, 100)), deadline);
+        }
+      });
+    } catch (cause) {
+      if (!observed || !['Make operation timed out.', 'Timed out while reading the Make file tree.'].includes(cause.message)) throw cause;
+      const first = observed.find(view => !view.ok) ?? observed[0];
+      const views = Object.entries(first).filter(([name]) => name !== 'path' && name !== 'ok').map(([name, value]) => `${name} ${value}`).join(', ');
+      const error = new Error(`Make read-back for ${first.path} timed out before every view agreed (${views}); ` +
+        `${observed.filter(view => !view.ok).length} of ${observed.length} file(s) had not agreed.`);
+      error.observed = observed;
+      throw error;
+    }
+  }
+
+  // Many writes and deletes as one operation instead of one full durable
+  // operation per file: the tree is scanned once before and once after, the
+  // files' current content is read concurrently, the writes go one at a time in
+  // the given order, every file's bytes are read back from the client VFS and
+  // the sandbox, and Make's change tracker settles once for the whole set.
+  //
+  // items: ordered { path, content } writes and { path, delete: true } deletes,
+  // each with its own expectedSha256 (required for an existing file or a delete,
+  // forbidden for a new file); { releaseAsset: true } as in writeDurable. At most
+  // 25 files (see make-batch.js). Dependency files and VENDOR.json are refused:
+  // they are written one at a time. Returns, in order, what writeDurable /
+  // deleteDurable would: { path, changed, sha256, backupPath, verification, ... }.
+  //
+  // Every sha256 precondition, the sandbox pre-read and the new-file/delete
+  // ancestor proof run before the first write, and every file's backup is made
+  // before it; a changed file refuses the whole batch, and the page-side
+  // expectedContent guard refuses one that changes later. After the first write
+  // a failure carries error.completedWrites (read back and equal), error.
+  // uncertainWrites (may have landed) and error.unwrittenPaths (never attempted),
+  // with error.batchWritesStarted = true; nothing is written again.
+  writeDurableBatch(items, { baseFolders = [], backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
+    const plan = batchPlan(items);
+    return this._operation(async deadline => {
+      const ui = await this._ensureCode(deadline);
+      if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
+      const before = requireGitMode((await this._driftState(deadline)).state, {});
+      const state = [];
+      for (const item of plan) {
+        const existing = await this._durable({ type: 'read', path: item.path }, deadline);
+        const originalSha256 = existing.exists ? sha256(existing.content) : null;
+        if (item.del) {
+          if (!existing.exists || originalSha256 !== item.expectedSha256) throw new Error(`Make source is missing or changed; delete refused: ${item.path}.`);
+        } else {
+          if (existing.exists !== (item.expectedSha256 != null)) throw new Error(`Expected SHA-256 is required for an existing file and forbidden for a new file: ${item.path}.`);
+          if (existing.exists && originalSha256 !== item.expectedSha256) throw new Error(`Make source changed; SHA-256 does not match: ${item.path}.`);
+        }
+        state.push({ ...item, original: existing.exists ? existing.content : null, originalSha256,
+          unchanged: !item.del && existing.exists && existing.content === item.content });
+      }
+      const treeState = {};
+      await this._agreeBatch(state, 'before', deadline, { treeState, baseFolders });
+      const changed = state.filter(item => !item.unchanged);
+      const unchangedResult = item => ({ fileKey: this.fileKey, path: item.path, changed: false, sha256: item.originalSha256, verification: 'unchanged' });
+      if (!changed.length) return state.map(unchangedResult);
+      // Make's tracker must list the union of what was pending and what these files change.
+      const expected = new Set(before.pendingPaths);
+      for (const item of changed) {
+        const tracker = await this._pendingAfterMutation(before, item.path, item.del ? null : item.content, deadline, {});
+        if (tracker.expectedPaths.includes(item.path)) expected.add(item.path); else expected.delete(item.path);
+      }
+      for (const item of changed) {
+        item.backupPath = item.original === null ? null : await this._bounded(() => this._backup(item.path, item.original, {
+          backupDir, operation: item.del ? 'durable-delete' : 'durable-write', ...(item.del ? {} : { replacementSha256: sha256(item.content) }),
+        }), deadline);
+      }
+      const immediate = requireGitMode((await this._driftState(deadline)).state, {});
+      if (immediate.savedVersion !== before.savedVersion || JSON.stringify(immediate.pendingPaths) !== JSON.stringify(before.pendingPaths)) {
+        throw pendingChanged('batch write');
+      }
+      const resultOf = (item, verification) => (item.del
+        ? { fileKey: this.fileKey, path: item.path, changed: true, beforeSha256: item.originalSha256, sha256: null,
+          backupPath: item.backupPath, verification, persistence: 'pending-version' }
+        : { fileKey: this.fileKey, path: item.path, changed: true, beforeSha256: item.originalSha256, sha256: sha256(item.content),
+          bytes: Buffer.byteLength(item.content), backupPath: item.backupPath, verification, persistence: 'pending-version' });
+      const uncertainOf = item => ({ fileKey: this.fileKey, path: item.path, op: item.del ? 'delete' : item.original === null ? 'add' : 'modify',
+        beforeSha256: item.originalSha256, backupPath: item.backupPath });
+      // The batch's own reading of "what may have landed": every accepted file
+      // whose client VFS and sandbox now hold the target is confirmed.
+      const agreeing = async items => {
+        const target = item => (item.del ? null : item.content);
+        const views = await this._withBatchBridges(items, target, deadline,
+          bridges => this._batchReads(items, target, bridges, deadline));
+        return items.filter((_, index) => views[index].vfs === (items[index].del ? 'absent' : 'matched') &&
+          views[index].sandbox === (items[index].del ? 'absent' : 'matched'));
+      };
+      const failed = async (message, { accepted, refused = null, inFlight = null, cause }) => {
+        let confirmed = [];
+        try { confirmed = await agreeing(accepted); } catch { /* every accepted file stays uncertain */ }
+        const attempted = new Set([...accepted, refused, inFlight].filter(Boolean));
+        const error = new Error(message);
+        error.batchWritesStarted = true;
+        error.completedWrites = confirmed.map(item => resultOf(item, 'vfs-sandbox-matched-after-uncertain-write'));
+        error.uncertainWrites = [...accepted.filter(item => !confirmed.includes(item)), ...(inFlight ? [inFlight] : [])].map(uncertainOf);
+        error.unwrittenPaths = changed.filter(item => !attempted.has(item) || item === refused).map(item => item.path);
+        if (refused) error.refusedPath = refused.path;
+        if (cause?.observed) error.observed = cause.observed;
+        return error;
+      };
+      const accepted = [];
+      let refused = null;
+      let inFlight = null;
+      try {
+        for (const item of changed) {
+          inFlight = item;
+          const reply = await this._durable({ type: item.del ? 'delete' : 'write', path: item.path,
+            ...(item.del ? {} : { content: item.content }), expectedContent: item.original }, deadline);
+          if (reply?.refused) { refused = item; inFlight = null; throw new Error(reply.refused); }
+          accepted.push(item);
+          inFlight = null;
+        }
+      } catch (cause) {
+        throw await failed(refused
+          ? `Make refused the batch write at ${refused.path}: ${cause.message} ${accepted.length} of ${changed.length} file(s) were written before it.`
+          : `Make durable batch write outcome is uncertain: ${cause.message}. Inspect before retrying.`, { accepted, refused, inFlight, cause });
+      }
+      let verification;
+      try {
+        verification = await this._agreeBatch(state, 'after', deadline, { expectedChange: {
+          beforeEntries: treeState.entries, beforeRows: treeState.rows,
+          writtenPaths: changed.filter(item => !item.del && item.original === null && !item.hidden).map(item => item.path),
+          removedPaths: changed.filter(item => item.del && !item.hidden).map(item => item.path) } });
+      } catch (cause) {
+        throw await failed(`Make durable batch write outcome is uncertain: ${cause.message}. Inspect before retrying.`, { accepted, cause });
+      }
+      try {
+        let waited = false;
+        await this._settleTracker(before, [...expected], deadline, { onWait: () => { waited = true; } });
+        // As after any single write that had to wait: both views must still hold the confirmed content.
+        if (waited && (await agreeing(changed)).length !== changed.length) throw contentChanged();
+      } catch (error) {
+        error.batchWritesStarted = true;
+        error.completedWrites = changed.map(item => resultOf(item, verification.get(item.path)));
+        error.uncertainWrites = [];
+        error.unwrittenPaths = [];
+        throw error;
+      }
+      return state.map(item => (item.unchanged ? unchangedResult(item) : resultOf(item, verification.get(item.path))));
     }, { durable: true });
   }
 

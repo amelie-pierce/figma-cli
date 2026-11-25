@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { MakeClient } from '../make-client.js';
+import { batchBarred, chunkBatch, writeInOrder } from '../make-batch.js';
 import { checkWriteMode } from '../make-project.js';
 import { currentBranch, fail, fetchMain, listChanges, ORIGIN_TRUNK, pr, remoteBranchSha, requireNoOperation, revOf, save, start,
   taskBranch, teamContext } from '../make-team.js';
@@ -100,11 +101,18 @@ export async function releaseAtomicaui(client, { requestedVersion, breakingChang
   }
   const completedSet = new Set(completed);
   try {
-    for (const [path, bytes] of output) {
-      if (completedSet.has(path)) continue;
-      const result = await client.writeDurable(path, decode(bytes),
-        { expectedSha256: replacements.get(path) || (path === latestPath ? oldLatestHash : undefined), releaseAsset: true });
-      if (result.changed) { completed.push(path); completedSet.add(path); }
+    // The release files go in batches of at most 25, in the order of `output`.
+    const pending = [...output].filter(([path]) => !completedSet.has(path)).map(([path, bytes]) => ({ path, content: decode(bytes),
+      expectedSha256: replacements.get(path) || (path === latestPath ? oldLatestHash : undefined), releaseAsset: true }));
+    for (const chunk of chunkBatch(pending)) {
+      try {
+        for (const result of await client.writeDurableBatch(chunk)) {
+          if (result.changed) { completed.push(result.path); completedSet.add(result.path); }
+        }
+      } catch (error) {
+        for (const done of error.completedWrites ?? []) if (!completedSet.has(done.path)) { completed.push(done.path); completedSet.add(done.path); }
+        throw error;
+      }
     }
   } catch (error) {
     error.completedWrites = completed.map(path => ({ path }));
@@ -454,24 +462,46 @@ export async function installSoloRelease(client, release, { mode, resume = false
     const result = await client.writeDurable(path, content, { expectedSha256, vendorTreeFallback });
     if (result.changed) writes.push(path);
   };
+  // Files go in the order given, consecutive ones through batched operations of
+  // at most 25; a dependency file (package.json) keeps its own single write at
+  // its position, and VENDOR.json is written alone and last, once these are confirmed.
+  const run = items => writeInOrder(items, {
+    batchable: item => !batchBarred(item.path),
+    single: async item => {
+      if (item.delete) {
+        await client.deleteDurable(item.path, { expectedSha256: item.expectedSha256, vendorTreeFallback: true });
+        writes.push(item.path);
+      } else await write(item.path, item.content, item.expectedSha256, item.path.startsWith(`${ATOMICAUI_ROOT}/`));
+    },
+    batch: async chunk => {
+      try {
+        for (const result of await client.writeDurableBatch(chunk)) if (result.changed) writes.push(result.path);
+      } catch (error) {
+        for (const done of error.completedWrites ?? []) if (done.changed !== false) writes.push(done.path);
+        throw error;
+      }
+    },
+  });
   try {
+    const vendorItems = [];
     for (const [path, bytes] of release.files) {
       if (path === 'VENDOR.json' || pendingSet.has(`${ATOMICAUI_ROOT}/${path}`)) continue;
       const actual = existing.get(path);
       if (actual && actual.sha256 === digest(bytes) && actual.bytes === bytes.length) continue;
-      await write(`${ATOMICAUI_ROOT}/${path}`, decode(bytes), actual?.sha256, true);
+      vendorItems.push({ path: `${ATOMICAUI_ROOT}/${path}`, content: decode(bytes), expectedSha256: actual?.sha256 });
     }
     for (const path of report.removed) {
       if (!existing.has(path)) continue;
-      await client.deleteDurable(`${ATOMICAUI_ROOT}/${path}`, { expectedSha256: existing.get(path).sha256,
-        vendorTreeFallback: true });
-      writes.push(`${ATOMICAUI_ROOT}/${path}`);
+      vendorItems.push({ path: `${ATOMICAUI_ROOT}/${path}`, delete: true, expectedSha256: existing.get(path).sha256 });
     }
+    await run(vendorItems);
     await prefetchCurrent([...appWrites.keys()]);
+    const appItems = [];
     for (const [path, content] of appWrites) {
       const current = await readCurrent(path);
-      if (content !== current.content) await write(path, content, current.sha256);
+      if (content !== current.content) appItems.push({ path, content, expectedSha256: current.sha256 });
     }
+    await run(appItems);
     if (!metadataDone) await write(vendorPath, vendorContent, existing.get('VENDOR.json')?.sha256, true);
   } catch (error) { error.completedWrites = writes.map(path => ({ path })); throw error; }
   const saved = await client.saveVersion(`AtomicAUI ${release.manifest.version} ${report.downgrade ? 'downgrade' : mode}`, [...new Set(writes)].sort());
