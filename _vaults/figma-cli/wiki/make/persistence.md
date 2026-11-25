@@ -21,7 +21,7 @@ The original `replace`, `create`, `import`, and `remove` commands write only the
 
 ## Durable git-mode path
 
-`make write` and `make delete` refuse snapshot mode or an unverified git baseline (`src/make-durable.js:83`). An existing file needs its prior SHA-256; a new file must omit one. Before a change, the CLI compares the client VFS, editor, tree and session sandbox, and backs up replaced or deleted bytes (`src/make-client.js:479`, `src/make-client.js:542`, `src/make-client.js:580`). A page-side VFS recheck prevents a changed entry from being overwritten (`src/make-durable.js:64`). The result remains pending until a version is saved.
+`make write` and `make delete` refuse snapshot mode or an unverified git baseline (`src/make-durable.js:83`). An existing file needs its prior SHA-256; a new file must omit one. Before a change, the CLI compares the client VFS, tree and session sandbox (and the editor buffer only when that file is already mounted; see "Files without an editor" below), and backs up replaced or deleted bytes (`src/make-client.js:479`, `src/make-client.js:542`, `src/make-client.js:580`). A page-side VFS recheck prevents a changed entry from being overwritten (`src/make-durable.js:64`). The result remains pending until a version is saved.
 
 `make save-version` waits for missing expected listed paths before checking the complete pending set and calling Make's in-page `createVersion` (`src/make-client.js:1075`). See [tracker-latency.md](tracker-latency.md) for the settlement guard and [the command reference](../../../../REFERENCE.md#make-saving-modes-and-write-commands) for the save contract and recovery guidance.
 
