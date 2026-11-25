@@ -1082,19 +1082,27 @@ export class MakeClient {
   // sandbox hold each of a failed batch's uncertain files against its target
   // ({ path, content } or { path, delete: true }). Returns [{ path, vfs, sandbox,
   // confirmed }] in order. When every file agrees and `tracker` (the failed
-  // batch's error.batchTracker) is given, Make's change tracker also settles to it.
-  // Nothing is written.
+  // batch's error.batchTracker) is given, Make's change tracker also settles to it;
+  // after any wait both views must still hold every target, as after a single
+  // write. Nothing is written.
   confirmDurableBatch(items, { tracker } = {}) {
     if (!Array.isArray(items) || !items.length || items.length > MAX_BATCH_FILES) throw new Error(`A Make batch holds 1–${MAX_BATCH_FILES} files.`);
     const targets = items.map(item => { sourcePath(item.path); return { path: item.path, del: item.delete === true, content: item.delete === true ? null : item.content }; });
     return this._operation(async deadline => {
       const wanted = item => item.content;
-      const views = await this._withBatchBridges(targets, wanted, deadline, bridges => this._batchReads(targets, wanted, bridges, deadline));
-      const result = targets.map((item, index) => {
-        const ok = item.del ? 'absent' : 'matched';
-        return { path: item.path, vfs: views[index].vfs, sandbox: views[index].sandbox, confirmed: views[index].vfs === ok && views[index].sandbox === ok };
-      });
-      if (tracker && result.every(item => item.confirmed)) await this._settleTracker(tracker.before, tracker.expectedPaths, deadline);
+      const read = async () => {
+        const views = await this._withBatchBridges(targets, wanted, deadline, bridges => this._batchReads(targets, wanted, bridges, deadline));
+        return targets.map((item, index) => {
+          const ok = item.del ? 'absent' : 'matched';
+          return { path: item.path, vfs: views[index].vfs, sandbox: views[index].sandbox, confirmed: views[index].vfs === ok && views[index].sandbox === ok };
+        });
+      };
+      const result = await read();
+      if (tracker && result.every(item => item.confirmed)) {
+        let waited = false;
+        await this._settleTracker(tracker.before, tracker.expectedPaths, deadline, { onWait: () => { waited = true; } });
+        if (waited && !(await read()).every(item => item.confirmed)) throw contentChanged();
+      }
       return result;
     });
   }
@@ -1283,8 +1291,11 @@ export class MakeClient {
   // page-side expectedContent guard refuses one that changes later. After the
   // first write any failure, including a cleanup failure after a complete
   // batch, carries error.batchWritesStarted = true, error.completedWrites (read
-  // back and equal) and error.uncertainWrites (may have landed), plus
-  // error.batchTracker for confirmDurableBatch; nothing is written again.
+  // back and equal) and error.uncertainWrites (may have landed); nothing is
+  // written again. A failure of the write loop or of the read-back after it,
+  // other than a page refusal, also carries error.batchTracker for
+  // confirmDurableBatch and, when the read-back timed out, error.observed (the
+  // last view of each file).
   writeDurableBatch(items, { baseFolders = [], backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     const plan = batchPlan(items);
     // What this call knows once its first write is sent, for a failure that
@@ -1364,14 +1375,14 @@ export class MakeClient {
           views[index].sandbox === (items[index].del ? 'absent' : 'matched'));
       };
       sent.uncertain = () => changed.map(uncertainOf);
-      const failed = async (message, { accepted, inFlight = null, cause }) => {
+      const failed = async (message, { accepted, inFlight = null, cause, refused = null }) => {
         let confirmed = [];
         try { confirmed = await agreeing(accepted); } catch { /* every accepted file stays uncertain */ }
         const error = new Error(message);
         error.batchWritesStarted = true;
         error.completedWrites = confirmed.map(item => resultOf(item, 'vfs-sandbox-matched-after-uncertain-write'));
         error.uncertainWrites = [...accepted.filter(item => !confirmed.includes(item)), ...(inFlight ? [inFlight] : [])].map(uncertainOf);
-        error.batchTracker = trackerFor([...accepted, ...(inFlight ? [inFlight] : [])]);
+        if (!refused) error.batchTracker = trackerFor([...accepted, ...(inFlight ? [inFlight] : [])]);
         if (cause?.observed) error.observed = cause.observed;
         return error;
       };
@@ -1391,7 +1402,7 @@ export class MakeClient {
       } catch (cause) {
         throw await failed(refused
           ? `Make refused the batch write at ${refused.path}: ${cause.message} ${accepted.length} of ${changed.length} file(s) were written before it.`
-          : `Make durable batch write outcome is uncertain: ${cause.message}. Inspect before retrying.`, { accepted, inFlight, cause });
+          : `Make durable batch write outcome is uncertain: ${cause.message}. Inspect before retrying.`, { accepted, inFlight, cause, refused });
       }
       let verification;
       try {

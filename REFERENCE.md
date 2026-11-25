@@ -486,14 +486,20 @@ prints its lines when the batch completes), plus plan, save and verification
 stages. Consecutive non-dependency files are written as one batched operation in
 plan order; `package.json`, lockfiles, unwired entry placeholders and every
 `--override-make` write keep one operation per file. The receipt marks every file
-of a batch `uncertain` before it starts and confirms them after it. If a batch
-fails after its first write, one fresh read-only operation reads its uncertain
-files from the client VFS and the sandbox (as for a single uncertain write): when
-every one holds main's content the deploy counts them written and goes on, writing
-any file the batch never reached in a new batch; otherwise it stops
-(`DEPLOY_WRITE_FAILED`) with the confirmed files confirmed and the rest
-uncertain, and `--resume` continues from what Make holds. A deadline timeout
-confirms nothing inside the failed operation; this follow-up read does.
+of a batch `uncertain` before it starts and confirms them after it. If a batch's
+writes or the read-back after them fail, one fresh read-only operation reads every
+file the batch wrote from the client VFS and the sandbox and settles Make's change
+tracker (as for a single uncertain write): when every one holds main's content the
+deploy counts them written and goes on, writing any file the batch never reached
+in a new batch. That holds whether the failed operation had already read the
+files back itself (Make reported a changed file tree, say) or could not (a
+deadline timeout confirms nothing inside the failed operation). As for a single
+write, nothing is confirmed when the read-back that timed out last saw Make's
+editor differ from a written file or the file tree not show the change. Then,
+and when Make refuses a write, the tracker or the cleanup fails after the writes,
+or a file is not at main's content, the deploy stops (`DEPLOY_WRITE_FAILED`) with
+the confirmed files confirmed and the rest uncertain, and `--resume` continues
+from what Make holds.
 `--detach` starts the same guarded apply in a background process, then returns its
 run ID, PID and private log path after the child acknowledges startup. The child
 writes progress and its final JSON to that log. Startup failure is recorded and

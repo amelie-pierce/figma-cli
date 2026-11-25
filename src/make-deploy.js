@@ -874,12 +874,18 @@ const recordWrite = (receipt, file, backupPath, extra = {}) => {
 // receipt marks every file of the batch uncertain before it starts, so an
 // interruption anywhere inside leaves each of them uncertain for resume and
 // abort, and replaces the marks with what the batch confirmed after it. Nothing
-// is written again inside a batch. A failure after its first write is settled
-// as a single uncertain write is (writeDurableConfirmed): one fresh read-only
-// operation reads the uncertain files from the client VFS and the sandbox, and
-// when every one holds main's content the deploy goes on (a file the batch never
+// is written again inside a batch. A failure of its write loop or of the
+// read-back after it (the error carries batchTracker) is settled as a single
+// uncertain write is (writeDurableConfirmed): one fresh read-only operation
+// reads every file the batch wrote, confirmed inside the failed operation or
+// not, from the client VFS and the sandbox and settles Make's tracker, and when
+// every one holds main's content the deploy goes on (a file the batch never
 // reached is written by a new batch of its own, which refuses first if Make
-// changed). Anything else stops the deploy, and --resume continues from what Make holds.
+// changed). It is not confirmed, as a single write is not, when the read-back
+// that timed out last saw Make's editor differ or the file tree not show the
+// change. That, a page refusal, a tracker or cleanup failure after the writes,
+// and a file not at main's content stop the deploy, and --resume continues from
+// what Make holds.
 async function writeBatch(client, receipt, files, { mainBytes, home, deps }) {
   const writeStarted = Date.now();
   const byPath = new Map(files.map(file => [file.path, file]));
@@ -911,34 +917,41 @@ async function writeBatch(client, receipt, files, { mainBytes, home, deps }) {
     try {
       results = await client.writeDurableBatch(items, { backupDir: backupDir(receipt, home), baseFolders: baseFolders(receipt.plan) });
     } catch (error) {
-      unmark();
       if (error.batchWritesStarted) {
-        for (const done of error.completedWrites ?? []) recordWrite(receipt, byPath.get(done.path), done.backupPath ?? null);
+        const done = error.completedWrites ?? [];
         const unsure = error.uncertainWrites ?? [];
+        const written = [...done, ...unsure];
+        const disagreed = (error.observed ?? []).some(view => view.editor === 'different' ||
+          view.tree === (byPath.get(view.path)?.op === 'delete' ? 'present' : 'absent'));
         let landed = new Set();
+        let settled = false;
         let note = '';
-        if (unsure.length) {
+        if (error.batchTracker && !disagreed) {
           try {
-            const targets = unsure.map(write => items.find(item => item.path === write.path));
+            const targets = written.map(write => items.find(item => item.path === write.path));
             const readBack = await client.confirmDurableBatch(targets, { tracker: error.batchTracker });
             landed = new Set(readBack.filter(view => view.confirmed).map(view => view.path));
+            settled = landed.size === written.length;
             const odd = readBack.find(view => !view.confirmed);
             if (odd) note = ` Read-back after it: ${odd.path} client VFS ${odd.vfs}, sandbox ${odd.sandbox}.`;
           } catch (readError) { note = ` The read-back after it also failed: ${readError.message}`; }
         }
+        unmark();
+        for (const write of done) recordWrite(receipt, byPath.get(write.path), write.backupPath ?? null);
         for (const write of unsure) {
           recordWrite(receipt, byPath.get(write.path), write.backupPath ?? null,
             landed.has(write.path) ? { afterUncertain: true } : { uncertain: true, batch });
         }
-        if (!unsure.length || landed.size < unsure.length) {
+        if (!settled) {
           stop(receipt, error, 'writing', `Deploy stopped while writing ${names}: ${error.message}${note} No version was saved. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
         }
-        // Every file the batch may have written holds main's content: go on with what it never reached.
-        const reached = new Set([...(error.completedWrites ?? []), ...unsure].map(write => write.path));
+        // Every file the batch wrote holds main's content: go on with what it never reached.
+        const reached = new Set(written.map(write => write.path));
         const rest = files.filter(file => !reached.has(file.path));
         if (rest.length) { await writeBatch(client, receipt, rest, { mainBytes, home, deps }); return; }
         break;
       }
+      unmark();
       saveReceipt(receipt);
       if (attempt >= ROUNDS || error.code !== 'MAKE_PENDING_CHANGED') {
         stop(receipt, error, 'writing', `Deploy stopped while writing ${names}: ${error.message} No version was saved. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
@@ -1472,10 +1485,11 @@ async function resumable(client, receipt, what, warn = () => {}, plannedBytes) {
   // A planned path Make does not list counts as written only at main's exact hash.
   const verifiedContent = new Map(checked.files.filter(file => file.state === 'after' && file.afterSha256).map(file => [file.path, file.afterSha256]));
   // The one in-flight write the receipt left uncertain, or the files of one interrupted batch, may have landed: Make then lists it, and it counts only at main's exact hash.
-  const inFlight = new Set(receipt.completedWrites.filter(write => write.uncertain).map(write => write.path));
+  // Each still-uncertain path is judged by its latest uncertain entry: a later batch that held it again replaces an older mark.
+  const inFlight = new Map(receipt.completedWrites.filter(write => write.uncertain).map(write => [write.path, write.batch]));
   for (const write of receipt.completedWrites) if (!write.uncertain && !write.backupOnly) inFlight.delete(write.path);
   // Exactly one uncertain write, or every uncertain file of the one batch that was interrupted: never an unrelated set.
-  const batches = new Set(receipt.completedWrites.filter(write => write.uncertain && inFlight.has(write.path)).map(write => write.batch));
+  const batches = new Set(inFlight.values());
   const landed = inFlight.size === 1 || (batches.size === 1 && !batches.has(undefined))
     ? checked.files.filter(file => inFlight.has(file.path) && file.state === 'after' && file.afterSha256) : [];
   const landedContent = new Map(landed.map(file => [file.path, file.afterSha256]));

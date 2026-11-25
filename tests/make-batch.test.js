@@ -153,6 +153,7 @@ test('the page-side guard refuses a file that changed after the pre-check: the b
   const error = await client.writeDurableBatch([edit('src/a.ts', 'a1', 'a0'), edit('src/b.ts', 'b1', 'b0'), edit('src/c.ts', 'c1', 'c0'), edit('src/d.ts', 'd1', 'd0')]).catch(cause => cause);
   assert.match(error.message, /Make refused the batch write at src\/c\.ts/);
   assert.equal(error.batchWritesStarted, true);
+  assert.equal(error.batchTracker, undefined, 'a refusal is not a write to confirm by reading back, as for one file');
   assert.deepEqual(error.completedWrites.map(result => result.path), ['src/a.ts', 'src/b.ts']);
   assert.deepEqual(error.uncertainWrites, []);
   assert.equal(error.completedWrites[0].backupPath, '/private/backup/src/a.ts');
@@ -209,6 +210,33 @@ test('confirmDurableBatch reads both views and reports what differs; a deleted f
     [['src/a.ts', 'matched', 'matched', true], ['src/b.ts', 'different', 'different', false], ['src/gone.ts', 'absent', 'absent', true]]);
   assert.equal(calls.some(call => ['write', 'delete', 'backup'].includes(call[0])), false);
   assert.throws(() => client.confirmDurableBatch([]), /1–25 files/);
+});
+
+test('confirmDurableBatch that had to wait for the tracker reads both views again and fails when one no longer holds its target', async () => {
+  // src/a.ts was written to a1; Make lists it late, so the confirmation waits for the tracker.
+  const run = async whileWaiting => {
+    const { client, vfs, sb } = fakeMake({ 'src/a.ts': 'a0' });
+    const before = (await client._driftState()).state;
+    vfs.set('src/a.ts', 'a1');
+    sb.set('src/a.ts', 'a1');
+    const real = client._driftState;
+    let polls = 0;
+    client._driftState = async () => {
+      const value = await real();
+      if (++polls > 2) return value;
+      whileWaiting({ vfs, sb });
+      return { state: { ...value.state, pendingPaths: [], pendingCount: 0 } };
+    };
+    const outcome = await client.confirmDurableBatch([{ path: 'src/a.ts', content: 'a1' }], { tracker: { before, expectedPaths: ['src/a.ts'] } }).catch(cause => cause);
+    return { outcome, polls };
+  };
+  const kept = await run(() => {});
+  assert.ok(kept.polls > 2, 'the tracker was waited for');
+  assert.deepEqual(kept.outcome.map(view => [view.path, view.confirmed]), [['src/a.ts', true]]);
+  const sandboxMoved = await run(({ sb }) => sb.set('src/a.ts', 'rewritten by Make'));
+  assert.equal(sandboxMoved.outcome.code, 'MAKE_CONTENT_CHANGED');
+  const vfsMoved = await run(({ vfs }) => vfs.set('src/a.ts', 'rewritten by Make'));
+  assert.equal(vfsMoved.outcome.code, 'MAKE_CONTENT_CHANGED');
 });
 
 test('a cleanup failure after a complete batch still carries every written file', async () => {
@@ -436,6 +464,11 @@ test('a batch fails when the tree after it shows an unexpected entry, a missing 
   const extra = await run({ afterWrite: () => { after = true; }, tree: paths => (after ? [...paths, 'src/stray.ts'] : paths) });
   assert.match(extra.message, /Make file tree changed before the requested action/);
   assert.equal(extra.batchWritesStarted, true);
+  // With time left the batch reads its own writes back: every file is confirmed, none uncertain, and the
+  // tracker expectation for the follow-up confirmation covers them all.
+  assert.deepEqual(extra.completedWrites.map(result => result.path), ['src/a.ts', 'src/lib/n.ts']);
+  assert.deepEqual(extra.uncertainWrites, []);
+  assert.deepEqual(extra.batchTracker.expectedPaths, ['src/a.ts', 'src/lib/n.ts']);
   after = false;
   const missing = await run({ afterWrite: () => { after = true; }, tree: paths => (after ? paths.filter(path => path !== 'src/b.ts') : paths) });
   assert.match(missing.message, /Make file tree changed before the requested action/);
