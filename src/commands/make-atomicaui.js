@@ -6,7 +6,6 @@ import { currentBranch, fail, fetchMain, listChanges, ORIGIN_TRUNK, pr, remoteBr
   taskBranch, teamContext } from '../make-team.js';
 import { review } from '../make-team-review.js';
 import { listenNotice } from '../lavish-listen.js';
-import { READ_CONCURRENCY, mapLimit } from '../lib/map-limit.js';
 import { digest, vendorManifest } from '../make-drift.js';
 import { ATOMICAUI_ROOT, ATOMICAUI_SITE, RELEASE_ROOT, buildRelease, changeReport, downloadRelease,
   compareVersions, installRelease, installedStatus, latestRelease, mergeDependencies, nextPatch, planBreakingFixes, vendorEdits, version } from '../make-atomicaui.js';
@@ -412,9 +411,13 @@ export async function installSoloRelease(client, release, { mode, resume = false
     if (!reads.has(path)) reads.set(path, await client.read(path, { remote: true }));
     return reads.get(path);
   };
-  // Warm the memo with overlapping reads. A failed read is left for the
-  // ordered reads below, which then fail exactly as before.
-  const prefetchCurrent = paths => mapLimit(paths, READ_CONCURRENCY, path => readCurrent(path).catch(() => null));
+  // Warm the memo with one batch whose sandbox reads overlap. A failed batch
+  // is left for the ordered reads below, which then fail exactly as before.
+  const prefetchCurrent = async paths => {
+    const present = paths.filter(path => names.has(path));
+    if (!present.length) return;
+    try { for (const [path, file] of await client.readRemoteFiles(present)) reads.set(path, file); } catch {}
+  };
   if (!resume) await prefetchCurrent(appPaths);
   const baseContent = async path => resume ? savedText.get(path) : (await readCurrent(path)).content;
   const fixes = await planBreakingFixes(release.manifest, baseContent);

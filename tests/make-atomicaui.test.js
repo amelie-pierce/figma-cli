@@ -10,6 +10,7 @@ import { buildRelease, DEFAULT_PART_BASE64_BYTES, downloadRelease, getBytes, ins
 import { findProvider, installSoloRelease, installTeamRelease, providerCandidates, prepareTeamBranch, releaseAtomicaui, teamChangeReport,
   verifyAtomicauiRelease } from '../src/commands/make-atomicaui.js';
 import { defaultRun, teamContext } from '../src/make-team.js';
+import { MakeClient } from '../src/make-client.js';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 // Release pre-write reads go through readRemoteFiles; read() would list the
@@ -400,18 +401,29 @@ test('fake solo Make client writes provider, stylesheet, sass, dependencies and 
       return { contents, inventory: new Map([...contents].map(([path, bytes]) => [path, { bytes: bytes.length, sha256: hash(bytes) }])), state };
     },
   };
-  const readLog = [];
-  let readsActive = 0, readsPeak = 0;
-  const plainRead = client.read;
-  client.read = async (path, options) => {
-    readLog.push(path); readsPeak = Math.max(readsPeak, ++readsActive);
+  // Reads go through a real MakeClient, which refuses a second operation
+  // while one is running; only its page transport and sandbox bridge are faked.
+  const make = new MakeClient({ transport: { close() {}, evaluate: async () => true, send: async () => ({}) }, timeoutMs: 5000 });
+  make.fileKey = client.fileKey;
+  const singleReads = [], batches = [];
+  let bridgeActive = 0, bridgePeak = 0;
+  make._fileBridge = async () => ({ dispose: async () => {} });
+  make._bridgeRead = async (_bridge, path) => {
+    bridgePeak = Math.max(bridgePeak, ++bridgeActive);
     await new Promise(resolve => setTimeout(resolve, 2));
-    readsActive--; return plainRead(path, options);
+    bridgeActive--; return { content: files.get(path).toString() };
   };
+  const plainRead = client.read;
+  client.read = path => { singleReads.push(path); return make._operation(() => plainRead(path)); };
+  client.readRemoteFiles = paths => { batches.push(paths); return make.readRemoteFiles(paths); };
+  await Promise.all([client.read('package.json'), assert.rejects(client.read('package.json'), /already running/)]);
+  singleReads.length = 0;
   const result = await installSoloRelease(client, payload, { mode: 'add' });
-  // The current-content reads overlap, cover the same files, and read each once.
-  assert.deepEqual([...readLog].sort(), ['package.json', 'src/main.tsx']);
-  assert.equal(readsPeak, 2);
+  // The current-content reads are one operation whose two sandbox reads
+  // overlap; neither file is then read again on its own.
+  assert.deepEqual(batches[0], ['src/main.tsx', 'package.json']);
+  assert.equal(bridgePeak, 2);
+  assert.deepEqual(singleReads, []);
   assert.equal(result.savedVersion, 4);
   assert.equal(saves.length, 1);
   assert.deepEqual(saves[0], [...files.keys()].filter(path => path.startsWith('src/vendor/atomic-aui/') || path === 'src/main.tsx' || path === 'package.json').sort());

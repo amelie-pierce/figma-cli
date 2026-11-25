@@ -78,11 +78,12 @@ describe('sandbox git object reader', () => {
       git(dir, 'prune-packed');
       const tree = git(dir, 'rev-parse', 'HEAD^{tree}');
       let active = 0, peak = 0;
-      const counted = { ...io(dir), readFile: async path => { peak = Math.max(peak, ++active); await new Promise(r => setTimeout(r, 2)); active--; return io(dir).readFile(path); } };
+      const counted = { ...io(dir), listDir: async path => { peak = Math.max(peak, ++active); await new Promise(r => setTimeout(r, 2)); active--; return io(dir).listDir(path); } };
       const flat = await new SandboxGit(counted).flatten(tree);
       const expected = git(dir, 'ls-tree', '-r', tree).split('\n').map(line => line.split('\t')[1]);
       assert.deepEqual([...flat.keys()], expected);
-      assert.ok(peak <= 8);
+      // The fixture's root tree has two subtrees, src and .figma: they are looked up together.
+      assert.equal(peak, 2);
       const missing = new SandboxGit({ ...io(dir), readFile: async path => path.endsWith('.pack') ? null : io(dir).readFile(path) });
       await assert.rejects(missing.flatten(tree), /unreadable or too large/);
       await assert.rejects(new SandboxGit(io(dir)).flatten(git(dir, 'rev-parse', 'HEAD')), /is not a tree/);
