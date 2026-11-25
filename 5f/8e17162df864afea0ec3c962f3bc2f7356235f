@@ -1,0 +1,20 @@
+CHANGELOG.md
+  h_eb882fdf9e0ce8 58
+_vaults/figma-cli/wiki/make/filesystem-bridge.md
+  h_eb882fdf9e0ce8 48
+_vaults/figma-cli/wiki/make/persistence.md
+  h_eb882fdf9e0ce8 52
+_vaults/figma-cli/wiki/make/status.md
+  h_eb882fdf9e0ce8 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5f8e17162df864afea0ec3c962f3bc2f7356235f",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
