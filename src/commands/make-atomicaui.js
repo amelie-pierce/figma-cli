@@ -443,8 +443,7 @@ export async function installSoloRelease(client, release, { mode, resume = false
   for (const note of wiring.notes) console.error(`note: ${note}`);
   report.dependencies = wiring.dependencies;
   const appWrites = new Map([...fixes].map(([path, entry]) => [path, entry.content]).concat([...wiring.files]));
-  if (resume) await prefetchCurrent(appPaths.filter(path => pendingSet.has(path)
-    && (appWrites.get(path) ?? savedText.get(path)) !== savedText.get(path)));
+  if (resume) await prefetchCurrent(appPaths.filter(path => pendingSet.has(path)));
   for (const path of appPaths) {
     if (!pendingSet.has(path)) continue;
     const expected = appWrites.get(path) ?? savedText.get(path);
