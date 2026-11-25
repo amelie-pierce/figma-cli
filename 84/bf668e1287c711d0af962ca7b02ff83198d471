@@ -1,0 +1,18 @@
+CHANGELOG.md
+  h_eb882fdf9e0ce8 7
+REFERENCE.md
+  h_eb882fdf9e0ce8 621-625
+_vaults/figma-cli/wiki/make/size-and-timeouts.md
+  h_eb882fdf9e0ce8 37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "84bf668e1287c711d0af962ca7b02ff83198d471",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
