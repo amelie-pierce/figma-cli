@@ -433,7 +433,8 @@ function checkUnopenedReadback(make) {
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async (_bridge, path) => ({ content: make.working.get(path).toString() });
   client._sourceTree = async () => [{ kind: 'file', path: DEEP_PATH }];
-  client._read = async () => { throw Object.assign(new Error('Make shows no source editor.'), { code: 'MAKE_NO_EDITOR' }); };
+  client._select = client._read = async () => { throw new Error('a deploy write must not select a file'); };
+  client._editor = async () => ({ editorCount: 0 });
   make.hooks.afterWrite = async path => {
     if (path === DEEP_PATH) make.deepReadback = await client._durableAgreement(path, make.working.get(path).toString(), Date.now() + 1000);
   };

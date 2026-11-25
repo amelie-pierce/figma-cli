@@ -14,6 +14,23 @@ const next = 'b'.repeat(40);
 const state = (paths = []) => ({ mode: 'git', hasBaseline: true, savedVersion: base,
   pendingCount: paths.length, pendingPaths: paths, isLoading: false, error: false });
 
+// A write or delete must never click a file in Make's editor: the client's
+// select and read paths throw, and the editor is only inspected. `editor` is the
+// state of the mounted editor; `content` (a value or a function) is its buffer.
+function mountEditor(client, editor, content) {
+  const actions = [];
+  const deny = async () => { throw new Error('a durable write must not select a file in the editor'); };
+  client._select = deny;
+  client._read = deny;
+  client._editor = async action => {
+    actions.push(action.type);
+    if (action.type === 'inspect') return typeof editor === 'function' ? editor() : editor;
+    if (action.type === 'read-mounted') return { content: typeof content === 'function' ? content() : content };
+    throw new Error(`unexpected editor action ${action.type}`);
+  };
+  return actions;
+}
+
 function fakeClient({ original = null, paths = [], post = state(paths), version } = {}) {
   const calls = [];
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 5000 });
@@ -72,17 +89,12 @@ test('replacement backs up old bytes, invokes VFS and verifies agreement', async
   ]);
 });
 
-test('replacement reuses a validated editor selection and reselects if it moved', async () => {
-  for (const moved of [false, true]) {
+test('replacement agrees through a mounted editor of the file and never selects', async () => {
+  for (const mounted of [true, false]) {
     const { client } = fakeClient({ original: 'old' });
     // Exercise the real agreement path instead of fakeClient's agreement stub.
     client._durableAgreement = MakeClient.prototype._durableAgreement;
-    client._sourceTree = async (_deadline, _expectedChange, onSnapshot) => {
-      const entries = [{ kind: 'file', path: 'src/App.tsx' }];
-      const rows = [...entry.ancestors, { ...entry, selected: true }];
-      onSnapshot?.({ entries, rows, renderedRows: rows });
-      return entries;
-    };
+    client._sourceTree = async () => [{ kind: 'file', path: 'src/App.tsx' }];
     client._fileBridge = async () => ({ dispose: async () => {} });
     let current = 'old';
     client._driftState = async () => ({ state: state(current === 'old' ? [] : ['src/App.tsx']) });
@@ -91,17 +103,11 @@ test('replacement reuses a validated editor selection and reselects if it moved'
       if (action.type === 'write') { current = action.content; return { accepted: true }; }
     };
     client._bridgeRead = async () => ({ content: current });
-    let selections = 0;
-    const entry = { path: 'src/App.tsx', name: 'App.tsx', kind: 'file', level: 2, top: 32,
-      ancestors: [{ name: 'src', kind: 'folder', level: 1, top: 0, height: 32, expanded: true }] };
-    client._read = async () => { selections++; return { content: current, entry }; };
-    client._editor = async () => {
-      if (moved) throw new Error('Make selected source file changed before the editor operation.');
-      return { content: current };
-    };
+    const actions = mountEditor(client, { editorCount: 1, editorPath: mounted ? 'src/App.tsx' : 'src/Other.tsx' }, () => current);
     const result = await client.writeDurable('src/App.tsx', 'new', { expectedSha256: hash('old') });
-    assert.equal(result.verification, 'editor-tree-vfs-sandbox-matched');
-    assert.equal(selections, moved ? 2 : 1);
+    assert.equal(result.verification, mounted ? 'editor-tree-vfs-sandbox-matched' : 'tree-vfs-sandbox-matched');
+    assert.deepEqual(actions.filter(type => type !== 'inspect' && type !== 'read-mounted'), []);
+    assert.equal(actions.includes('read-mounted'), mounted);
   }
 });
 
@@ -233,7 +239,7 @@ test('read-back waits until VFS, sandbox, tree and editor agree', async () => {
   client._bridgeRead = async () => ({ content: 'new' });
   client._sourceTree = async () => [{ kind: 'file', path: 'src/a.ts' }];
   let editorReads = 0;
-  client._read = async () => ({ content: ++editorReads === 1 ? 'old' : 'new' });
+  mountEditor(client, { editorCount: 1, editorPath: 'src/a.ts' }, () => ++editorReads === 1 ? 'old' : 'new');
   await client._durableAgreement('src/a.ts', 'new', Date.now() + 1000);
   assert.equal(editorReads, 2);
 });
@@ -391,14 +397,14 @@ test('Markdown read-back accepts VFS, sandbox and tree when Make shows no editor
   client._bridgeRead = async () => ({ content: '# Workbench\n' });
   client._sourceTree = async () => [{ kind: 'file', path: 'guidelines/workbench.md' }];
   // Make renders Markdown as a preview: the selected file never gets an editor.
-  client._select = async () => ({ name: 'workbench.md' });
   let inspections = 0;
-  client._editor = async action => { inspections++; assert.equal(action.type, 'inspect'); return { editorCount: 0 }; };
+  const actions = mountEditor(client, () => { inspections++; return { editorCount: 0 }; });
   const started = Date.now();
   const verification = await client._durableAgreement('guidelines/workbench.md', '# Workbench\n', Date.now() + 5000);
   assert.equal(verification, 'tree-vfs-sandbox-matched');
-  assert.ok(inspections > 1);
-  assert.ok(Date.now() - started < 4500, 'the editor wait is bounded well inside the operation deadline');
+  assert.equal(inspections, 1, 'one non-clicking inspect, no editor wait');
+  assert.deepEqual(actions, ['inspect']);
+  assert.ok(Date.now() - started < 1000, 'no editor wait is spent on a file that is not mounted');
 });
 
 test('a file with an editor is still compared through that editor', async () => {
@@ -408,10 +414,7 @@ test('a file with an editor is still compared through that editor', async () => 
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async () => ({ content: 'new' });
   client._sourceTree = async () => [{ kind: 'file', path: 'src/a.ts' }];
-  client._read = async (_path, _deadline, options) => {
-    assert.equal(typeof options.editorWaitMs, 'number');
-    return { content: 'new' };
-  };
+  mountEditor(client, { editorCount: 1, editorPath: 'src/a.ts' }, 'new');
   assert.equal(await client._durableAgreement('src/a.ts', 'new', Date.now() + 1000), 'editor-tree-vfs-sandbox-matched');
 });
 
@@ -422,9 +425,8 @@ test('an unopened source file accepts matching VFS, sandbox and tree after a bou
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async () => ({ content: 'export default 1;\n' });
   client._sourceTree = async () => [{ kind: 'file', path: 'src/App.tsx' }];
-  client._select = async () => ({ name: 'App.tsx' });
-  // The editor has not mounted after the Markdown preview window.
-  client._editor = async action => { assert.equal(action.type, 'inspect'); return { editorCount: 0 }; };
+  // No editor is mounted: nothing is clicked to open one.
+  mountEditor(client, { editorCount: 0 });
   const started = Date.now();
   assert.equal(await client._durableAgreement('src/App.tsx', 'export default 1;\n', Date.now() + 5000),
     'tree-vfs-sandbox-matched');
@@ -439,7 +441,7 @@ test('a mounted editor that disagrees refuses the three-view fallback', async ()
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async () => ({ content: 'expected' });
   client._sourceTree = async () => [{ kind: 'file', path }];
-  client._read = async () => ({ content: 'different' });
+  mountEditor(client, { editorCount: 1, editorPath: path }, 'different');
   const error = await client._durableAgreement(path, 'expected', Date.now() + 300).catch(cause => cause);
   assert.match(error.message, /editor different/);
 });
@@ -455,7 +457,7 @@ function lineEndingClient({ stored = CRLF_SVG, editor = CRLF_SVG.replace(/\r\n/g
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async () => ({ content: stored });
   client._sourceTree = async () => [{ kind: 'file', path }];
-  client._read = async () => ({ content: editor });
+  mountEditor(client, { editorCount: 1, editorPath: path }, editor);
   return { client, path };
 }
 
@@ -490,12 +492,12 @@ test('a CRLF write whose mounted editor shows LF is confirmed, not left uncertai
     if (action.type === 'write') { current = action.content; return { accepted: true }; }
   };
   client._bridgeRead = async () => ({ content: current });
-  client._read = async () => ({ content: current.replace(/\r\n/g, '\n') });
+  mountEditor(client, { editorCount: 1, editorPath: path }, () => current.replace(/\r\n/g, '\n'));
   const result = await client.writeDurableConfirmed(path, CRLF_SVG, { expectedSha256: hash('old') });
   assert.equal(result.verification, 'editor-lf-tree-vfs-sandbox-matched');
   assert.equal(result.sha256, hash(CRLF_SVG));
   assert.equal(current, CRLF_SVG);
-  client._read = async () => ({ content: current.replace(/\r\n/g, '\n').replace('M0 0', 'M9 9') });
+  mountEditor(client, { editorCount: 1, editorPath: path }, () => current.replace(/\r\n/g, '\n').replace('M0 0', 'M9 9'));
   current = 'old';
   client.timeoutMs = 600;
   const error = await client.writeDurableConfirmed(path, CRLF_SVG, { expectedSha256: hash('old') }).catch(cause => cause);
@@ -518,7 +520,7 @@ test('a sandbox or tree mismatch refuses the missing-editor fallback', async () 
   await assert.rejects(client._durableAgreement(path, 'expected', Date.now() + 300), /tree absent/);
 });
 
-test('an editor that disagreed earlier refuses the deep viewport fallback', async () => {
+test('an editor that disagreed earlier is not forgotten when the editor later stops showing the file', async () => {
   const path = 'src/vendor/atomic-aui/lib/datepicker/use-recipe.ts';
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
   client.fileKey = 'ScratchKey';
@@ -526,16 +528,14 @@ test('an editor that disagreed earlier refuses the deep viewport fallback', asyn
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async () => ({ content: 'expected' });
   client._sourceTree = async () => [{ kind: 'file', path }];
-  client._editor = async () => ({ editorCount: 1, editorPath: 'src/App.tsx' });
-  let reads = 0;
-  client._read = async () => {
-    if (reads++ === 0) return { content: 'different' };
-    throw Object.assign(new Error('viewport refused'), { code: 'MAKE_TREE_VIEWPORT' });
-  };
+  let inspections = 0;
+  mountEditor(client, () => ++inspections === 1
+    ? { editorCount: 1, editorPath: path } : { editorCount: 1, editorPath: 'src/App.tsx' }, 'different');
   await assert.rejects(client._durableAgreement(path, 'expected', Date.now() + 300), /editor different/);
+  assert.ok(inspections > 1, 'the editor was inspected again after it disagreed');
 });
 
-test('verified vendor write uses three live views only when deep ancestry cannot fit the tree viewport', async () => {
+test('verified vendor write accepts three live views when the mounted editor names no path', async () => {
   const path = 'src/vendor/atomic-aui/lib/drawer/use-recipe.ts';
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
   client.fileKey = 'ScratchKey';
@@ -543,16 +543,19 @@ test('verified vendor write uses three live views only when deep ancestry cannot
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async () => ({ content: 'vendor bytes' });
   client._sourceTree = async () => [{ kind: 'file', path }];
-  client._read = async () => { throw Object.assign(new Error('Make source ancestry cannot fit in the file-tree viewport; selection was refused.'),
-    { code: 'MAKE_TREE_VIEWPORT' }); };
-  client._editor = async () => ({ editorCount: 1, editorPath: null });
+  mountEditor(client, { editorCount: 1, editorPath: null });
   assert.equal(await client._durableAgreement(path, 'vendor bytes', Date.now() + 1000,
     { vendorTreeFallback: true }), 'tree-vfs-sandbox-vendor-matched');
-  await assert.rejects(client._durableAgreement(path, 'vendor bytes', Date.now() + 300), /editor unavailable/);
-  client._editor = async () => ({ editorCount: 1, editorPath: path });
+  // Without the vendor flag the same editor state takes the plain accepted outcome.
+  assert.equal(await client._durableAgreement(path, 'vendor bytes', Date.now() + 1000), 'tree-vfs-sandbox-matched');
+  // A mounted editor of this very path must still be readable and match.
+  client._editor = async action => {
+    if (action.type === 'inspect') return { editorCount: 1, editorPath: path };
+    throw new Error('Make editor is not mounted for the requested path.');
+  };
   await assert.rejects(client._durableAgreement(path, 'vendor bytes', Date.now() + 300,
     { vendorTreeFallback: true }), /editor unavailable/);
-  client._editor = async () => ({ editorCount: 1, editorPath: null });
+  mountEditor(client, { editorCount: 1, editorPath: null });
   await assert.rejects(client._durableAgreement('src/App.tsx', 'vendor bytes', Date.now() + 1000,
     { vendorTreeFallback: true }), /limited to src\/vendor\/atomic-aui/);
   assert.throws(() => client.writeDurable('src/App.tsx', 'vendor bytes', { vendorTreeFallback: true }),
@@ -571,7 +574,7 @@ test('vendor tree fallback does not accept a missing editor for another reason',
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async () => ({ content: 'vendor bytes' });
   client._sourceTree = async () => [{ kind: 'file', path }];
-  client._read = async () => { throw new Error('Make editor is temporarily unavailable.'); };
+  client._editor = async () => { throw new Error('Make editor is temporarily unavailable.'); };
   const error = await client._durableAgreement(path, 'vendor bytes', Date.now() + 300,
     { vendorTreeFallback: true }).catch(cause => cause);
   assert.match(error.message, /editor unavailable/);

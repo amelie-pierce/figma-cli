@@ -174,6 +174,14 @@ function makeEditorAction(action, workspace) {
     editorPath: editorPath(),
   };
   if (action.type === 'ensure-code' || action.type === 'inspect') return summary;
+  // Reads the editor already mounted for `path` without selecting anything.
+  if (action.type === 'read-mounted') {
+    const view = editors.length === 1 ? editors[0].cmView?.view : null;
+    if (!ready || summary.editorPath !== action.path || typeof view?.state?.doc?.toString !== 'function') {
+      throw new Error('Make editor is not mounted for the requested path.');
+    }
+    return { content: view.state.doc.toString() };
+  }
   // Source writes go through the filesystem bridge, never the editor.
   if (!['read', 'diagnostics'].includes(action.type)) throw new Error('Unknown Make editor action.');
   if (!ready) throw new Error('Make Code editor is not ready.');
@@ -355,7 +363,7 @@ export class MakeClient {
   // operation's remaining time; reads change nothing.
   _editor(action, deadline) {
     return this._evaluate(`(${makeEditorAction.toString()})(${JSON.stringify(action)}, (${makeWorkspace.toString()}))`, deadline,
-      { bytes: action.type === 'read' ? Infinity : 0 });
+      { bytes: ['read', 'read-mounted'].includes(action.type) ? Infinity : 0 });
   }
 
   async _operation(callback, { durable = false } = {}) {
@@ -829,7 +837,6 @@ export class MakeClient {
         const prefetched = expectedContent === null && !expectedChange ? treeState?.prefetched : undefined;
         if (treeState) delete treeState.prefetched;
         let tree;
-        let renderedRows = [];
         if (prefetched?.tree) {
           tree = prefetched.tree;
           treeState.entries = prefetched.entries;
@@ -839,7 +846,6 @@ export class MakeClient {
             ? snapshot => {
               treeState.entries = snapshot.entries;
               treeState.rows = snapshot.rows;
-              renderedRows = snapshot.renderedRows ?? [];
             } : undefined);
         }
         const inTree = tree.some(entry => entry.kind === 'file' && entry.path === path);
@@ -859,50 +865,33 @@ export class MakeClient {
             // mounting a source editor after many such files are added; the
             // rendered tree, client VFS and sandbox still give three views.
             if (releaseAsset) return 'tree-vfs-sandbox-release-matched';
-            // Make need not mount an editor for a file that is not open. If it
-            // does mount one, its bytes must also agree. Deep paths may be
-            // listed in the tree even when the viewport cannot select them;
-            // they fall back only while the mounted editor provably shows
-            // another path.
+            // Make need not mount an editor for a file that is not open, and
+            // selecting one would collapse every unrelated folder (the next
+            // tree scan re-expands them one by one). So the editor is only a
+            // bonus view: inspect it without clicking, and compare it only
+            // when it already shows this exact path. Any other editor state
+            // leaves VFS, sandbox and tree as the agreeing views.
             try {
-              // The full tree scan may unmount the selected row or its parents.
-              // Use its final viewport snapshot to avoid a doomed cached read;
-              // the editor action still validates the entry against live DOM.
-              let editor;
-              const entry = treeState?.editorEntry;
-              if (entry && [entry, ...entry.ancestors].every(expected => renderedRows.some(row =>
-                row.name === expected.name && row.kind === expected.kind &&
-                row.level === expected.level && row.top === expected.top &&
-                (expected === entry ? row.selected : row.expanded && row.height === expected.height)))) {
-                try {
-                  const current = await this._editor({ type: 'read', entry }, deadline);
-                  editor = { content: current.content, entry };
-                } catch { /* The selection changed; use the guarded path selection below. */ }
-              }
-              editor ??= await this._read(path, deadline, { editorWaitMs: EDITOR_WAIT_MS });
-              // Make's code editor shows text with LF line endings, so a CRLF
-              // file it mounts reads back as LF. The client VFS and sandbox
-              // above still matched the exact bytes; only that line-ending
-              // difference is accepted from the editor view.
-              observed.editor = editor.content === expectedContent ? 'matched'
-                : sameIgnoringLineEndings(editor.content, expectedContent) ? 'matched-lf' : 'different';
-              if (observed.editor !== 'different') {
-                if (treeState) treeState.editorEntry = editor.entry;
-                return observed.editor === 'matched' ? 'editor-tree-vfs-sandbox-matched' : 'editor-lf-tree-vfs-sandbox-matched';
-              }
-              editorDisagreed = true;
-            } catch (error) {
-              if (!editorDisagreed && error.code === 'MAKE_NO_EDITOR') return 'tree-vfs-sandbox-matched';
-              if (!editorDisagreed && error.code === 'MAKE_TREE_VIEWPORT') {
-                const editor = await this._editor({ type: 'inspect' }, deadline);
-                if (editor.editorCount === 0 || (editor.editorPath && editor.editorPath !== path)) {
-                  return 'tree-vfs-sandbox-matched';
+              const editor = await this._editor({ type: 'inspect' }, deadline);
+              if (editor.editorCount > 0 && editor.editorPath === path) {
+                const current = await this._editor({ type: 'read-mounted', path }, deadline);
+                // Make's code editor shows text with LF line endings, so a CRLF
+                // file it mounts reads back as LF. The client VFS and sandbox
+                // above still matched the exact bytes; only that line-ending
+                // difference is accepted from the editor view.
+                observed.editor = current.content === expectedContent ? 'matched'
+                  : sameIgnoringLineEndings(current.content, expectedContent) ? 'matched-lf' : 'different';
+                if (observed.editor !== 'different') {
+                  return observed.editor === 'matched' ? 'editor-tree-vfs-sandbox-matched' : 'editor-lf-tree-vfs-sandbox-matched';
                 }
-                // Deep vendor paths can exceed Make's virtualized tree viewport
-                // while a mounted editor reports no path. The release installer
-                // already verified their bytes; three live views still agree.
-                if (vendorTreeFallback && !editor.editorPath) return 'tree-vfs-sandbox-vendor-matched';
-              }
+                editorDisagreed = true;
+              } else if (!editorDisagreed) {
+                // Deep vendor paths with a mounted editor that names no path:
+                // the release installer already verified their bytes.
+                if (vendorTreeFallback && editor.editorCount > 0 && !editor.editorPath) return 'tree-vfs-sandbox-vendor-matched';
+                return 'tree-vfs-sandbox-matched';
+              } else observed.editor = 'different';
+            } catch {
               observed.editor = editorDisagreed ? 'different' : 'unavailable';
             }
           }

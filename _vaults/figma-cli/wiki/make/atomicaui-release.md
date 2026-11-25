@@ -42,8 +42,9 @@ equal the release, and each pending app file must equal the fixes and wiring
 applied to its saved text (and differ from it) before the single save
 (`src/commands/make-atomicaui.js`).
 Deep vendor paths may exceed the Make file-tree viewport, which prevents the
-editor selector from proving their ancestry (`src/make-tree.js:403`). When
-that refusal coincides with a mounted editor that reports no path, solo
+editor selector from proving their ancestry (`src/make-tree.js:403`); writes no
+longer select, so they are not stopped by that refusal. When
+a mounted editor reports no path, solo
 installation and workspace sync accept agreement among
 the client VFS, sandbox, and rendered tree for paths under
 `src/vendor/atomic-aui/`; an editor showing the same path, and other editor
