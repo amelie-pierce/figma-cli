@@ -320,6 +320,77 @@ test('absence read-back lists the nearest existing ancestor of a new directory',
   assert.deepEqual(listed, ['code/src/components/new', 'code/src/components', 'code/src']);
 });
 
+// A new-file write's ancestor check lists the tree first; the sandbox absence
+// check then starts at the nearest folder that tree shows (R2).
+function treeAbsenceClient(answers, tree) {
+  const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
+  client.fileKey = 'ScratchKey';
+  client._durable = async () => ({ exists: false, content: null });
+  const listed = [];
+  client._fileBridge = async () => ({ dispose: async () => {}, invoke: async (_fn, [, data]) => {
+    listed.push(data.path);
+    const files = answers[data.path];
+    if (!files) throw new Error('Make filesystem request timed out; outcome is unknown.');
+    return { success: true, data: { path: data.path, files } };
+  } });
+  client._sourceTree = async () => tree;
+  const treeState = { prefetched: { entries: [], rows: [], tree } };
+  return { client, listed, treeState };
+}
+const folder = path => ({ kind: 'folder', path });
+
+test('absence check starts at the nearest ancestor the tree shows, with no timed-out listing for new folders', async () => {
+  const tree = [folder('src'), folder('src/components'), { kind: 'file', path: 'src/App.tsx' }];
+  const { client, listed, treeState } = treeAbsenceClient({ 'code/src/components': [{ name: 'Button.tsx' }] }, tree);
+  assert.equal(await client._durableAgreement('src/components/a/b/Foo.tsx', null, Date.now() + 1000, { treeState }),
+    'tree-vfs-sandbox-delete-matched');
+  assert.deepEqual(listed, ['code/src/components']);
+});
+
+test('absence check falls back to the walk-up when the tree-proven ancestor cannot be listed', async () => {
+  const tree = [folder('src'), folder('src/components')];
+  const { client, listed, treeState } = treeAbsenceClient({ 'code/src': [{ name: 'App.tsx' }] }, tree);
+  assert.equal(await client._durableAgreement('src/components/a/b/Foo.tsx', null, Date.now() + 1000, { treeState }),
+    'tree-vfs-sandbox-delete-matched');
+  assert.deepEqual(listed, ['code/src/components', 'code/src/components/a/b', 'code/src/components/a', 'code/src/components',
+    'code/src']);
+});
+
+test('absence check refuses when the tree-proven ancestor lists the next segment as an entry', async () => {
+  const tree = [folder('src'), folder('src/components')];
+  const { client, listed, treeState } = treeAbsenceClient({
+    'code/src/components': [{ name: 'a' }], 'code/src/components/a': [{ name: 'b' }],
+    'code/src/components/a/b': [{ name: 'Foo.tsx' }],
+  }, tree);
+  await assert.rejects(client._durableAgreement('src/components/a/b/Foo.tsx', null, Date.now() + 300, { treeState }),
+    /timed out/);
+  assert.deepEqual(listed.slice(0, 2), ['code/src/components', 'code/src/components/a/b']);
+  assert.deepEqual([...new Set(listed.slice(2))], ['code/src/components/a/b']);
+});
+
+test('absence check refuses an entry only the tree-proven ancestor can list, after the walk-up', async () => {
+  const tree = [folder('src'), folder('src/components')];
+  const { client, listed } = treeAbsenceClient({ 'code/src/components': [{ name: 'a' }] }, tree);
+  assert.equal(await client._sandboxAbsent(await client._fileBridge(), 'src/components/a/b/Foo.tsx', tree), false);
+  assert.deepEqual(listed, ['code/src/components', 'code/src/components/a/b', 'code/src/components/a', 'code/src/components']);
+});
+
+test('absence check lists a tree-shown parent once, as it does without a tree', async () => {
+  const tree = [folder('src'), folder('src/components')];
+  const { client, listed, treeState } = treeAbsenceClient({
+    'code/src': [{ name: 'components' }], 'code/src/components': [{ name: 'Button.tsx' }],
+  }, tree);
+  assert.equal(await client._durableAgreement('src/components/New.tsx', null, Date.now() + 1000, { treeState }),
+    'tree-vfs-sandbox-delete-matched');
+  assert.deepEqual(listed, ['code/src/components']);
+});
+
+test('absence check ignores a tree that shows no folder above the parent and keeps today\'s walk-up', async () => {
+  const { client, listed } = treeAbsenceClient({ 'code/src': [{ name: 'App.tsx' }] }, []);
+  assert.equal(await client._sandboxAbsent(await client._fileBridge(), 'src/x/y/Foo.tsx', [{ kind: 'file', path: 'src/App.tsx' }]), true);
+  assert.deepEqual(listed, ['code/src/x/y', 'code/src/x', 'code/src']);
+});
+
 test('a missing-folder listing that Make never answers costs at most 5 s per level, not the whole budget', async () => {
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 120000 });
   client.fileKey = 'ScratchKey';
