@@ -797,8 +797,8 @@ export class MakeClient {
   // that listing shows as a folder, so a new folder two levels deep needs no
   // timed-out request. A listing that succeeds there and lacks the next
   // segment proves the path absent, as the walk-up's first answer would. One
-  // that holds the next segment descends a level; one that fails falls back to
-  // the walk-up from the parent, unchanged.
+  // that holds the next segment, or fails, leaves the verdict to the walk-up
+  // from the parent, unchanged.
   async _sandboxAbsent(bridge, path, treeEntries) {
     const segments = path.split('/');
     const list = async depth => {
@@ -810,16 +810,12 @@ export class MakeClient {
         ? listing.data.files : null;
     };
     const folders = new Set((treeEntries ?? []).filter(entry => entry.kind === 'folder').map(entry => entry.path));
-    let start = segments.length - 2;
+    let start = segments.length - 1;
     while (start >= 1 && !folders.has(segments.slice(0, start).join('/'))) start--;
     // Only an ancestor above the parent saves a request; the parent is the walk-up's first listing.
     if (start >= 1 && start < segments.length - 1) {
-      for (let depth = start; depth < segments.length; depth++) {
-        const files = await list(depth);
-        if (!files) break;
-        if (!files.some(entry => entry?.name === segments[depth])) return true;
-        if (depth === segments.length - 1) return false;
-      }
+      const files = await list(start);
+      if (files && !files.some(entry => entry?.name === segments[start])) return true;
     }
     for (let depth = segments.length - 1; depth >= 0; depth--) {
       const files = await list(depth);

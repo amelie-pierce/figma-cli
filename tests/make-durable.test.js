@@ -362,12 +362,27 @@ test('absence check refuses when the tree-proven ancestor lists the next segment
     'code/src/components': [{ name: 'a' }], 'code/src/components/a': [{ name: 'b' }],
     'code/src/components/a/b': [{ name: 'Foo.tsx' }],
   }, tree);
-  await assert.rejects(client._durableAgreement('src/components/a/b/Foo.tsx', null, Date.now() + 300), /timed out/);
-  assert.deepEqual([...new Set(listed)], ['code/src/components/a/b']);
-  const second = treeAbsenceClient({ 'code/src/components': [{ name: 'a' }], 'code/src/components/a': [{ name: 'b' }],
-    'code/src/components/a/b': [{ name: 'Foo.tsx' }] }, tree);
-  assert.equal(await second.client._sandboxAbsent(await second.client._fileBridge(), 'src/components/a/b/Foo.tsx', tree), false);
-  assert.deepEqual(second.listed, ['code/src/components', 'code/src/components/a', 'code/src/components/a/b']);
+  await assert.rejects(client._durableAgreement('src/components/a/b/Foo.tsx', null, Date.now() + 300, { treeState }),
+    /timed out/);
+  assert.deepEqual(listed.slice(0, 2), ['code/src/components', 'code/src/components/a/b']);
+  assert.deepEqual([...new Set(listed.slice(2))], ['code/src/components/a/b']);
+});
+
+test('absence check refuses an entry only the tree-proven ancestor can list, after the walk-up', async () => {
+  const tree = [folder('src'), folder('src/components')];
+  const { client, listed } = treeAbsenceClient({ 'code/src/components': [{ name: 'a' }] }, tree);
+  assert.equal(await client._sandboxAbsent(await client._fileBridge(), 'src/components/a/b/Foo.tsx', tree), false);
+  assert.deepEqual(listed, ['code/src/components', 'code/src/components/a/b', 'code/src/components/a', 'code/src/components']);
+});
+
+test('absence check lists a tree-shown parent once, as it does without a tree', async () => {
+  const tree = [folder('src'), folder('src/components')];
+  const { client, listed, treeState } = treeAbsenceClient({
+    'code/src': [{ name: 'components' }], 'code/src/components': [{ name: 'Button.tsx' }],
+  }, tree);
+  assert.equal(await client._durableAgreement('src/components/New.tsx', null, Date.now() + 1000, { treeState }),
+    'tree-vfs-sandbox-delete-matched');
+  assert.deepEqual(listed, ['code/src/components']);
 });
 
 test('absence check ignores a tree that shows no folder above the parent and keeps today\'s walk-up', async () => {
