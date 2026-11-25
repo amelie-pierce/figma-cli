@@ -1,0 +1,14 @@
+src/commands/make-atomicaui.js
+  h_eb882fdf9e0ce8 446
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5866dd9819f9e6609d2a3b9f2487d4c0bd50c8a6",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
