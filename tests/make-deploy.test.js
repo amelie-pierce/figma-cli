@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gitBlobSha, gitTreeSha } from '../src/git-tree.js';
+import { batchBarred } from '../src/make-batch.js';
 import { MakeClient } from '../src/make-client.js';
 import { DEPLOY_IGNORE, classify, defaultReadBlob, deployDir, deployAbort, deployApply, deployPlan, deployResume, deployVerify, driftProblems, entryPlaceholder, ignoreMatcher, ignorePatterns, planDigest, readReceipt } from '../src/make-deploy.js';
 import { markerContent } from '../src/make-mode.js';
@@ -255,6 +256,9 @@ class FakeMake {
   // nothing is written again. As the real client's errors do, a failure of the write loop or of the read-back
   // after it carries batchTracker; a page refusal (hooks.refuseAt) and a cleanup failure do not.
   async writeDurableBatch(items, { backupDir, baseFolders } = {}) {
+    for (const item of items) {
+      if (batchBarred(item.path)) throw new Error(`Make batch never holds ${item.path}: dependency files and VENDOR.json are written one at a time.`);
+    }
     this.calls.push(['batch', items.map(item => item.path)]);
     this.landUnder('write');
     for (const item of items) {
@@ -3124,6 +3128,35 @@ describe('make deploy batched writes', () => {
     assert.deepEqual(order(s.make).slice(-2), ['write package.json', 'write pnpm-lock.yaml']);
     assert.deepEqual(batches(s.make).flat(), plan.files.map(file => file.path).filter(path => !['package.json', 'pnpm-lock.yaml'].includes(path)));
     assert.deepEqual([...s.make.saved.keys()].filter(path => path.startsWith('src/gen/')).length, 30);
+  });
+
+  it('writes a VENDOR.json alone at its plan position, between the batches of the files around it, and a resume does the same', async t => {
+    const VENDOR = 'src/vendor/atomic-aui/VENDOR.json';
+    const before = { 'src/vendor/atomic-aui/Button.tsx': 'export const Button = "old";\n', [VENDOR]: '{"commit":"old","files":{}}\n', 'src/vendor/atomic-aui/tokens.ts': 'export const tokens = "old";\n' };
+    const after = { 'src/vendor/atomic-aui/Button.tsx': 'export const Button = "new";\n', [VENDOR]: '{"commit":"new","files":{}}\n', 'src/vendor/atomic-aui/tokens.ts': 'export const tokens = "new";\n',
+      'src/vendor/atomic-aui/zoom.ts': 'export const zoom = 1;\n' };
+    const run = async (t2, interrupt) => {
+      const s = setup(t2, { files: { ...BASE, ...before } });
+      landChange(s, after);
+      const plan = await deployPlan(s.make, s.opts, s.deps);
+      const paths = plan.files.map(file => file.path);
+      const at = paths.indexOf(VENDOR);
+      assert.ok(at > 0 && at < paths.length - 1, 'the plan writes files before and after VENDOR.json');
+      let result;
+      if (interrupt) {
+        s.make.hooks.beforeWrite = path => { if (path === VENDOR) throw new Error('Make page connection closed.'); };
+        const error = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps).catch(cause => cause);
+        assert.equal(error.code, 'DEPLOY_WRITE_FAILED');
+        s.make.hooks.beforeWrite = null;
+        result = await deployResume(s.make, { ...s.opts, receiptPath: error.receiptPath }, s.deps);
+      } else result = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+      assert.equal(result.stage, 'deployed');
+      assert.deepEqual(batches(s.make), [paths.slice(0, at), paths.slice(at + 1)], 'VENDOR.json is in no batch and cuts the run');
+      assert.deepEqual([...new Set(order(s.make))], paths.map(path => `write ${path}`), 'the files are written in plan order');
+      savedIs(s, after);
+    };
+    await run(t, false);
+    await t.test('after an interruption at VENDOR.json', t2 => run(t2, true));
   });
 
   it('records one confirmed write per file after a batch: no uncertain mark is left, and each modified file keeps its backup', async t => {

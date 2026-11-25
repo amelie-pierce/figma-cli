@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { isIgnored, parseIgnore } from './git-tree.js';
-import { chunkBatch, DEPENDENCY_FILES } from './make-batch.js';
+import { batchBarred, chunkBatch, DEPENDENCY_FILES } from './make-batch.js';
 import { requireGitMode, TREE_HIDDEN_ROOT_FILES } from './make-durable.js';
 import { requireLocalVendorUnedited } from './make-vendor-lock.js';
 import { isSizeChecked, sizeWarnings } from './make-size.js';
@@ -869,7 +869,7 @@ const recordWrite = (receipt, file, backupPath, extra = {}) => {
   saveReceipt(receipt);
 };
 
-// A run of consecutive non-dependency files, written as one batched durable
+// A run of consecutive batchable files (see batchBarred), written as one batched durable
 // operation (client.writeDurableBatch) instead of one operation per file. The
 // receipt marks every file of the batch uncertain before it starts, so an
 // interruption anywhere inside leaves each of them uncertain for resume and
@@ -990,9 +990,10 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps, final 
     saveReceipt(receipt);
   }
   const position = new Map(receipt.plan.files.map((file, index) => [file.path, index]));
-  // Consecutive non-dependency files go through one batched operation each (at
-  // most MAX_BATCH_FILES); a dependency file, an unwired placeholder or an
-  // override-make write keeps its own single operation at its own position.
+  // Consecutive batchable files go through one batched operation each (at
+  // most MAX_BATCH_FILES); a dependency file, a VENDOR.json, an unwired
+  // placeholder or an override-make write keeps its own single operation at
+  // its own position.
   let run = [];
   const flush = async () => {
     const chunks = chunkBatch(run, file => file.bytes ?? 0);
@@ -1000,7 +1001,7 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps, final 
     for (const chunk of chunks) await writeBatch(client, receipt, chunk, { mainBytes, home, deps });
   };
   for (const file of [...todo].sort((a, b) => position.get(a.path) - position.get(b.path))) {
-    if (receipt.mode !== 'override-make' && !file.placeholder && !isDependency(file.path)) { run.push(file); continue; }
+    if (receipt.mode !== 'override-make' && !file.placeholder && !batchBarred(file.path)) { run.push(file); continue; }
     await flush();
     const writeStarted = Date.now();
     if (receipt.mode === 'override-make') {

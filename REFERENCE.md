@@ -190,7 +190,9 @@ file instead of 5-9 s. Each file keeps its own `--expected-sha256` check and its
 own byte-equality read-back, the tree after the batch must differ from the tree
 before it only by the written and removed paths (and their folders), and
 `package.json`, lockfiles and `VENDOR.json` are never inside a batch: they stay
-single writes, `VENDOR.json` last. A failure after a batch's first write, a
+single writes. A kit install or upgrade and `make sync` write `VENDOR.json` last,
+after the files it vouches for are confirmed; a deploy writes it alone at its
+plan position, as before. A failure after a batch's first write, a
 cleanup failure after a complete batch included, reports `completedWrites` (read
 back equal) and `uncertainWrites` (may have landed); nothing is retried or
 continued inside the batch. `make write` and `make delete` still write one file
@@ -481,11 +483,12 @@ figma-cli make deploy status (--receipt RECEIPT | --file KEY) [--json]
 ```
 
 During apply and resume, deploy prints a short `deploy: n/total path (seconds)` line
-on stderr after each completed write (a batch of up to 25 non-dependency files
+on stderr after each completed write (a batch of up to 25 files
 prints its lines when the batch completes), plus plan, save and verification
-stages. Consecutive non-dependency files are written as one batched operation in
-plan order; `package.json`, lockfiles, unwired entry placeholders and every
-`--override-make` write keep one operation per file. The receipt marks every file
+stages. Consecutive files are written as one batched operation in
+plan order; `package.json`, lockfiles, any `VENDOR.json`, unwired entry
+placeholders and every `--override-make` write keep one operation per file at
+their plan position. The receipt marks every file
 of a batch `uncertain` before it starts and confirms them after it. If a batch's
 writes or the read-back after them fail, one fresh read-only operation reads every
 file the batch wrote from the client VFS and the sandbox and settles Make's change

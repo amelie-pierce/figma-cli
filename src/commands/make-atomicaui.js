@@ -104,6 +104,7 @@ export async function releaseAtomicaui(client, { requestedVersion, breakingChang
     // The release files go in batches of at most 25, in the order of `output`.
     const pending = [...output].filter(([path]) => !completedSet.has(path)).map(([path, bytes]) => ({ path, content: decode(bytes),
       expectedSha256: replacements.get(path) || (path === latestPath ? oldLatestHash : undefined), releaseAsset: true }));
+    if (pending.some(item => batchBarred(item.path))) throw new Error('AtomicAUI release output holds a file that is never written in a batch.');
     for (const chunk of chunkBatch(pending)) {
       try {
         for (const result of await client.writeDurableBatch(chunk)) {
