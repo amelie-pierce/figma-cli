@@ -133,8 +133,8 @@ export function timeoutHint(error, timeoutMs) {
   return error;
 }
 
-// How long a selected file may show no source editor before durable read-back
-// uses the agreeing client VFS, sandbox and rendered tree instead.
+// How long `make read` waits for a selected file's source editor when the
+// filesystem bridge is unavailable, before it reports MAKE_NO_EDITOR.
 const EDITOR_WAIT_MS = 3000;
 
 // Serialized into the Make page, with no dependency on private application stores.

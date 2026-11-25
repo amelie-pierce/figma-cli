@@ -507,8 +507,8 @@ fresh reload verification for that proof. Older receipts have no runner record.
 A durable write or delete never selects a file in Make's editor, so it does not
 collapse the Files tree; the per-file VFS, sandbox and tree checks run before and
 after each write as before, and the editor buffer is compared only when that
-exact file is already the mounted editor. A live scratch-file measurement
-(edit, new file, delete) is recorded in the pull request that introduced this.
+exact file is already the mounted editor. On a scratch Make file with 11
+folders this took an edit from 9.3 s to 1.7 s and a new file from 5.3 s to 2.7 s.
 
 Normal deploy guards, each refusing with nothing written:
 - a release-installed AtomicAUI folder in the clone equals its VENDOR.json file

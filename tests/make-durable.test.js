@@ -251,8 +251,10 @@ test('hidden-file read-back uses VFS and sandbox when Make omits dotfiles from i
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async () => ({ content: 'sentinel' });
   client._sourceTree = async () => [];
-  client._read = async () => { throw new Error('Hidden file has no editor'); };
-  await client._durableAgreement('src/vendor/atomic-aui/tokens/generated/.generated', 'sentinel', Date.now() + 1000);
+  const actions = mountEditor(client, { editorCount: 0 });
+  assert.equal(await client._durableAgreement('src/vendor/atomic-aui/tokens/generated/.generated', 'sentinel', Date.now() + 1000),
+    'vfs-sandbox-matched');
+  assert.deepEqual(actions, [], 'a hidden file never consults the editor');
 });
 
 test('a root lockfile, which Make leaves out of its tree, reads back through VFS and sandbox', async () => {
@@ -262,9 +264,10 @@ test('a root lockfile, which Make leaves out of its tree, reads back through VFS
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async () => ({ content: 'lock' });
   client._sourceTree = async () => [];
-  client._read = async () => { throw new Error('No editor for a file outside the tree'); };
+  const actions = mountEditor(client, { editorCount: 0 });
   assert.equal(await client._durableAgreement('pnpm-lock.yaml', 'lock', Date.now() + 1000), 'vfs-sandbox-matched');
   await assert.rejects(client._durableAgreement('src/pnpm-lock.yaml', 'lock', Date.now() + 300), /tree absent/);
+  assert.deepEqual(actions, [], 'a file outside the tree never consults the editor');
 });
 
 test('delete read-back requires a successful sandbox directory listing', async () => {
@@ -514,11 +517,12 @@ test('a sandbox or tree mismatch refuses the missing-editor fallback', async () 
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async () => ({ content: 'different' });
   client._sourceTree = async () => [{ kind: 'file', path }];
-  client._read = async () => { throw new Error('editor must not be read while a layer differs'); };
+  const actions = mountEditor(client, { editorCount: 0 });
   await assert.rejects(client._durableAgreement(path, 'expected', Date.now() + 300), /sandbox different/);
   client._bridgeRead = async () => ({ content: 'expected' });
   client._sourceTree = async () => [];
   await assert.rejects(client._durableAgreement(path, 'expected', Date.now() + 300), /tree absent/);
+  assert.deepEqual(actions, [], 'the editor is not consulted while a view differs');
 });
 
 test('an editor that disagreed earlier is not forgotten when the editor later stops showing the file', async () => {
@@ -605,9 +609,10 @@ test('immutable release assets use VFS, sandbox and tree without mounting an edi
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async () => ({ content: 'release' });
   client._sourceTree = async () => [{ kind: 'file', path }];
-  client._read = async () => { throw new Error('release asset must not open an editor'); };
+  const actions = mountEditor(client, { editorCount: 1, editorPath: path }, 'stale');
   assert.equal(await client._durableAgreement(path, 'release', Date.now() + 1000, { releaseAsset: true }),
     'tree-vfs-sandbox-release-matched');
+  assert.deepEqual(actions, [], 'a release asset never consults the editor');
   await assert.rejects(client._durableAgreement('src/App.tsx', 'release', Date.now() + 1000,
     { releaseAsset: true }), /limited to public/);
   assert.throws(() => client.writeDurable('src/App.tsx', 'release', { releaseAsset: true }), /limited to public/);
@@ -620,10 +625,11 @@ test('read-back mismatch fails at the deadline and names each view', async () =>
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async () => ({ content: 'stale' });
   client._sourceTree = async () => [{ kind: 'file', path: 'AGENTS.md' }];
-  client._read = async () => { throw new Error('must not read an editor before VFS and sandbox agree'); };
+  const actions = mountEditor(client, { editorCount: 0 });
   const started = Date.now();
   const error = await client._durableAgreement('AGENTS.md', 'new', Date.now() + 300).catch(cause => cause);
   assert.match(error.message, /AGENTS\.md timed out before every view agreed \(vfs matched, sandbox different, tree present\)/);
+  assert.deepEqual(actions, [], 'the editor is not consulted before VFS and sandbox agree');
   assert.ok(Date.now() - started < 1500);
 });
 
