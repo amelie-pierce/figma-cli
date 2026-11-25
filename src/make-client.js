@@ -808,12 +808,9 @@ export class MakeClient {
 
   // Returns which independent views agreed. On timeout, the error names the
   // last state of each view instead of a bare timeout.
-  async _durableAgreement(path, expectedContent, deadline, { treeState, expectedChange, releaseAsset = false, vendorTreeFallback = false } = {}) {
+  async _durableAgreement(path, expectedContent, deadline, { treeState, expectedChange, releaseAsset = false } = {}) {
     if (releaseAsset && !path.startsWith('public/atomicaui/')) {
       throw new Error('Three-view release verification is limited to public/atomicaui/.');
-    }
-    if (vendorTreeFallback && !path.startsWith('src/vendor/atomic-aui/')) {
-      throw new Error('Vendor tree fallback is limited to src/vendor/atomic-aui/.');
     }
     const hidden = treeHidden(path);
     let observed = null;
@@ -885,12 +882,8 @@ export class MakeClient {
                   return observed.editor === 'matched' ? 'editor-tree-vfs-sandbox-matched' : 'editor-lf-tree-vfs-sandbox-matched';
                 }
                 editorDisagreed = true;
-              } else if (!editorDisagreed) {
-                // Deep vendor paths with a mounted editor that names no path:
-                // the release installer already verified their bytes.
-                if (vendorTreeFallback && editor.editorCount > 0 && !editor.editorPath) return 'tree-vfs-sandbox-vendor-matched';
-                return 'tree-vfs-sandbox-matched';
-              } else observed.editor = 'different';
+              } else if (!editorDisagreed) return 'tree-vfs-sandbox-matched';
+              else observed.editor = 'different';
             } catch {
               observed.editor = editorDisagreed ? 'different' : 'unavailable';
             }
@@ -939,7 +932,7 @@ export class MakeClient {
       if (existing.exists && originalSha256 !== expectedSha256.toLowerCase()) throw new Error('Make source changed; SHA-256 does not match.');
       const treeState = {};
       if (!existing.exists) await this._requireListableAncestor(path, deadline, baseFolders, treeState);
-      await this._durableAgreement(path, existing.exists ? existing.content : null, deadline, { treeState, releaseAsset, vendorTreeFallback });
+      await this._durableAgreement(path, existing.exists ? existing.content : null, deadline, { treeState, releaseAsset });
       if (existing.exists && existing.content === content && !rewrite) return { fileKey: this.fileKey, path, changed: false, sha256: originalSha256, verification: 'unchanged' };
       const tracker = await this._pendingAfterMutation(before, path, content, deadline, { firstVersion, overrideMake });
       const backupPath = existing.exists ? await this._bounded(() => this._backup(path, existing.content, {
@@ -965,7 +958,7 @@ export class MakeClient {
         if (accepted?.refused) { refused = true; throw new Error(accepted.refused); }
         const expectedChange = !existing.exists && !treeHidden(path)
           ? { beforeEntries: treeState.entries, beforeRows: treeState.rows, writtenPath: path } : undefined;
-        verification = await this._durableAgreement(path, content, deadline, { treeState, expectedChange, releaseAsset, vendorTreeFallback });
+        verification = await this._durableAgreement(path, content, deadline, { treeState, expectedChange, releaseAsset });
       } catch (cause) {
         const error = new Error(`Make durable write outcome is uncertain: ${cause.message}. Inspect before retrying.`);
         error.backupPath = backupPath;
@@ -1061,7 +1054,7 @@ export class MakeClient {
       if (!original.exists || sha256(original.content) !== expectedSha256.toLowerCase()) throw new Error('Make source is missing or changed; delete refused.');
       await this._requireListableAncestor(path, deadline);
       const treeState = {};
-      await this._durableAgreement(path, original.content, deadline, { treeState, vendorTreeFallback });
+      await this._durableAgreement(path, original.content, deadline, { treeState });
       const tracker = await this._pendingAfterMutation(before, path, null, deadline, { firstVersion, overrideMake });
       const backupPath = await this._bounded(() => this._backup(path, original.content, { backupDir, operation: 'durable-delete' }), deadline);
       const immediate = requireGitMode((await this._driftState(deadline)).state, { firstVersion, overrideMake });

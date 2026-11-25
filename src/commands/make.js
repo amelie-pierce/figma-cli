@@ -265,7 +265,7 @@ modeGated(target(make.command('write <path>').description('Write one git-mode Ma
   .option('--expected-sha256 <hash>', 'Required for an existing file; omit for a new file')
   .option('--backup-dir <directory>', 'Private backup directory for replaced content')
   .option('--first-version', 'Only for a git-mode file with no saved version yet; refused once it has one')
-  .option('--vendor-tree-fallback', 'For src/vendor/atomic-aui/ paths too deep for the file-tree viewport: accept client VFS, sandbox and tree agreement when the mounted editor shows no path')
+  .option('--vendor-tree-fallback', 'Accepted for compatibility on src/vendor/atomic-aui/ paths; no longer changes what the write accepts')
   .action((path, options) => withClient(options, async client => {
     const content = decodeMakeSource(sourceBytes(options.from));
     await requireMakeVendorWritable(client, [path]);

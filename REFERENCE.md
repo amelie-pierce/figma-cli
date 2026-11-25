@@ -166,10 +166,11 @@ timeout (120000 ms by default for `write`, `delete` and `deploy`) may raise that
 wait, while the remaining operation time caps every call. Durable reads may use
 the remaining operation time. A timeout leaves the existing uncertain-outcome
 checks and receipt recovery in force; it never replays the write automatically.
-`--vendor-tree-fallback` (only for `src/vendor/atomic-aui/` paths, as `make sync`
-and solo AtomicAUI installs use internally) also accepts client VFS, sandbox and
-tree agreement when the mounted editor reports no path
-(`verification: "tree-vfs-sandbox-vendor-matched"`); an editor showing
+`--vendor-tree-fallback` (only for `src/vendor/atomic-aui/` paths; `make sync`
+and solo AtomicAUI installs pass the same option internally) is accepted for
+compatibility and no longer changes acceptance. A mounted editor that reports no
+path is accepted on client VFS, sandbox and tree agreement for every path, with
+or without it (`verification: "tree-vfs-sandbox-matched"`); an editor showing
 the same path must still match.
 When Make accepted the bytes but the write's read-back outlived the timeout,
 `make write` reads the path once more, in a fresh read-only operation, from the

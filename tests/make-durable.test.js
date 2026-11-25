@@ -418,7 +418,7 @@ test('a file with an editor is still compared through that editor', async () => 
   assert.equal(await client._durableAgreement('src/a.ts', 'new', Date.now() + 1000), 'editor-tree-vfs-sandbox-matched');
 });
 
-test('an unopened source file accepts matching VFS, sandbox and tree after a bounded editor wait', async () => {
+test('an unopened source file accepts matching VFS, sandbox and tree with one inspect and no editor wait', async () => {
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 5000 });
   client.fileKey = 'ScratchKey';
   client._durable = async () => ({ exists: true, content: 'export default 1;\n' });
@@ -426,11 +426,12 @@ test('an unopened source file accepts matching VFS, sandbox and tree after a bou
   client._bridgeRead = async () => ({ content: 'export default 1;\n' });
   client._sourceTree = async () => [{ kind: 'file', path: 'src/App.tsx' }];
   // No editor is mounted: nothing is clicked to open one.
-  mountEditor(client, { editorCount: 0 });
+  const actions = mountEditor(client, { editorCount: 0 });
   const started = Date.now();
   assert.equal(await client._durableAgreement('src/App.tsx', 'export default 1;\n', Date.now() + 5000),
     'tree-vfs-sandbox-matched');
-  assert.ok(Date.now() - started < 4500, 'an unopened source file must not consume the operation deadline');
+  assert.deepEqual(actions, ['inspect'], 'one non-clicking inspect, no editor wait');
+  assert.ok(Date.now() - started < 1000, 'no editor wait is spent on a file that is not mounted');
 });
 
 test('a mounted editor that disagrees refuses the three-view fallback', async () => {
@@ -535,7 +536,35 @@ test('an editor that disagreed earlier is not forgotten when the editor later st
   assert.ok(inspections > 1, 'the editor was inspected again after it disagreed');
 });
 
-test('verified vendor write accepts three live views when the mounted editor names no path', async () => {
+test('an editor that names no path leaves VFS, sandbox and tree as the proof, with or without the vendor flag', async () => {
+  const path = 'src/vendor/atomic-aui/lib/drawer/use-recipe.ts';
+  for (const flag of [{}, { vendorTreeFallback: true }]) {
+    const { client } = fakeClient({ original: 'old' });
+    client._durableAgreement = MakeClient.prototype._durableAgreement;
+    client._sourceTree = async () => [{ kind: 'file', path }];
+    let current = 'old';
+    client._driftState = async () => ({ state: state(current === 'old' ? [] : [path]) });
+    client._durable = async action => {
+      if (action.type === 'read') return { exists: true, content: current };
+      if (action.type === 'write') { current = action.content; return { accepted: true }; }
+    };
+    client._bridgeRead = async () => ({ content: current });
+    const actions = mountEditor(client, { editorCount: 1, editorPath: null });
+    const result = await client.writeDurable(path, 'vendor bytes', { expectedSha256: hash('old'), ...flag });
+    assert.equal(result.verification, 'tree-vfs-sandbox-matched');
+    assert.equal(result.sha256, hash('vendor bytes'));
+    assert.equal(current, 'vendor bytes');
+    assert.deepEqual([...new Set(actions)], ['inspect']);
+  }
+  // The flag stays limited to the vendored library on both durable entry points.
+  const { client } = fakeClient({ original: 'old' });
+  assert.throws(() => client.writeDurable('src/App.tsx', 'vendor bytes', { vendorTreeFallback: true }),
+    /limited to src\/vendor\/atomic-aui/);
+  assert.throws(() => client.deleteDurable('src/App.tsx', { expectedSha256: hash('old'), vendorTreeFallback: true }),
+    /limited to src\/vendor\/atomic-aui/);
+});
+
+test('a path-less editor does not excuse an unreadable editor of the file or a sandbox mismatch', async () => {
   const path = 'src/vendor/atomic-aui/lib/drawer/use-recipe.ts';
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
   client.fileKey = 'ScratchKey';
@@ -543,30 +572,19 @@ test('verified vendor write accepts three live views when the mounted editor nam
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async () => ({ content: 'vendor bytes' });
   client._sourceTree = async () => [{ kind: 'file', path }];
-  mountEditor(client, { editorCount: 1, editorPath: null });
-  assert.equal(await client._durableAgreement(path, 'vendor bytes', Date.now() + 1000,
-    { vendorTreeFallback: true }), 'tree-vfs-sandbox-vendor-matched');
-  // Without the vendor flag the same editor state takes the plain accepted outcome.
-  assert.equal(await client._durableAgreement(path, 'vendor bytes', Date.now() + 1000), 'tree-vfs-sandbox-matched');
   // A mounted editor of this very path must still be readable and match.
   client._editor = async action => {
     if (action.type === 'inspect') return { editorCount: 1, editorPath: path };
     throw new Error('Make editor is not mounted for the requested path.');
   };
-  await assert.rejects(client._durableAgreement(path, 'vendor bytes', Date.now() + 300,
-    { vendorTreeFallback: true }), /editor unavailable/);
+  await assert.rejects(client._durableAgreement(path, 'vendor bytes', Date.now() + 300), /editor unavailable/);
   mountEditor(client, { editorCount: 1, editorPath: null });
-  await assert.rejects(client._durableAgreement('src/App.tsx', 'vendor bytes', Date.now() + 1000,
-    { vendorTreeFallback: true }), /limited to src\/vendor\/atomic-aui/);
-  assert.throws(() => client.writeDurable('src/App.tsx', 'vendor bytes', { vendorTreeFallback: true }),
-    /limited to src\/vendor\/atomic-aui/);
   client._bridgeRead = async () => ({ content: 'different bytes' });
-  const error = await client._durableAgreement(path, 'vendor bytes', Date.now() + 300,
-    { vendorTreeFallback: true }).catch(cause => cause);
+  const error = await client._durableAgreement(path, 'vendor bytes', Date.now() + 300).catch(cause => cause);
   assert.match(error.message, /sandbox different/);
 });
 
-test('vendor tree fallback does not accept a missing editor for another reason', async () => {
+test('an editor inspect that fails is reported as editor unavailable, not accepted', async () => {
   const path = 'src/vendor/atomic-aui/lib/drawer/use-recipe.ts';
   const client = new MakeClient({ transport: { close() {} }, timeoutMs: 2000 });
   client.fileKey = 'ScratchKey';
@@ -575,8 +593,7 @@ test('vendor tree fallback does not accept a missing editor for another reason',
   client._bridgeRead = async () => ({ content: 'vendor bytes' });
   client._sourceTree = async () => [{ kind: 'file', path }];
   client._editor = async () => { throw new Error('Make editor is temporarily unavailable.'); };
-  const error = await client._durableAgreement(path, 'vendor bytes', Date.now() + 300,
-    { vendorTreeFallback: true }).catch(cause => cause);
+  const error = await client._durableAgreement(path, 'vendor bytes', Date.now() + 300).catch(cause => cause);
   assert.match(error.message, /editor unavailable/);
 });
 
@@ -1490,7 +1507,7 @@ test('several sandbox files are read in one operation without listing the file t
   assert.throws(() => client.readRemoteFiles(['../escape']), /path/i);
 });
 
-test('make write offers the vendor tree fallback', () => {
+test('make write still accepts --vendor-tree-fallback', () => {
   const cli = fileURLToPath(new URL('../src/index.js', import.meta.url));
   const result = spawnSync(process.execPath, [cli, 'make', 'write', '--help'],
     { env: { ...process.env, FIGMA_CLI_NO_UPDATE_CHECK: '1' }, encoding: 'utf8' });

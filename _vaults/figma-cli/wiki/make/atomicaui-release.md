@@ -43,12 +43,13 @@ applied to its saved text (and differ from it) before the single save
 (`src/commands/make-atomicaui.js`).
 Deep vendor paths may exceed the Make file-tree viewport, which prevents the
 editor selector from proving their ancestry (`src/make-tree.js:403`); writes no
-longer select, so they are not stopped by that refusal. When
-a mounted editor reports no path, solo
-installation and workspace sync accept agreement among
-the client VFS, sandbox, and rendered tree for paths under
-`src/vendor/atomic-aui/`; an editor showing the same path, and other editor
-failures, still stop the write (`src/make-client.js:541-614`,
+longer select, so they are not stopped by that refusal. A mounted editor that
+reports no path is accepted, for any path, on agreement among the client VFS,
+sandbox, and rendered tree; an editor showing the same path, and a failing
+editor inspect, still stop the write. Solo installation and workspace sync
+still pass `vendorTreeFallback` for paths under `src/vendor/atomic-aui/`; it is
+kept for compatibility, is refused for other paths and no longer changes
+acceptance (Updated 2026-11-25; `_durableAgreement` in `src/make-client.js`,
 `tests/make-durable.test.js`).
 
 `public/atomicaui/**` is kit-only data. Vendor drift, workspace-to-Make sync,
