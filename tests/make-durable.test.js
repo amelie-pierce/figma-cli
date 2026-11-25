@@ -1580,6 +1580,30 @@ test('several sandbox files are read in one operation without listing the file t
   assert.equal(operations, 1);
   assert.deepEqual([...files.keys()], ['package.json', 'public/atomicaui/latest.json']);
   assert.equal(files.get('package.json').sha256, hash('bytes of package.json'));
+  const slow = new MakeClient({ transport: { close() {} }, timeoutMs: 5000 });
+  slow.fileKey = 'ScratchKey';
+  slow._operation = fn => fn(Date.now() + 5000);
+  let active = 0, peak = 0, activeAtDispose = null;
+  const failing = new Set();
+  slow._fileBridge = async () => ({ dispose: async () => { activeAtDispose = active; } });
+  slow._bridgeRead = async (_bridge, path) => {
+    peak = Math.max(peak, ++active);
+    await new Promise(resolve => setTimeout(resolve, path.endsWith('0') ? 20 : 2));
+    active--;
+    if (failing.has(path)) throw new Error(`read failed: ${path}`);
+    return { content: `bytes of ${path}` };
+  };
+  const names = Array.from({ length: 12 }, (_, i) => `src/f${i}`);
+  const many = await slow.readRemoteFiles(names);
+  assert.deepEqual([...many.keys()], names);
+  assert.equal(many.get('src/f3').sha256, hash('bytes of src/f3'));
+  assert.equal(peak, 8);
+  assert.equal(activeAtDispose, 0);
+  // src/f1 fails first in time, but a one-at-a-time loop would stop at src/f0.
+  activeAtDispose = null;
+  failing.add('src/f0').add('src/f1');
+  await assert.rejects(slow.readRemoteFiles(names), /read failed: src\/f0/);
+  assert.equal(activeAtDispose, 0);
   assert.throws(() => client.readRemoteFiles([]), /1–64/);
   assert.throws(() => client.readRemoteFiles(['../escape']), /path/i);
 });

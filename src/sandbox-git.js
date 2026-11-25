@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { inflateSync } from 'node:zlib';
+import { READ_CONCURRENCY, mapLimit } from './lib/map-limit.js';
 
 // Read-only git object access for Make's sandbox repository. Make mixes file
 // modes (100755 and 100644) that its listing does not expose, so the saved
@@ -68,6 +69,19 @@ function idxOffset(idx, sha) {
   return null;
 }
 
+function treeEntries(content) {
+  const entries = [];
+  let pos = 0;
+  while (pos < content.length) {
+    const space = content.indexOf(0x20, pos);
+    const nul = content.indexOf(0, space);
+    entries.push({ mode: content.subarray(pos, space).toString('latin1'), name: content.subarray(space + 1, nul).toString('utf8'),
+      sha: content.subarray(nul + 1, nul + 21).toString('hex') });
+    pos = nul + 21;
+  }
+  return entries;
+}
+
 export class SandboxGit {
   constructor({ readFile, listDir }) {
     this.readFile = readFile;
@@ -76,23 +90,28 @@ export class SandboxGit {
     this.packs = null;
   }
 
-  async _packs() {
-    if (this.packs) return this.packs;
-    const names = (await this.listDir('objects/pack')) || [];
-    this.packs = [];
-    for (const name of names.filter(n => /^pack-[a-f0-9]{40}\.idx$/.test(n)).sort()) {
-      const idx = await this.readFile(`objects/pack/${name}`);
-      if (!idx) throw new Error(`Make sandbox pack index is unreadable: ${name}`);
-      this.packs.push({ idx, name: name.replace(/\.idx$/, '.pack'), pack: null });
-    }
+  // Memoised as promises so concurrent object() calls share one load.
+  _packs() {
+    this.packs ||= (async () => {
+      const names = (await this.listDir('objects/pack')) || [];
+      const packs = [];
+      for (const name of names.filter(n => /^pack-[a-f0-9]{40}\.idx$/.test(n)).sort()) {
+        const idx = await this.readFile(`objects/pack/${name}`);
+        if (!idx) throw new Error(`Make sandbox pack index is unreadable: ${name}`);
+        packs.push({ idx, name: name.replace(/\.idx$/, '.pack'), pack: null });
+      }
+      return packs;
+    })().catch(error => { this.packs = null; throw error; });
     return this.packs;
   }
 
   async _packObject(entry, offset) {
-    if (!entry.pack) {
-      entry.pack = await this.readFile(`objects/pack/${entry.name}`);
-      if (!entry.pack || entry.pack.length > MAX_PACK_BYTES) throw new Error(`Make sandbox pack is unreadable or too large: ${entry.name}`);
-    }
+    entry.loading ||= (async () => {
+      const pack = await this.readFile(`objects/pack/${entry.name}`);
+      if (!pack || pack.length > MAX_PACK_BYTES) throw new Error(`Make sandbox pack is unreadable or too large: ${entry.name}`);
+      entry.pack = pack;
+    })().catch(error => { entry.loading = null; throw error; });
+    if (!entry.pack) await entry.loading;
     const pack = entry.pack;
     let pos = offset;
     let byte = pack[pos++];
@@ -148,20 +167,32 @@ export class SandboxGit {
     return tree;
   }
 
-  // Flatten a tree into path → { mode, blob }, recursing into subtrees.
+  // Flatten a tree into path → { mode, blob }, recursing into subtrees. The
+  // trees are fetched a level at a time with bounded concurrency first; the
+  // walk below then runs in order from the object cache, so the Map order and
+  // the first error are those of a sequential walk.
   async flatten(treeSha, prefix = '', out = new Map()) {
+    let level = [treeSha];
+    const seen = new Set(level);
+    while (level.length) {
+      const trees = await mapLimit(level, READ_CONCURRENCY, sha => this.object(sha).catch(() => null));
+      level = [];
+      for (const tree of trees) {
+        if (tree?.type !== 'tree') continue;
+        for (const entry of treeEntries(tree.content)) {
+          if (entry.mode === '40000' && !seen.has(entry.sha)) { seen.add(entry.sha); level.push(entry.sha); }
+        }
+      }
+    }
+    return this._flatten(treeSha, prefix, out);
+  }
+
+  async _flatten(treeSha, prefix, out) {
     const { type, content } = await this.object(treeSha);
     if (type !== 'tree') throw new Error(`Make sandbox object ${treeSha} is not a tree.`);
-    let pos = 0;
-    while (pos < content.length) {
-      const space = content.indexOf(0x20, pos);
-      const nul = content.indexOf(0, space);
-      const mode = content.subarray(pos, space).toString('latin1');
-      const name = content.subarray(space + 1, nul).toString('utf8');
-      const sha = content.subarray(nul + 1, nul + 21).toString('hex');
-      pos = nul + 21;
+    for (const { mode, name, sha } of treeEntries(content)) {
       const path = prefix ? `${prefix}/${name}` : name;
-      if (mode === '40000') await this.flatten(sha, path, out);
+      if (mode === '40000') await this._flatten(sha, path, out);
       else out.set(path, { mode: mode.padStart(6, '0'), blob: sha });
     }
     return out;

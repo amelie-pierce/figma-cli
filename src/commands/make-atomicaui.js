@@ -411,6 +411,18 @@ export async function installSoloRelease(client, release, { mode, resume = false
     if (!reads.has(path)) reads.set(path, await client.read(path, { remote: true }));
     return reads.get(path);
   };
+  // Warm the memo for paths not read yet, in batches whose sandbox reads
+  // overlap. A failed batch is left for the ordered reads below, which then
+  // fail exactly as before.
+  const prefetchCurrent = async paths => {
+    const unread = paths.filter(path => names.has(path) && !reads.has(path));
+    try {
+      for (let offset = 0; offset < unread.length; offset += 16) {
+        for (const [path, file] of await client.readRemoteFiles(unread.slice(offset, offset + 16))) reads.set(path, file);
+      }
+    } catch {}
+  };
+  if (!resume) await prefetchCurrent(appPaths);
   const baseContent = async path => resume ? savedText.get(path) : (await readCurrent(path)).content;
   const fixes = await planBreakingFixes(release.manifest, baseContent);
   // The provider check reads every app script in batches, from the saved
@@ -431,6 +443,7 @@ export async function installSoloRelease(client, release, { mode, resume = false
   for (const note of wiring.notes) console.error(`note: ${note}`);
   report.dependencies = wiring.dependencies;
   const appWrites = new Map([...fixes].map(([path, entry]) => [path, entry.content]).concat([...wiring.files]));
+  if (resume) await prefetchCurrent(appPaths.filter(path => pendingSet.has(path)));
   for (const path of appPaths) {
     if (!pendingSet.has(path)) continue;
     const expected = appWrites.get(path) ?? savedText.get(path);
@@ -454,6 +467,7 @@ export async function installSoloRelease(client, release, { mode, resume = false
         vendorTreeFallback: true });
       writes.push(`${ATOMICAUI_ROOT}/${path}`);
     }
+    await prefetchCurrent([...appWrites.keys()]);
     for (const [path, content] of appWrites) {
       const current = await readCurrent(path);
       if (content !== current.content) await write(path, content, current.sha256);
