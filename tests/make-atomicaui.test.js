@@ -400,7 +400,18 @@ test('fake solo Make client writes provider, stylesheet, sass, dependencies and 
       return { contents, inventory: new Map([...contents].map(([path, bytes]) => [path, { bytes: bytes.length, sha256: hash(bytes) }])), state };
     },
   };
+  const readLog = [];
+  let readsActive = 0, readsPeak = 0;
+  const plainRead = client.read;
+  client.read = async (path, options) => {
+    readLog.push(path); readsPeak = Math.max(readsPeak, ++readsActive);
+    await new Promise(resolve => setTimeout(resolve, 2));
+    readsActive--; return plainRead(path, options);
+  };
   const result = await installSoloRelease(client, payload, { mode: 'add' });
+  // The current-content reads overlap, cover the same files, and read each once.
+  assert.deepEqual([...readLog].sort(), ['package.json', 'src/main.tsx']);
+  assert.equal(readsPeak, 2);
   assert.equal(result.savedVersion, 4);
   assert.equal(saves.length, 1);
   assert.deepEqual(saves[0], [...files.keys()].filter(path => path.startsWith('src/vendor/atomic-aui/') || path === 'src/main.tsx' || path === 'package.json').sort());

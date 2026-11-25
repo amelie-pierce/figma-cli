@@ -6,6 +6,7 @@ import { currentBranch, fail, fetchMain, listChanges, ORIGIN_TRUNK, pr, remoteBr
   taskBranch, teamContext } from '../make-team.js';
 import { review } from '../make-team-review.js';
 import { listenNotice } from '../lavish-listen.js';
+import { READ_CONCURRENCY, mapLimit } from '../lib/map-limit.js';
 import { digest, vendorManifest } from '../make-drift.js';
 import { ATOMICAUI_ROOT, ATOMICAUI_SITE, RELEASE_ROOT, buildRelease, changeReport, downloadRelease,
   compareVersions, installRelease, installedStatus, latestRelease, mergeDependencies, nextPatch, planBreakingFixes, vendorEdits, version } from '../make-atomicaui.js';
@@ -411,6 +412,10 @@ export async function installSoloRelease(client, release, { mode, resume = false
     if (!reads.has(path)) reads.set(path, await client.read(path, { remote: true }));
     return reads.get(path);
   };
+  // Warm the memo with overlapping reads. A failed read is left for the
+  // ordered reads below, which then fail exactly as before.
+  const prefetchCurrent = paths => mapLimit(paths, READ_CONCURRENCY, path => readCurrent(path).catch(() => null));
+  if (!resume) await prefetchCurrent(appPaths);
   const baseContent = async path => resume ? savedText.get(path) : (await readCurrent(path)).content;
   const fixes = await planBreakingFixes(release.manifest, baseContent);
   // The provider check reads every app script in batches, from the saved
@@ -431,6 +436,8 @@ export async function installSoloRelease(client, release, { mode, resume = false
   for (const note of wiring.notes) console.error(`note: ${note}`);
   report.dependencies = wiring.dependencies;
   const appWrites = new Map([...fixes].map(([path, entry]) => [path, entry.content]).concat([...wiring.files]));
+  if (resume) await prefetchCurrent(appPaths.filter(path => pendingSet.has(path)
+    && (appWrites.get(path) ?? savedText.get(path)) !== savedText.get(path)));
   for (const path of appPaths) {
     if (!pendingSet.has(path)) continue;
     const expected = appWrites.get(path) ?? savedText.get(path);

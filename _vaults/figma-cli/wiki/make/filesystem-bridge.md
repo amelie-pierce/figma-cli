@@ -45,6 +45,8 @@ Observed live on Lab Management Application with Desktop 126.9.11, 2026-10-24: t
 
 An editor already showing the file did not refresh after a bridge write, and bridge-created files did not appear in Make's file tree on the older AtomicAUI-6.0 snapshot file (observed live 2026-10-13). Git-mode behavior differs; use [persistence.md](persistence.md) for the client-VFS path.
 
+Updated 2026-11-25: independent sandbox reads overlap. A sandbox filesystem request costs about 0.33 s, but concurrent requests overlap (6 sequential reads 2.0 s, 6 concurrent 0.33 s, measured on the scratch file). `mapLimit` (`src/lib/map-limit.js`, 8 in flight, results in input order, first error thrown after running calls settle) now serves `readRemoteFiles` (`src/make-client.js:1045`), the saved-tree flatten, which fetches trees a level at a time and then walks them in order from the object cache (`src/sandbox-git.js:174`; its pack index and pack loads are memoised promises so concurrent object reads share one load), and the solo kit upgrade's current-content reads (`prefetchCurrent`, `src/commands/make-atomicaui.js:417`), whose failures are left to the unchanged ordered reads. Only reads overlap: writes, deletes, saves and agreement checks stay one at a time in their original order. Tests: `tests/map-limit.test.js`, `tests/make-durable.test.js`, `tests/make-sandbox-git.test.js`, `tests/make-atomicaui.test.js`.
+
 Tests: `tests/make-client.test.js` (fixture `FakeSocket` serves session files and models provisioning and workspace creation), `tests/make-rpc.test.js`, `tests/make-session.test.js` (the `--session-only` gate).
 
 Related: [persistence.md](persistence.md), [cdp-page-discovery.md](cdp-page-discovery.md), [files-tab-resolution.md](files-tab-resolution.md).

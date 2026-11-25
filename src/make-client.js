@@ -17,6 +17,7 @@ import { gitBlobSha, isIgnored, parseIgnore } from './git-tree.js';
 import { lfsMatcher, PROJECT_EXCLUDES, PROJECT_MARKER, treeOf, workingFlat } from './make-project.js';
 import { notInventoried } from './make-unread.js';
 import { SandboxGit } from './sandbox-git.js';
+import { READ_CONCURRENCY, mapLimit } from './lib/map-limit.js';
 
 const sha256 = (value) => createHash('sha256').update(value, 'utf8').digest('hex');
 // Make serves the live session preview from *.makeproxy-<x>.figma.site and the
@@ -1047,11 +1048,9 @@ export class MakeClient {
     return this._operation(async deadline => {
       const bridge = await this._fileBridge(deadline);
       try {
+        const reads = await mapLimit(paths, READ_CONCURRENCY, path => this._bridgeRead(bridge, path));
         const files = new Map();
-        for (const path of paths) {
-          const { content } = await this._bridgeRead(bridge, path);
-          files.set(path, { content, sha256: sha256(content) });
-        }
+        paths.forEach((path, index) => files.set(path, { content: reads[index].content, sha256: sha256(reads[index].content) }));
         return files;
       } finally { await bridge.dispose(); }
     });

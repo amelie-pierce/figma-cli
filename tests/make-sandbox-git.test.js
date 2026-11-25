@@ -71,6 +71,24 @@ describe('sandbox git object reader', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('flattens with overlapping reads in the same order as a sequential walk, and fails the same way', async () => {
+    const dir = repository();
+    try {
+      git(dir, 'repack', '-adf');
+      git(dir, 'prune-packed');
+      const tree = git(dir, 'rev-parse', 'HEAD^{tree}');
+      let active = 0, peak = 0;
+      const counted = { ...io(dir), readFile: async path => { peak = Math.max(peak, ++active); await new Promise(r => setTimeout(r, 2)); active--; return io(dir).readFile(path); } };
+      const flat = await new SandboxGit(counted).flatten(tree);
+      const expected = git(dir, 'ls-tree', '-r', tree).split('\n').map(line => line.split('\t')[1]);
+      assert.deepEqual([...flat.keys()], expected);
+      assert.ok(peak <= 8);
+      const missing = new SandboxGit({ ...io(dir), readFile: async path => path.endsWith('.pack') ? null : io(dir).readFile(path) });
+      await assert.rejects(missing.flatten(tree), /unreadable or too large/);
+      await assert.rejects(new SandboxGit(io(dir)).flatten(git(dir, 'rev-parse', 'HEAD')), /is not a tree/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('finds an ancestor through commit parents and rejects a foreign commit', async () => {
     const dir = repository();
     try {
