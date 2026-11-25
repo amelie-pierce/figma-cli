@@ -10,7 +10,7 @@ date: 2026-10-14
 
 ## Tree SHAs
 
-- **Saved tree.** Read from the saved version's own commit in the sandbox `.git` (`src/make-client.js:839`, reader `src/sandbox-git.js:71`). Loose and packed objects (with deltas) are supported; every object is hash-checked. Without a saved baseline, the sandbox HEAD (loose ref or `packed-refs`) is used.
+- **Saved tree.** Read from the saved version's own commit in the sandbox `.git` (`src/make-client.js:839`, reader `src/sandbox-git.js:85`). Loose and packed objects (with deltas) are supported; every object is hash-checked. Without a saved baseline, the sandbox HEAD (loose ref or `packed-refs`) is used.
 - **Why not re-hash bytes:** Make commits template files as `100755` and files written or edited later as `100644`, and Push mirrors the modes. Bytes hashed with default modes give a different tree (scratch test T6, 2026-10-14). The bridge listing exposes no mode: its `permissions` field was `4` on a `100755` file.
 - **Working tree.** Every file under the project root is re-hashed. A blob equal to the saved tree keeps that mode; anything else takes `100644` (`src/make-project.js:137`). Live, both scratch and Hinge working trees equalled their saved/head trees.
 - **Hashing** matches `git hash-object` and `git write-tree`, including git's tree order where a folder sorts as `name/` (`src/git-tree.js:34`, tests `tests/make-git-tree.test.js`).
