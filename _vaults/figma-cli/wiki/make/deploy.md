@@ -44,7 +44,7 @@ recovery with this build is **UNVERIFIED**.
 
 Make's code editor shows text with LF line endings. An editor already mounted on the
 written path and showing a CRLF file as LF agrees with the write when the client VFS and sandbox hold the
-exact bytes (`matched-lf`, `src/make-client.js:880`); any other editor
+exact bytes (`matched-lf`, `src/make-client.js:898`); any other editor
 difference still leaves the write uncertain. If the editor writes its LF buffer
 back over a deployed CRLF file, `classify` marks that path `after-eol` when its
 working sha256 equals main's UTF-8 bytes with CRLF turned into LF
