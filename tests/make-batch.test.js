@@ -155,27 +155,82 @@ test('the page-side guard refuses a file that changed after the pre-check: the b
   assert.equal(error.batchWritesStarted, true);
   assert.deepEqual(error.completedWrites.map(result => result.path), ['src/a.ts', 'src/b.ts']);
   assert.deepEqual(error.uncertainWrites, []);
-  assert.deepEqual(error.unwrittenPaths, ['src/c.ts', 'src/d.ts']);
-  assert.equal(error.refusedPath, 'src/c.ts');
   assert.equal(error.completedWrites[0].backupPath, '/private/backup/src/a.ts');
   assert.deepEqual(writes(), ['src/a.ts', 'src/b.ts', 'src/c.ts']);
   assert.equal(vfs.get('src/c.ts'), 'edited elsewhere');
   assert.equal(vfs.get('src/d.ts'), 'd0');
 });
 
-test('a write that fails after the first write leaves it and nothing later attempted: confirmed prefix, uncertain file, unwritten rest', async () => {
+test('a write that fails after the first write, with time left, leaves it and nothing later attempted: confirmed prefix, uncertain file', async () => {
   let seen = 0;
   const { client, writes } = fakeMake({ 'src/a.ts': 'a0', 'src/b.ts': 'b0', 'src/c.ts': 'c0', 'src/d.ts': 'd0' }, { hooks: {
-    afterWrite: action => { if (action.path === 'src/b.ts' && ++seen) throw new Error('Make operation timed out.'); },
+    afterWrite: action => { if (action.path === 'src/b.ts' && ++seen) throw new Error('Make page connection closed.'); },
   } });
   const error = await client.writeDurableBatch([edit('src/a.ts', 'a1', 'a0'), edit('src/b.ts', 'b1', 'b0'), edit('src/c.ts', 'c1', 'c0'), edit('src/d.ts', 'd1', 'd0')]).catch(cause => cause);
-  assert.match(error.message, /Make durable batch write outcome is uncertain: Make operation timed out/);
+  assert.match(error.message, /Make durable batch write outcome is uncertain: Make page connection closed/);
   assert.equal(error.batchWritesStarted, true);
   assert.deepEqual(error.completedWrites.map(result => result.path), ['src/a.ts']);
   assert.deepEqual(error.uncertainWrites.map(item => [item.path, item.backupPath, item.op]), [['src/b.ts', '/private/backup/src/b.ts', 'modify']]);
-  assert.deepEqual(error.unwrittenPaths, ['src/c.ts', 'src/d.ts']);
   assert.deepEqual(writes(), ['src/a.ts', 'src/b.ts'], 'nothing is retried and nothing after the failure is written');
   assert.equal(seen, 1);
+});
+
+test('a deadline that expires during the writes confirms nothing inside the operation: every accepted file is uncertain', async () => {
+  const { client, writes } = fakeMake({ 'src/a.ts': 'a0', 'src/b.ts': 'b0', 'src/c.ts': 'c0' }, { hooks: {
+    afterWrite: async action => { if (action.path === 'src/b.ts') { await new Promise(resolve => setTimeout(resolve, 60)); throw new Error('Make operation timed out.'); } },
+  } });
+  client._operation = fn => fn(Date.now() + 40);
+  // As the real client: once the deadline has passed, no bridge can be opened to read anything back.
+  client._fileBridge = async deadline => {
+    if (Date.now() >= deadline) throw new Error('Make operation timed out.');
+    return { dispose: async () => {} };
+  };
+  const error = await client.writeDurableBatch([edit('src/a.ts', 'a1', 'a0'), edit('src/b.ts', 'b1', 'b0'), edit('src/c.ts', 'c1', 'c0')]).catch(cause => cause);
+  assert.equal(error.batchWritesStarted, true);
+  assert.deepEqual(error.completedWrites, []);
+  assert.deepEqual(error.uncertainWrites.map(item => item.path), ['src/a.ts', 'src/b.ts']);
+  assert.deepEqual(writes(), ['src/a.ts', 'src/b.ts']);
+  assert.ok(error.batchTracker.expectedPaths.includes('src/a.ts'));
+  assert.equal(error.batchTracker.expectedPaths.includes('src/c.ts'), false, 'the tracker expectation covers only the files that may have landed');
+  // The fresh read-only confirmation operation the caller then runs, with a new deadline.
+  client._operation = fn => fn(Date.now() + 3000);
+  const views = await client.confirmDurableBatch([{ path: 'src/a.ts', content: 'a1' }, { path: 'src/b.ts', content: 'b1' }], { tracker: error.batchTracker });
+  assert.deepEqual(views.map(view => [view.path, view.confirmed]), [['src/a.ts', true], ['src/b.ts', true]]);
+  assert.deepEqual(writes(), ['src/a.ts', 'src/b.ts'], 'confirming writes nothing');
+});
+
+test('confirmDurableBatch reads both views and reports what differs; a deleted file confirms by being absent', async () => {
+  const { client, calls, vfs, sb } = fakeMake({ 'src/a.ts': 'a1', 'src/b.ts': 'b0', 'src/gone.ts': 'g0' });
+  sb.set('src/a.ts', 'a1');
+  vfs.delete('src/gone.ts');
+  sb.delete('src/gone.ts');
+  const views = await client.confirmDurableBatch([{ path: 'src/a.ts', content: 'a1' }, { path: 'src/b.ts', content: 'b1' }, { path: 'src/gone.ts', delete: true }]);
+  assert.deepEqual(views.map(view => [view.path, view.vfs, view.sandbox, view.confirmed]),
+    [['src/a.ts', 'matched', 'matched', true], ['src/b.ts', 'different', 'different', false], ['src/gone.ts', 'absent', 'absent', true]]);
+  assert.equal(calls.some(call => ['write', 'delete', 'backup'].includes(call[0])), false);
+  assert.throws(() => client.confirmDurableBatch([]), /1–25 files/);
+});
+
+test('a cleanup failure after a complete batch still carries every written file', async () => {
+  const { client, vfs } = fakeMake({ 'src/a.ts': 'a0', 'src/b.ts': 'b0', 'src/c.ts': 'c0' });
+  const run = client._operation;
+  // What _operation does when Make's focus emulation cannot be switched off after the callback succeeded.
+  client._operation = async fn => {
+    await run(fn);
+    throw new Error('Make operation completed. Temporary Make focus emulation could not be disabled: connection lost');
+  };
+  const error = await client.writeDurableBatch([edit('src/a.ts', 'a1', 'a0'), edit('src/b.ts', 'b1', 'b0'), edit('src/c.ts', 'c0', 'c0')]).catch(cause => cause);
+  assert.match(error.message, /focus emulation could not be disabled/);
+  assert.equal(error.batchWritesStarted, true);
+  assert.deepEqual(error.completedWrites.map(result => [result.path, result.backupPath]), [['src/a.ts', '/private/backup/src/a.ts'], ['src/b.ts', '/private/backup/src/b.ts']]);
+  assert.deepEqual(error.uncertainWrites, []);
+  assert.equal(vfs.get('src/b.ts'), 'b1');
+  // A refusal before the first write carries nothing.
+  const refused = fakeMake({ 'src/a.ts': 'a0' });
+  const before = refused.client._operation;
+  refused.client._operation = async fn => { await before(fn).catch(() => {}); throw new Error('Make operation completed. Temporary Make focus emulation could not be disabled: x'); };
+  const early = await refused.client.writeDurableBatch([edit('src/a.ts', 'a1', 'wrong')]).catch(cause => cause);
+  assert.equal(early.batchWritesStarted, undefined);
 });
 
 test('a read-back that never agrees after the writes marks every unconfirmed file uncertain and keeps the ones that read back equal', async () => {
@@ -188,7 +243,6 @@ test('a read-back that never agrees after the writes marks every unconfirmed fil
   assert.match(error.message, /timed out before every view agreed/);
   assert.equal(error.batchWritesStarted, true);
   assert.equal(error.observed.find(view => view.path === 'src/b.ts').sandbox, 'different');
-  assert.deepEqual(error.unwrittenPaths, []);
   assert.ok(error.uncertainWrites.some(item => item.path === 'src/b.ts'));
   assert.equal(error.completedWrites.some(result => result.path === 'src/b.ts'), false);
 });
@@ -247,13 +301,32 @@ test('the editor is only a bonus view: a mounted file must match, and is never s
   const results = await mounted.client.writeDurableBatch([edit('src/a.ts', 'a1', 'a0'), edit('src/b.ts', 'b1', 'b0')]);
   assert.deepEqual(results.map(result => result.verification), ['tree-vfs-sandbox-matched', 'editor-tree-vfs-sandbox-matched']);
   assert.deepEqual([...new Set(actions)].sort(), ['inspect', 'read-mounted']);
-  // An editor buffer that disagrees keeps the batch from confirming.
-  const stale = fakeMake({ 'src/a.ts': 'a0' });
+  // An editor buffer that already differs from the client VFS refuses the batch before any write, as for one file.
+  const stale = fakeMake({ 'src/a.ts': 'a0', 'src/b.ts': 'b0' });
   stale.client._operation = fn => fn(Date.now() + 300);
   stale.client._editor = async action => (action.type === 'inspect' ? { editorCount: 1, editorPath: 'src/a.ts' } : { content: 'stale buffer' });
-  const error = await stale.client.writeDurableBatch([edit('src/a.ts', 'a1', 'a0')]).catch(cause => cause);
-  assert.match(error.message, /timed out before every view agreed/);
-  assert.equal(error.batchWritesStarted, true);
+  const error = await stale.client.writeDurableBatch([edit('src/b.ts', 'b1', 'b0'), edit('src/a.ts', 'a1', 'a0')]).catch(cause => cause);
+  assert.match(error.message, /timed out before every view agreed.*editor different/);
+  assert.equal(error.batchWritesStarted, undefined);
+  assert.deepEqual(stale.writes(), [], 'nothing was written');
+  assert.equal(stale.calls.some(call => call[0] === 'backup'), false);
+  // The same holds for a delete of the mounted file, and a file whose buffer differs only by line endings is accepted.
+  const doomed = fakeMake({ 'src/a.ts': 'a0' });
+  doomed.client._operation = fn => fn(Date.now() + 300);
+  doomed.client._editor = async action => (action.type === 'inspect' ? { editorCount: 1, editorPath: 'src/a.ts' } : { content: 'stale buffer' });
+  assert.match((await doomed.client.writeDurableBatch([remove('src/a.ts', 'a0')]).catch(cause => cause)).message, /editor different/);
+  assert.deepEqual(doomed.writes(), []);
+  const crlf = fakeMake({ 'src/a.ts': 'a\r\nb' });
+  crlf.client._editor = async action => (action.type === 'inspect' ? { editorCount: 1, editorPath: 'src/a.ts' } : { content: crlf.vfs.get('src/a.ts').replace(/\r\n/g, '\n') });
+  assert.equal((await crlf.client.writeDurableBatch([edit('src/a.ts', 'c', 'a\r\nb')]))[0].changed, true);
+  // A buffer that goes stale after the writes still keeps the batch from confirming.
+  const late = fakeMake({ 'src/a.ts': 'a0' });
+  late.client._operation = fn => fn(Date.now() + 300);
+  late.client._editor = async action => (action.type === 'inspect' ? { editorCount: 1, editorPath: 'src/a.ts' }
+    : { content: late.vfs.get('src/a.ts') === 'a0' ? 'a0' : 'stale buffer' });
+  const after = await late.client.writeDurableBatch([edit('src/a.ts', 'a1', 'a0')]).catch(cause => cause);
+  assert.match(after.message, /timed out before every view agreed/);
+  assert.equal(after.batchWritesStarted, true);
 });
 
 test('dependency files and VENDOR.json never travel in a batch, and nothing is read or written for one', async () => {

@@ -190,10 +190,11 @@ file instead of 5-9 s. Each file keeps its own `--expected-sha256` check and its
 own byte-equality read-back, the tree after the batch must differ from the tree
 before it only by the written and removed paths (and their folders), and
 `package.json`, lockfiles and `VENDOR.json` are never inside a batch: they stay
-single writes, `VENDOR.json` last. A failure after a batch's first write reports
-`completedWrites` (read back equal), `uncertainWrites` (may have landed) and
-`unwrittenPaths`; nothing is retried or continued inside the batch. `make write`
-and `make delete` still write one file per call.
+single writes, `VENDOR.json` last. A failure after a batch's first write, a
+cleanup failure after a complete batch included, reports `completedWrites` (read
+back equal) and `uncertainWrites` (may have landed); nothing is retried or
+continued inside the batch. `make write` and `make delete` still write one file
+per call.
 A new file must sit below an existing top-level folder: the write proves
 absence by listing an existing ancestor folder, never the project root (it starts at
 the nearest folder the file tree shows, so a new folder costs no 5 s timeouts), so a
@@ -485,10 +486,14 @@ prints its lines when the batch completes), plus plan, save and verification
 stages. Consecutive non-dependency files are written as one batched operation in
 plan order; `package.json`, lockfiles, unwired entry placeholders and every
 `--override-make` write keep one operation per file. The receipt marks every file
-of a batch `uncertain` before it starts and confirms them after it; if a batch
-stops after its first write the deploy stops (`DEPLOY_WRITE_FAILED`) with the
-confirmed files confirmed and the file in flight uncertain, and `--resume`
-continues from what Make holds.
+of a batch `uncertain` before it starts and confirms them after it. If a batch
+fails after its first write, one fresh read-only operation reads its uncertain
+files from the client VFS and the sandbox (as for a single uncertain write): when
+every one holds main's content the deploy counts them written and goes on, writing
+any file the batch never reached in a new batch; otherwise it stops
+(`DEPLOY_WRITE_FAILED`) with the confirmed files confirmed and the rest
+uncertain, and `--resume` continues from what Make holds. A deadline timeout
+confirms nothing inside the failed operation; this follow-up read does.
 `--detach` starts the same guarded apply in a background process, then returns its
 run ID, PID and private log path after the child acknowledges startup. The child
 writes progress and its final JSON to that log. Startup failure is recorded and

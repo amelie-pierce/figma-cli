@@ -1078,6 +1078,27 @@ export class MakeClient {
     });
   }
 
+  // Read-only, one operation with a fresh deadline: how the client VFS and the
+  // sandbox hold each of a failed batch's uncertain files against its target
+  // ({ path, content } or { path, delete: true }). Returns [{ path, vfs, sandbox,
+  // confirmed }] in order. When every file agrees and `tracker` (the failed
+  // batch's error.batchTracker) is given, Make's change tracker also settles to it.
+  // Nothing is written.
+  confirmDurableBatch(items, { tracker } = {}) {
+    if (!Array.isArray(items) || !items.length || items.length > MAX_BATCH_FILES) throw new Error(`A Make batch holds 1–${MAX_BATCH_FILES} files.`);
+    const targets = items.map(item => { sourcePath(item.path); return { path: item.path, del: item.delete === true, content: item.delete === true ? null : item.content }; });
+    return this._operation(async deadline => {
+      const wanted = item => item.content;
+      const views = await this._withBatchBridges(targets, wanted, deadline, bridges => this._batchReads(targets, wanted, bridges, deadline));
+      const result = targets.map((item, index) => {
+        const ok = item.del ? 'absent' : 'matched';
+        return { path: item.path, vfs: views[index].vfs, sandbox: views[index].sandbox, confirmed: views[index].vfs === ok && views[index].sandbox === ok };
+      });
+      if (tracker && result.every(item => item.confirmed)) await this._settleTracker(tracker.before, tracker.expectedPaths, deadline);
+      return result;
+    });
+  }
+
   // Several sandbox files in one operation, without listing the file tree:
   // the caller has already proven they exist. Returns path -> { content, sha256 }.
   readRemoteFiles(paths) {
@@ -1208,22 +1229,24 @@ export class MakeClient {
             const verification = new Map(items.map(item => [item.path, !after ? null
               : item.del ? 'tree-vfs-sandbox-delete-matched' : item.hidden ? 'vfs-sandbox-matched'
                 : item.releaseAsset ? 'tree-vfs-sandbox-release-matched' : 'tree-vfs-sandbox-matched']));
-            // As in a single write: the editor is a bonus view, compared only when it already shows one of these files.
-            const eligible = after ? items.filter(item => !item.del && !item.hidden && !item.releaseAsset) : [];
+            // As in a single write: the editor is a bonus view, compared only when it already shows one of these
+            // files, before the first write against the original and after the last against the target.
+            const eligible = items.filter(item => wanted(item) !== null && !item.hidden && !item.releaseAsset);
             if (!eligible.length) return verification;
             try {
               const editor = await this._editor({ type: 'inspect' }, deadline);
               const target = editor.editorCount > 0 ? eligible.find(item => item.path === editor.editorPath) : null;
               if (target) {
+                const want = wanted(target);
                 const current = await this._editor({ type: 'read-mounted', path: target.path }, deadline);
-                const same = current.content === target.content ? 'matched'
-                  : sameIgnoringLineEndings(current.content, target.content) ? 'matched-lf' : 'different';
+                const same = current.content === want ? 'matched'
+                  : sameIgnoringLineEndings(current.content, want) ? 'matched-lf' : 'different';
                 if (same !== 'different') {
-                  verification.set(target.path, same === 'matched' ? 'editor-tree-vfs-sandbox-matched' : 'editor-lf-tree-vfs-sandbox-matched');
+                  if (after) verification.set(target.path, same === 'matched' ? 'editor-tree-vfs-sandbox-matched' : 'editor-lf-tree-vfs-sandbox-matched');
                   return verification;
                 }
                 editorDisagreed = true;
-                observed.find(view => view.path === target.path).editor = 'different';
+                Object.assign(observed.find(view => view.path === target.path), { editor: 'different', ok: false });
               } else if (!editorDisagreed) return verification;
             } catch { /* the editor view is unavailable this round; the next round asks again, as a single write does */ }
           }
@@ -1254,15 +1277,31 @@ export class MakeClient {
   // they are written one at a time. Returns, in order, what writeDurable /
   // deleteDurable would: { path, changed, sha256, backupPath, verification, ... }.
   //
-  // Every sha256 precondition, the sandbox pre-read and the new-file/delete
-  // ancestor proof run before the first write, and every file's backup is made
-  // before it; a changed file refuses the whole batch, and the page-side
-  // expectedContent guard refuses one that changes later. After the first write
-  // a failure carries error.completedWrites (read back and equal), error.
-  // uncertainWrites (may have landed) and error.unwrittenPaths (never attempted),
-  // with error.batchWritesStarted = true; nothing is written again.
+  // Every sha256 precondition, the sandbox pre-read, the editor view and the
+  // new-file/delete ancestor proof run before the first write, and every file's
+  // backup is made before it; a changed file refuses the whole batch, and the
+  // page-side expectedContent guard refuses one that changes later. After the
+  // first write any failure, including a cleanup failure after a complete
+  // batch, carries error.batchWritesStarted = true, error.completedWrites (read
+  // back and equal) and error.uncertainWrites (may have landed), plus
+  // error.batchTracker for confirmDurableBatch; nothing is written again.
   writeDurableBatch(items, { baseFolders = [], backupDir = join(homedir(), '.figma-cli', 'make-backups') } = {}) {
     const plan = batchPlan(items);
+    // What this call knows once its first write is sent, for a failure that
+    // _operation raises after the callback (focus-emulation cleanup) and so
+    // carries no batch fields of its own.
+    const sent = { started: false, results: null, uncertain: () => [] };
+    return this._writeDurableBatch(plan, { baseFolders, backupDir }, sent).catch(error => {
+      if (sent.started && !error.batchWritesStarted) {
+        error.batchWritesStarted = true;
+        error.completedWrites = sent.results ? sent.results.filter(result => result.changed) : [];
+        error.uncertainWrites = sent.results ? [] : sent.uncertain();
+      }
+      throw error;
+    });
+  }
+
+  _writeDurableBatch(plan, { baseFolders, backupDir }, sent) {
     return this._operation(async deadline => {
       const ui = await this._ensureCode(deadline);
       if (ui.busy || ui.offline || ui.readOnly === true) throw new Error('Make editor is busy, offline or read-only.');
@@ -1287,10 +1326,18 @@ export class MakeClient {
       if (!changed.length) return state.map(unchangedResult);
       // Make's tracker must list the union of what was pending and what these files change.
       const expected = new Set(before.pendingPaths);
+      const listed = new Map();
       for (const item of changed) {
         const tracker = await this._pendingAfterMutation(before, item.path, item.del ? null : item.content, deadline, {});
-        if (tracker.expectedPaths.includes(item.path)) expected.add(item.path); else expected.delete(item.path);
+        listed.set(item, tracker.expectedPaths.includes(item.path));
+        if (listed.get(item)) expected.add(item.path); else expected.delete(item.path);
       }
+      // The tracker's list once only `subset` of the changed files landed, for confirmDurableBatch.
+      const trackerFor = subset => {
+        const paths = new Set(before.pendingPaths);
+        for (const item of subset) if (listed.get(item)) paths.add(item.path); else paths.delete(item.path);
+        return { before, expectedPaths: [...paths].sort() };
+      };
       for (const item of changed) {
         item.backupPath = item.original === null ? null : await this._bounded(() => this._backup(item.path, item.original, {
           backupDir, operation: item.del ? 'durable-delete' : 'durable-write', ...(item.del ? {} : { replacementSha256: sha256(item.content) }),
@@ -1316,22 +1363,22 @@ export class MakeClient {
         return items.filter((_, index) => views[index].vfs === (items[index].del ? 'absent' : 'matched') &&
           views[index].sandbox === (items[index].del ? 'absent' : 'matched'));
       };
-      const failed = async (message, { accepted, refused = null, inFlight = null, cause }) => {
+      sent.uncertain = () => changed.map(uncertainOf);
+      const failed = async (message, { accepted, inFlight = null, cause }) => {
         let confirmed = [];
         try { confirmed = await agreeing(accepted); } catch { /* every accepted file stays uncertain */ }
-        const attempted = new Set([...accepted, refused, inFlight].filter(Boolean));
         const error = new Error(message);
         error.batchWritesStarted = true;
         error.completedWrites = confirmed.map(item => resultOf(item, 'vfs-sandbox-matched-after-uncertain-write'));
         error.uncertainWrites = [...accepted.filter(item => !confirmed.includes(item)), ...(inFlight ? [inFlight] : [])].map(uncertainOf);
-        error.unwrittenPaths = changed.filter(item => !attempted.has(item) || item === refused).map(item => item.path);
-        if (refused) error.refusedPath = refused.path;
+        error.batchTracker = trackerFor([...accepted, ...(inFlight ? [inFlight] : [])]);
         if (cause?.observed) error.observed = cause.observed;
         return error;
       };
       const accepted = [];
       let refused = null;
       let inFlight = null;
+      sent.started = true;
       try {
         for (const item of changed) {
           inFlight = item;
@@ -1344,7 +1391,7 @@ export class MakeClient {
       } catch (cause) {
         throw await failed(refused
           ? `Make refused the batch write at ${refused.path}: ${cause.message} ${accepted.length} of ${changed.length} file(s) were written before it.`
-          : `Make durable batch write outcome is uncertain: ${cause.message}. Inspect before retrying.`, { accepted, refused, inFlight, cause });
+          : `Make durable batch write outcome is uncertain: ${cause.message}. Inspect before retrying.`, { accepted, inFlight, cause });
       }
       let verification;
       try {
@@ -1364,10 +1411,10 @@ export class MakeClient {
         error.batchWritesStarted = true;
         error.completedWrites = changed.map(item => resultOf(item, verification.get(item.path)));
         error.uncertainWrites = [];
-        error.unwrittenPaths = [];
         throw error;
       }
-      return state.map(item => (item.unchanged ? unchangedResult(item) : resultOf(item, verification.get(item.path))));
+      sent.results = state.map(item => (item.unchanged ? unchangedResult(item) : resultOf(item, verification.get(item.path))));
+      return sent.results;
     }, { durable: true });
   }
 

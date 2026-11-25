@@ -538,7 +538,6 @@ test('an unbound plan applies through the same writes, save and drift as a bound
     const calls = [];
     const client = {
       writeDurableBatch(items, options) { return batchThrough(this, items, options); },
-      writeDurableBatch(items, options) { return batchThrough(this, items, options); },
       writeDurable: async (target, content, options) => { calls.push(['write', target, options.expectedSha256]); return { backupPath: '/private/b' }; },
       deleteDurable: async () => { throw new Error('no delete planned'); },
       saveVersion: async (_title, paths) => { calls.push(['save', paths]); return { versionNumber: 3, gitSha: saved }; },

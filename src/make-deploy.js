@@ -874,8 +874,12 @@ const recordWrite = (receipt, file, backupPath, extra = {}) => {
 // receipt marks every file of the batch uncertain before it starts, so an
 // interruption anywhere inside leaves each of them uncertain for resume and
 // abort, and replaces the marks with what the batch confirmed after it. Nothing
-// is written again inside a batch: a failure after its first write stops the
-// deploy, and --resume continues from what Make holds.
+// is written again inside a batch. A failure after its first write is settled
+// as a single uncertain write is (writeDurableConfirmed): one fresh read-only
+// operation reads the uncertain files from the client VFS and the sandbox, and
+// when every one holds main's content the deploy goes on (a file the batch never
+// reached is written by a new batch of its own, which refuses first if Make
+// changed). Anything else stops the deploy, and --resume continues from what Make holds.
 async function writeBatch(client, receipt, files, { mainBytes, home, deps }) {
   const writeStarted = Date.now();
   const byPath = new Map(files.map(file => [file.path, file]));
@@ -910,9 +914,33 @@ async function writeBatch(client, receipt, files, { mainBytes, home, deps }) {
       unmark();
       if (error.batchWritesStarted) {
         for (const done of error.completedWrites ?? []) recordWrite(receipt, byPath.get(done.path), done.backupPath ?? null);
-        for (const unsure of error.uncertainWrites ?? []) recordWrite(receipt, byPath.get(unsure.path), unsure.backupPath ?? null, { uncertain: true, batch });
-      } else saveReceipt(receipt);
-      if (error.batchWritesStarted || attempt >= ROUNDS || error.code !== 'MAKE_PENDING_CHANGED') {
+        const unsure = error.uncertainWrites ?? [];
+        let landed = new Set();
+        let note = '';
+        if (unsure.length) {
+          try {
+            const targets = unsure.map(write => items.find(item => item.path === write.path));
+            const readBack = await client.confirmDurableBatch(targets, { tracker: error.batchTracker });
+            landed = new Set(readBack.filter(view => view.confirmed).map(view => view.path));
+            const odd = readBack.find(view => !view.confirmed);
+            if (odd) note = ` Read-back after it: ${odd.path} client VFS ${odd.vfs}, sandbox ${odd.sandbox}.`;
+          } catch (readError) { note = ` The read-back after it also failed: ${readError.message}`; }
+        }
+        for (const write of unsure) {
+          recordWrite(receipt, byPath.get(write.path), write.backupPath ?? null,
+            landed.has(write.path) ? { afterUncertain: true } : { uncertain: true, batch });
+        }
+        if (!unsure.length || landed.size < unsure.length) {
+          stop(receipt, error, 'writing', `Deploy stopped while writing ${names}: ${error.message}${note} No version was saved. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
+        }
+        // Every file the batch may have written holds main's content: go on with what it never reached.
+        const reached = new Set([...(error.completedWrites ?? []), ...unsure].map(write => write.path));
+        const rest = files.filter(file => !reached.has(file.path));
+        if (rest.length) { await writeBatch(client, receipt, rest, { mainBytes, home, deps }); return; }
+        break;
+      }
+      saveReceipt(receipt);
+      if (attempt >= ROUNDS || error.code !== 'MAKE_PENDING_CHANGED') {
         stop(receipt, error, 'writing', `Deploy stopped while writing ${names}: ${error.message} No version was saved. Run ${recovery(receipt)}.`, 'DEPLOY_WRITE_FAILED');
       }
       // Nothing of the batch was written: once Make is idle and every unsaved path still matches the plan, it starts again.
