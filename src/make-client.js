@@ -1214,7 +1214,7 @@ export class MakeClient {
     const items = after ? state.filter(item => !item.unchanged) : state;
     const wanted = item => (after ? item.content : item.original);
     let observed = null;
-    let editorDisagreed = false;
+    const editorDisagreed = new Set();
     try {
       return await this._withBatchBridges(items, wanted, deadline, async bridges => {
         for (;;) {
@@ -1249,14 +1249,15 @@ export class MakeClient {
                 const current = await this._editor({ type: 'read-mounted', path: target.path }, deadline);
                 const same = current.content === want ? 'matched'
                   : sameIgnoringLineEndings(current.content, want) ? 'matched-lf' : 'different';
-                if (same !== 'different') {
+                if (same === 'different') editorDisagreed.add(target.path);
+                else {
+                  editorDisagreed.delete(target.path);
                   if (after) verification.set(target.path, same === 'matched' ? 'editor-tree-vfs-sandbox-matched' : 'editor-lf-tree-vfs-sandbox-matched');
-                  return verification;
                 }
-                editorDisagreed = true;
-                Object.assign(observed.find(view => view.path === target.path), { editor: 'different', ok: false });
-              } else if (!editorDisagreed) return verification;
+              }
+              if (!editorDisagreed.size) return verification;
             } catch { /* the editor view is unavailable this round; the next round asks again, as a single write does */ }
+            for (const view of observed) if (editorDisagreed.has(view.path)) Object.assign(view, { editor: 'different', ok: false });
           }
           await this._bounded(() => new Promise(resolve => setTimeout(resolve, 100)), deadline);
         }

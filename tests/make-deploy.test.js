@@ -3186,6 +3186,22 @@ describe('make deploy batched writes', () => {
     assert.equal(final.outcome, 'ok');
   });
 
+  it('prints a progress line for every file of a confirmed batch, then for the files it never reached', async t => {
+    const s = setup(t, { files: { ...BASE, ...OLD } });
+    landChange(s, NEW);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    // The third write's reply is lost but its bytes landed: the batch is confirmed and the last three files follow in a new batch.
+    let failed = false;
+    s.make.hooks.afterWrite = path => { if (path === NAMES[2] && !failed) { failed = true; throw new Error('Make page connection closed.'); } };
+    const lines = [];
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, { ...s.deps, progress: line => lines.push(line) });
+    assert.equal(applied.stage, 'deployed');
+    assert.deepEqual(batches(s.make), [NAMES, NAMES.slice(3)]);
+    assert.deepEqual(lines.filter(line => /^\d+\/\d+ /.test(line)).map(line => line.replace(/ \(\d+s\)$/, '')),
+      plan.files.map((file, index) => `${index + 1}/${plan.files.length} ${file.path}`));
+    savedIs(s, NEW);
+  });
+
   // A receipt as two interruptions leave it: `earlier` are the uncertain entries of the first one, then the
   // second batch marked all six files again and was killed after its third write.
   async function interruptedTwice(t, earlier) {

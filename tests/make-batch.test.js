@@ -357,6 +357,43 @@ test('the editor is only a bonus view: a mounted file must match, and is never s
   assert.equal(after.batchWritesStarted, true);
 });
 
+test('an editor buffer that differed after the writes stays in the timed-out read-back until the editor shows that file agreeing', async () => {
+  // src/a.ts is mounted with a stale buffer once the batch has written; `later` is what the editor answers from then on.
+  const timedOut = later => {
+    const make = fakeMake({ 'src/a.ts': 'a0', 'src/b.ts': 'b0' });
+    make.client._operation = fn => fn(Date.now() + 500);
+    let disagreed = false;
+    make.client._editor = async action => {
+      if (make.vfs.get('src/b.ts') === 'b0') return { editorCount: 0 };
+      if (action.type === 'read-mounted') {
+        if (action.path === 'src/a.ts') disagreed = true;
+        return { content: action.path === 'src/a.ts' ? 'stale buffer' : make.vfs.get(action.path) };
+      }
+      return disagreed ? later() : { editorCount: 1, editorPath: 'src/a.ts' };
+    };
+    return make.client.writeDurableBatch([edit('src/a.ts', 'a1', 'a0'), edit('src/b.ts', 'b1', 'b0')]).catch(cause => cause);
+  };
+  for (const [name, later] of [
+    ['the designer opens a file outside the batch', () => ({ editorCount: 1, editorPath: 'src/unrelated.ts' })],
+    ['the editor is closed', () => ({ editorCount: 0 })],
+    ['the editor stops answering', () => { throw new Error('Make page connection closed.'); }],
+    ['the designer opens another file of the batch whose buffer agrees', () => ({ editorCount: 1, editorPath: 'src/b.ts' })],
+  ]) {
+    const error = await timedOut(later);
+    assert.match(error.message ?? '', /Make read-back for src\/a\.ts timed out before every view agreed \(.*editor different\); 1 of 2 file\(s\) had not agreed/, name);
+    assert.equal(error.batchWritesStarted, true, name);
+    assert.deepEqual(error.observed.map(view => [view.path, view.ok, view.editor]), [['src/a.ts', false, 'different'], ['src/b.ts', true, undefined]], name);
+  }
+  // A buffer that catches up clears it: the batch then confirms with the editor view.
+  const caught = fakeMake({ 'src/a.ts': 'a0' });
+  let reads = 0;
+  caught.client._editor = async action => (action.type === 'inspect' ? { editorCount: 1, editorPath: 'src/a.ts' }
+    : { content: caught.vfs.get('src/a.ts') === 'a0' ? 'a0' : ++reads < 3 ? 'stale buffer' : 'a1' });
+  const results = await caught.client.writeDurableBatch([edit('src/a.ts', 'a1', 'a0')]);
+  assert.equal(reads, 3);
+  assert.equal(results[0].verification, 'editor-tree-vfs-sandbox-matched');
+});
+
 test('dependency files and VENDOR.json never travel in a batch, and nothing is read or written for one', async () => {
   for (const path of ['package.json', 'pnpm-lock.yaml', 'package-lock.json', 'src/vendor/atomic-aui/VENDOR.json', 'VENDOR.json']) {
     assert.equal(batchBarred(path), true, path);

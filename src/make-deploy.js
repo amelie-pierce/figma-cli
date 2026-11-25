@@ -906,6 +906,7 @@ async function writeBatch(client, receipt, files, { mainBytes, home, deps }) {
   });
   const names = `${files[0].path}${files.length > 1 ? ` and ${files.length - 1} more of its batch` : ''}`;
   let status;
+  let rest = [];
   for (let attempt = 1; ; attempt++) {
     const items = itemsFor(status);
     const batch = new Date().toISOString();
@@ -947,8 +948,7 @@ async function writeBatch(client, receipt, files, { mainBytes, home, deps }) {
         }
         // Every file the batch wrote holds main's content: go on with what it never reached.
         const reached = new Set(written.map(write => write.path));
-        const rest = files.filter(file => !reached.has(file.path));
-        if (rest.length) { await writeBatch(client, receipt, rest, { mainBytes, home, deps }); return; }
+        rest = files.filter(file => !reached.has(file.path));
         break;
       }
       unmark();
@@ -971,7 +971,9 @@ async function writeBatch(client, receipt, files, { mainBytes, home, deps }) {
   }
   const completed = new Set(receipt.completedWrites.filter(write => !write.uncertain && !write.backupOnly).map(write => write.path)).size;
   const seconds = Math.round((Date.now() - writeStarted) / 1000);
-  files.forEach((file, index) => deps.progress(`${completed - files.length + index + 1}/${receipt.plan.files.length} ${file.path} (${seconds}s)`));
+  const recorded = files.filter(file => !rest.includes(file));
+  recorded.forEach((file, index) => deps.progress(`${completed - recorded.length + index + 1}/${receipt.plan.files.length} ${file.path} (${seconds}s)`));
+  if (rest.length) await writeBatch(client, receipt, rest, { mainBytes, home, deps });
 }
 
 // Write each file to main's content. A file starts from its planned before
