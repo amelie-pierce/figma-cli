@@ -148,14 +148,17 @@ session and were missing after a reopen.
 
 `make write` and `make delete` use Make's client VFS in git mode. An existing
 file requires `--expected-sha256`; a new file omits it. Replaced or deleted
-bytes receive a private backup. The CLI checks the client VFS, file tree, editor
-(for existing or newly written files), and session sandbox before reporting a
-pending write. Make shows Markdown as a preview and may leave an unopened
-source file without an editor; when no editor appears within a few seconds, the
-client VFS, sandbox and tree must agree instead
-(`verification: "tree-vfs-sandbox-matched"`). A path too deep to select in the
-tree takes the same fallback only while no editor, or another file's editor, is
-mounted. A mounted editor of the file must still match.
+bytes receive a private backup. The CLI checks the client VFS, session sandbox
+and file tree before reporting a pending write; these three views must agree
+(`verification: "tree-vfs-sandbox-matched"`). It never selects (opens) a file in
+Make's editor, because that collapses every unrelated folder and costs a tree
+re-expansion per folder. The editor is a bonus view: when Make already shows the
+file being written in its mounted editor (named by the Files workspace
+breadcrumb), the editor's buffer must also match
+(`verification: "editor-tree-vfs-sandbox-matched"`). Any other editor state,
+including no editor (Markdown preview, an unopened file), another file's editor
+or a legacy layout whose editor names no path, leaves the three views as the
+proof.
 If the views still disagree at the timeout, the error names each view's state.
 Each durable write or delete, including its preflight and read-back, uses a
 CDP wait based on 30000 ms plus 100 ms per KiB of the request. The operation
@@ -163,10 +166,11 @@ timeout (120000 ms by default for `write`, `delete` and `deploy`) may raise that
 wait, while the remaining operation time caps every call. Durable reads may use
 the remaining operation time. A timeout leaves the existing uncertain-outcome
 checks and receipt recovery in force; it never replays the write automatically.
-`--vendor-tree-fallback` (only for `src/vendor/atomic-aui/` paths, as `make sync`
-and solo AtomicAUI installs use internally) also accepts client VFS, sandbox and
-tree agreement when a deep path cannot be selected and the mounted editor reports
-no path (`verification: "tree-vfs-sandbox-vendor-matched"`); an editor showing
+`--vendor-tree-fallback` (only for `src/vendor/atomic-aui/` paths; `make sync`
+and solo AtomicAUI installs pass the same option internally) is accepted for
+compatibility and no longer changes acceptance. A mounted editor that reports no
+path is accepted on client VFS, sandbox and tree agreement for every path, with
+or without it (`verification: "tree-vfs-sandbox-matched"`); an editor showing
 the same path must still match.
 When Make accepted the bytes but the write's read-back outlived the timeout,
 `make write` reads the path once more, in a fresh read-only operation, from the
@@ -500,21 +504,11 @@ scripts. Status reads local receipts and runner records without connecting to Ma
 A live lease does not prove that Make has saved a version; use the receipt and
 fresh reload verification for that proof. Older receipts have no runner record.
 
-For an existing file, a durable write reuses the selected editor row after
-the write only when the final Files-tree scan still shows that row and all
-its ancestors mounted, and the editor validates their identity again.
-If the scan already shows an unmounted row or ancestor, it goes straight to
-guarded selection without an extra cached editor read. If Make moves the
-selection after the scan, the editor check falls back to guarded selection. The
-before and after VFS, sandbox and Files-tree checks still run for each file,
-and the editor content is checked when available. This saves one Files-tree
-selection for replacements whose selection stays mounted; large trees may
-still require both selections. Creates, deletes, and hidden files retain
-their existing checks. A fake client with 120 ms per selection measured
-0.329 s before and 0.212 s after per replacement (one selection instead of
-two) for a mounted selection. Live per-stage Make timing is pending; this
-optimization must not be merged until an authorized scratch-file or vendor-only
-deploy confirms its live behavior and timing.
+A durable write or delete never selects a file in Make's editor, so it does not
+collapse the Files tree; the per-file VFS, sandbox and tree checks run before and
+after each write as before, and the editor buffer is compared only when that
+exact file is already the mounted editor. On a scratch Make file with 11
+folders this took an edit from 9.3 s to 1.7 s and a new file from 5.3 s to 2.7 s.
 
 Normal deploy guards, each refusing with nothing written:
 - a release-installed AtomicAUI folder in the clone equals its VENDOR.json file

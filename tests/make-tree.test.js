@@ -381,7 +381,10 @@ function fakeMake(nodes, files, change, { clientHeight = 320 } = {}) {
     flatten: async () => new Map(Object.entries(files).map(([path, content]) => [path, { blob: gitBlobSha(Buffer.from(content)) }])) });
   client._treeTransport = () => transport;
   client._backup = async () => '/private/backup';
-  client._read = async () => { throw Object.assign(new Error('Make shows no source editor.'), { code: 'MAKE_NO_EDITOR' }); };
+  // No editor is mounted, and nothing may open one: select and read throw.
+  client.editorActions = [];
+  client._select = client._read = async () => { throw new Error('a durable write or delete must not select a file'); };
+  client._editor = async action => { client.editorActions.push(action.type); return { editorCount: 0 }; };
   client._bridgeRead = async (_bridge, path) => {
     if (!vfs.has(path)) throw new Error('missing');
     return { content: vfs.get(path) };
@@ -409,38 +412,27 @@ describe('Make durable writes and deletes across a guarded tree refresh', () => 
   const hash = text => createHash('sha256').update(text).digest('hex');
   const tree = (...extra) => [folder('src', [folder('lib', [file('old.ts')]), ...extra])];
 
-  it('avoids cached editor calls for rows or ancestors outside the final viewport', async () => {
-    const cases = [
-      { nodes: [file('App.tsx'), file('b'), file('c'), file('d')], path: 'App.tsx', selections: 2 },
-      { nodes: [folder('src', [file('App.tsx')]), file('last')], path: 'src/App.tsx', selections: 2 },
-      { nodes: [folder('src', [file('App.tsx')])], path: 'src/App.tsx', selections: 1 },
-    ];
-    for (const { nodes, path, selections } of cases) {
-      const client = fakeMake(nodes, { [path]: 'old' }, () => {}, { clientHeight: 64 });
+  it('never selects a file or opens an editor during a write or a delete', async () => {
+    const check = (client, outcome, verification) => {
       const transport = client._treeTransport();
-      client._read = MakeClient.prototype._read;
-      let editorReads = 0;
-      let unmountedReads = 0;
-      client._editor = async action => {
-        if (action.type === 'inspect') return { editorCount: 1 };
-        assert.equal(action.type, 'read');
-        editorReads++;
-        const { entry } = action;
-        const start = transport.viewport.scrollTop;
-        if ([...entry.ancestors, entry].some(row => row.top < start || row.top >= start + 64)) {
-          unmountedReads++;
-          throw new Error('Make selected source file or ancestor is no longer rendered.');
-        }
-        assert.equal(transport.selectedPath, entry.path);
-        return { content: (await client._durable({ type: 'read', path: entry.path })).content };
-      };
-      const result = await client.writeDurable(path, 'new', { expectedSha256: hash('old') });
-      assert.equal(result.verification, 'editor-tree-vfs-sandbox-matched');
-      assert.equal((await client.readDurable(path)).content, 'new');
-      assert.equal(unmountedReads, 0, 'the completed tree scan must rule out an unmounted cached entry');
-      assert.equal(editorReads, 2, 'only the before/after editor reads are needed');
-      assert.equal(transport.clicks.filter(clicked => clicked === path).length, selections);
-    }
+      return outcome.then(result => {
+        assert.equal(result.verification, verification);
+        // Folder expansion (the tree scan) is the only click; no file is selected.
+        assert.equal(transport.selectedPath, null);
+        assert.equal(transport.clicks.some(clicked => clicked.endsWith('.ts') || clicked.endsWith('.tsx')), false);
+        assert.ok(transport.actions.every(action => ['scroll', 'expand'].includes(action.type)),
+          `unexpected tree action: ${[...new Set(transport.actions.map(action => action.type))]}`);
+        assert.ok(client.editorActions.length > 0 && client.editorActions.every(type => type === 'inspect'),
+          'the editor is only inspected, never clicked or read');
+      });
+    };
+    const replaced = fakeMake(tree(file('App.tsx')), { 'src/lib/old.ts': 'old', 'src/App.tsx': 'old' }, () => {});
+    await check(replaced, replaced.writeDurable('src/App.tsx', 'new', { expectedSha256: hash('old') }), 'tree-vfs-sandbox-matched');
+    const added = fakeMake(tree(), { 'src/lib/old.ts': 'old' }, ({ nodes }) => nodes[0].children[0].children.push(file('new.ts')));
+    await check(added, added.writeDurable('src/lib/new.ts', 'new'), 'tree-vfs-sandbox-matched');
+    const removed = fakeMake(tree(folder('field', [file('Input.tsx')])), { 'src/lib/old.ts': 'old', 'src/field/Input.tsx': 'input' },
+      ({ nodes }) => nodes[0].children.splice(1, 1));
+    await check(removed, removed.deleteDurable('src/field/Input.tsx', { expectedSha256: hash('input') }), 'tree-vfs-sandbox-delete-matched');
   });
 
   it('writes a file whose new folder appears during a guarded expand', async () => {

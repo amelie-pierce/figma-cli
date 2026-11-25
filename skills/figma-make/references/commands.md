@@ -52,9 +52,10 @@ connecting (`code: "MAKE_SESSION_ONLY_REQUIRED"`). Writes change only the open
 session's working copy and are lost when the file is reopened unless the user
 saves them in Make, which creates a new version through the file's saving mode.
 Git-mode `write` and `delete` use Make's client VFS. They check the prior hash,
-back up replaced or removed bytes, and verify the editor, tree, VFS and sandbox.
-Markdown, and an unopened or too-deep source file, may have no Make editor; then
-tree, VFS and sandbox must agree (`verification: "tree-vfs-sandbox-matched"`). A new file directly under the
+back up replaced or removed bytes, and verify that the client VFS, sandbox and
+tree agree (`verification: "tree-vfs-sandbox-matched"`). They never open a file in
+Make's editor; only when the written file is already the mounted editor must its
+buffer match too (`verification: "editor-tree-vfs-sandbox-matched"`). A new file directly under the
 project root, or in a new top-level folder, is refused before writing.
 They remain pending until `save-version` receives the complete changed-path set,
 creates a Make version and confirms a clean pending state. Root `AGENTS.md` and

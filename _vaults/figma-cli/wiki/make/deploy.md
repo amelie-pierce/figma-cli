@@ -42,9 +42,9 @@ recovery with this build is **UNVERIFIED**.
 
 ## Line endings rewritten by Make's editor
 
-Make's code editor shows text with LF line endings. A mounted editor showing a
-CRLF file as LF agrees with the write when the client VFS and sandbox hold the
-exact bytes (`matched-lf`, `src/make-client.js:853`); any other editor
+Make's code editor shows text with LF line endings. An editor already mounted on the
+written path and showing a CRLF file as LF agrees with the write when the client VFS and sandbox hold the
+exact bytes (`matched-lf`, `src/make-client.js:880`); any other editor
 difference still leaves the write uncertain. If the editor writes its LF buffer
 back over a deployed CRLF file, `classify` marks that path `after-eol` when its
 working sha256 equals main's UTF-8 bytes with CRLF turned into LF
@@ -66,7 +66,7 @@ Detached startup, per-run records and terminal results are implemented in
 is in `tests/make-deploy-runner.test.js`. Windows execution and live Figma
 delivery are **UNVERIFIED**.
 
-Updated 2026-11-06: editor-selection reuse is documented in the [command reference](../../../../REFERENCE.md#deploying-main-to-make-make-deploy); regression coverage is in `tests/make-tree.test.js:400` and `tests/make-durable.test.js:58`.
+Updated 2026-11-25: the 2026-11-06 editor-selection reuse is gone. Writes and deletes no longer select a file at all (see [persistence.md](persistence.md#files-without-an-editor)); regression coverage is in `tests/make-tree.test.js` ("never selects a file or opens an editor") and `tests/make-durable.test.js`.
 
 ## Current-main override
 
@@ -142,7 +142,7 @@ Read-only, against Lab Management Application at saved version `fac6269a…`, tr
 
 ## Folder changes during writes and deletes
 
-For a new durable file, the client retains the complete rendered tree from its pre-write absence check. After Make accepts the VFS write, the shared tree traversal may reread once if a guarded row action sees a changed tree. It compares the fresh complete tree with that snapshot: only the written file and its missing ancestor folders may appear; existing paths, kinds, levels and row heights must remain. A durable delete (deploy deletes, abort removals, library replacement) retains its pre-delete tree the same way: only the deleted file and ancestor folders left with no rows beneath them may disappear, and nothing may appear. Other changes keep the original refusal. The VFS, sandbox and editor byte checks still run (`src/make-client.js:568`, `src/make-client.js:635`, `src/make-client.js:673`, `src/make-tree.js:303`, `src/make-tree.js:341`). Fake-Make coverage runs the real `writeDurable` and `deleteDurable` through the guarded refresh: a new folder and an emptied folder continue, while an unrelated insertion or removal refuses (`tests/make-tree.test.js:375`). Tree-level tests cover the same cases (`tests/make-tree.test.js:165`, `tests/make-tree.test.js:210`). The deploy test at `tests/make-deploy.test.js:809` runs only the tree check from its hooks, beside a fake client, for twelve new folders.
+For a new durable file, the client retains the complete rendered tree from its pre-write absence check. After Make accepts the VFS write, the shared tree traversal may reread once if a guarded row action sees a changed tree. It compares the fresh complete tree with that snapshot: only the written file and its missing ancestor folders may appear; existing paths, kinds, levels and row heights must remain. A durable delete (deploy deletes, abort removals, library replacement) retains its pre-delete tree the same way: only the deleted file and ancestor folders left with no rows beneath them may disappear, and nothing may appear. Other changes keep the original refusal. The VFS and sandbox byte checks still run, with the editor's when that file is already mounted (`src/make-client.js:568`, `src/make-client.js:635`, `src/make-client.js:673`, `src/make-tree.js:303`, `src/make-tree.js:341`). Fake-Make coverage runs the real `writeDurable` and `deleteDurable` through the guarded refresh: a new folder and an emptied folder continue, while an unrelated insertion or removal refuses (`tests/make-tree.test.js:375`). Tree-level tests cover the same cases (`tests/make-tree.test.js:165`, `tests/make-tree.test.js:210`). The deploy test at `tests/make-deploy.test.js:809` runs only the tree check from its hooks, beside a fake client, for twelve new folders.
 
 ## Dependency changes
 

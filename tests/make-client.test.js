@@ -674,7 +674,7 @@ test('replacement works for a deeply nested file whose folder chain cannot fit i
   assert.equal(state.dispatches.length, 0);
 });
 
-test('durable read-back of a deep unselectable file accepts three views only while the editor shows another path', async (t) => {
+test('durable read-back of a deep file never selects it: the editor counts only when it already shows that path', async (t) => {
   const extraFolders = ['components', 'lib', 'forms', 'fields'];
   const path = 'src/components/lib/forms/fields/Field.tsx';
   const { client, state } = await setup(t, { workspace: true, extraFolders, rowName: 'Field.tsx', heading: 'Field.tsx', clientHeight: 64 });
@@ -682,18 +682,23 @@ test('durable read-back of a deep unselectable file accepts three views only whi
   client._fileBridge = async () => ({ dispose: async () => {} });
   client._bridgeRead = async (_bridge, target) => ({ content: state.fs[target] });
   const expected = state.fs[path];
-  // The rejections below poll until this deadline runs out, so it sets the
-  // test's runtime; it is wide because a slow CI runner once spent more than
-  // 1.5s before the first poll observed the editor.
   const deadline = () => Date.now() + 5000;
   await assert.rejects(client.diagnostics(path), error => error.code === 'MAKE_TREE_VIEWPORT');
+  // The editor names no path (or another one): VFS, sandbox and tree agree.
   assert.equal(await client._durableAgreement(path, expected, deadline()), 'tree-vfs-sandbox-matched');
+  // The editor already shows this exact path: its buffer is read in place and must match.
   Object.assign(state, { breadcrumbFolder: 'src/components/lib/forms/fields', breadcrumbLeaf: 'Field.tsx' });
-  await assert.rejects(client._durableAgreement(path, expected, deadline()), /editor unavailable/);
+  assert.equal(await client._durableAgreement(path, expected, deadline()), 'editor-tree-vfs-sandbox-matched');
+  // A mounted editor of this path whose buffer differs is a disagreement, not a fallback.
+  const buffer = state.content;
+  state.content = `${buffer}// stale`;
+  await assert.rejects(client._durableAgreement(path, expected, Date.now() + 300), /editor different/);
+  state.content = buffer;
   state.workspace = false;
-  await assert.rejects(client._durableAgreement(path, expected, deadline()), /editor unavailable/);
+  assert.equal(await client._durableAgreement(path, expected, deadline()), 'tree-vfs-sandbox-matched');
   state.editorCount = 0;
   assert.equal(await client._durableAgreement(path, expected, deadline()), 'tree-vfs-sandbox-matched');
+  assert.equal(state.selected, false, 'agreement never selects the file');
 });
 
 test('Markdown reads through the bridge, where the editor shows no source document', async (t) => {
