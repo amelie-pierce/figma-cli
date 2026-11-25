@@ -1,0 +1,18 @@
+_vaults/figma-cli/wiki/make/deploy.md
+  h_eb882fdf9e0ce8 47,145
+_vaults/figma-cli/wiki/make/persistence.md
+  h_eb882fdf9e0ce8 24
+_vaults/figma-cli/wiki/make/size-and-timeouts.md
+  h_eb882fdf9e0ce8 29,37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6174b9248f7af1dbbe9bd5ee163a58bddd428879",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
