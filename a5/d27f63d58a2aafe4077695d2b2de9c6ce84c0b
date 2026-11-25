@@ -1,0 +1,32 @@
+REFERENCE.md
+  h_eb882fdf9e0ce8 151-161,171-172,506-510
+_vaults/figma-cli/wiki/make/atomicaui-release.md
+  h_eb882fdf9e0ce8 45-47
+_vaults/figma-cli/wiki/make/deploy.md
+  h_eb882fdf9e0ce8 45-46,69
+_vaults/figma-cli/wiki/make/persistence.md
+  h_eb882fdf9e0ce8 32,81
+_vaults/figma-cli/wiki/make/size-and-timeouts.md
+  h_eb882fdf9e0ce8 31
+src/make-client.js
+  h_eb882fdf9e0ce8 177-184,366,868-873,875-885,887-894
+tests/make-client.test.js
+  h_eb882fdf9e0ce8 677,687,689,691-696,698,701
+tests/make-deploy.test.js
+  h_eb882fdf9e0ce8 436-437
+tests/make-durable.test.js
+  h_eb882fdf9e0ce8 17-33,92-93,97,106,108-110,242,401,405-407,417,428-429,444,460,495,500,523,531-533,535,538,546,549-555,558,577
+tests/make-tree.test.js
+  h_eb882fdf9e0ce8 384-387,415-416,418-435
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a5d27f63d58a2aafe4077695d2b2de9c6ce84c0b",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
