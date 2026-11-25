@@ -1,0 +1,16 @@
+_vaults/figma-cli/wiki/make/deploy.md
+  h_eb882fdf9e0ce8 47
+_vaults/figma-cli/wiki/make/size-and-timeouts.md
+  h_eb882fdf9e0ce8 29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c0863d6376ee5f55279609834260a16ce0bd9fd2",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
