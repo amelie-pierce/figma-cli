@@ -1,0 +1,28 @@
+CHANGELOG.md
+  h_eb882fdf9e0ce8 7
+REFERENCE.md
+  h_eb882fdf9e0ce8 489-502
+_vaults/figma-cli/wiki/make/deploy.md
+  h_eb882fdf9e0ce8 24
+_vaults/figma-cli/wiki/make/write-cost.md
+  h_eb882fdf9e0ce8 27,30,44-45,51
+src/make-client.js
+  h_eb882fdf9e0ce8 1085-1087,1093-1105,1294-1298,1378,1385,1405
+src/make-deploy.js
+  h_eb882fdf9e0ce8 877-882,884-888,921,923-925,927,929,931,934,939-940,945,948-949,954,1488-1489,1492
+tests/make-batch.test.js
+  h_eb882fdf9e0ce8 156,215-241,467-471
+tests/make-deploy.test.js
+  h_eb882fdf9e0ce8 255-256,276-280,290,292,297-306,314-316,318,683-758,765,3189-3231
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2ffe102a2bf485d07c34342b1207580200d6822a",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
