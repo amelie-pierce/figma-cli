@@ -1,0 +1,22 @@
+_vaults/figma-cli/wiki/make/write-cost.md
+  h_eb882fdf9e0ce8 27,51
+src/make-client.js
+  h_eb882fdf9e0ce8 1217,1252-1254,1257-1258,1260
+src/make-deploy.js
+  h_eb882fdf9e0ce8 909,951,974-976
+tests/make-batch.test.js
+  h_eb882fdf9e0ce8 360-396
+tests/make-deploy.test.js
+  h_eb882fdf9e0ce8 3189-3204
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cbf0e6378042f21a23beafc5ea9a1a4e0e372f90",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
