@@ -208,6 +208,7 @@ class FakeMake {
   }
   async writeDurable(path, content, { expectedSha256, backupDir, rewrite = false, baseFolders } = {}) {
     this.calls.push(['write', path]);
+    (this.expectations ??= []).push([path, expectedSha256]);
     this.hooks.beforeWrite?.(path);
     this.landUnder('write');
     const current = this.working.get(path);
@@ -2315,6 +2316,60 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     assert.match(verified.summary, /Verified after a fresh reload/);
   });
 
+  // L1: Make's install has already replaced the lockfile when package.json's idle wait ends; the lockfile
+  // write starts from the hash that wait read, so it is not refused and no re-read is needed first.
+  it('writes the lockfile from the hash Make holds after its install, with no refused attempt and no re-read', async t => {
+    const s = dependencyChange(t);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    const planned = plan.files.find(file => file.path === 'pnpm-lock.yaml');
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.outcome, 'ok');
+    const lockWrites = s.make.expectations.filter(([path]) => path === 'pnpm-lock.yaml');
+    assert.equal(lockWrites[0][1], sha256(text(lockFor(NEW_PKG))), 'the first lockfile write starts from the hash Make held after its install');
+    assert.notEqual(lockWrites[0][1], planned.beforeSha256, 'not the plan\'s before hash');
+    const calls = s.make.calls.map(([kind, path]) => (kind === 'write' ? `write ${path}` : kind));
+    const first = calls.indexOf('write pnpm-lock.yaml');
+    assert.ok(!calls.slice(calls.indexOf('write package.json'), first).includes('status'), 'no whole-project re-read between package.json and the lockfile write');
+    assert.equal(s.make.saved.get('pnpm-lock.yaml').toString(), lockFor(NEW_PKG));
+    assert.equal(s.make.saved.get('package.json').toString(), text(NEW_PKG));
+  });
+
+  it('keeps the refuse, wait and re-read path when the lockfile moves again after the idle probe', async t => {
+    const s = dependencyChange(t);
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    let once = true;
+    s.make.hooks.beforeWrite = path => {
+      if (path !== 'pnpm-lock.yaml' || !once) return;
+      once = false;
+      s.make.working.set('pnpm-lock.yaml', Buffer.from('moved after the probe\n'));
+    };
+    const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    assert.equal(applied.outcome, 'ok');
+    const lockWrites = s.make.expectations.filter(([path]) => path === 'pnpm-lock.yaml');
+    assert.equal(lockWrites[0][1], sha256(text(lockFor(NEW_PKG))), 'the first attempt used the probe\'s hash and was refused');
+    assert.equal(lockWrites[1][1], sha256('moved after the probe\n'), 'the retry starts from the hash of the fresh read');
+    assert.equal(s.make.saved.get('pnpm-lock.yaml').toString(), lockFor(NEW_PKG));
+  });
+
+  // R6: with nothing written after the lockfile, reconcile's own wait is the only one.
+  it('waits for Make once after the last dependency write, not twice', async t => {
+    const s = setup(t, { files: { ...BASE, 'pnpm-lock.yaml': lockFor(PKG) } });
+    s.make.install = pkg => ({ 'pnpm-lock.yaml': lockFor(pkg) });
+    landChange(s, { 'package.json': NEW_PKG, 'pnpm-lock.yaml': lockFor(NEW_PKG) });
+    const plan = await deployPlan(s.make, s.opts, s.deps);
+    assert.deepEqual(plan.files.map(file => file.path), ['package.json', 'pnpm-lock.yaml']);
+    await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
+    const calls = s.make.calls.map(([kind, path]) => (kind === 'write' ? `write ${path}` : kind));
+    const from = calls.indexOf('write pnpm-lock.yaml');
+    const next = calls.indexOf('status', from);
+    const between = calls.slice(from + 1, next);
+    // A wait after a dependency write is the same run of probes each time (Make's install lands, then two that agree):
+    // the one after package.json is the measure, and only that many follow the lockfile write before reconcile's re-read.
+    const afterPackage = calls.slice(calls.indexOf('write package.json') + 1, from);
+    assert.ok(afterPackage.length > 0 && afterPackage.every(kind => kind === 'idle'));
+    assert.deepEqual(between, afterPackage, 'one idle wait between the lockfile write and the next re-read');
+  });
+
   it('does not replay a confirmed lockfile write whose tracker settlement timed out', async t => {
     const s = dependencyChange(t);
     const plan = await deployPlan(s.make, s.opts, s.deps);
@@ -2328,7 +2383,7 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
     assert.equal(applied.outcome, 'ok');
     assert.deepEqual(s.make.writes.filter(([kind]) => kind === 'write').map(([, path]) => path),
-      ['src/App.tsx', 'package.json', 'pnpm-lock.yaml', 'pnpm-lock.yaml', 'src/App.tsx'], 'the unwired entry file first, only the reconcile pass writes the lockfile again, the entry file last');
+      ['src/App.tsx', 'package.json', 'pnpm-lock.yaml', 'src/App.tsx'], 'the unwired entry file first, the lockfile once (no refused first attempt: it starts from the hash Make holds), the entry file last');
     assert.equal(s.make.saved.get('pnpm-lock.yaml').toString(), lockFor(NEW_PKG));
   });
 
@@ -2349,7 +2404,7 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
     assert.equal(applied.outcome, 'ok');
     assert.deepEqual(s.make.writes.filter(([kind]) => kind === 'write').map(([, path]) => path),
-      ['src/App.tsx', 'src/App.tsx', 'package.json', 'pnpm-lock.yaml', 'pnpm-lock.yaml', 'src/App.tsx']);
+      ['src/App.tsx', 'src/App.tsx', 'package.json', 'pnpm-lock.yaml', 'src/App.tsx']);
     assert.equal(s.make.saved.get('package.json').toString(), text(NEW_PKG));
     assert.equal(s.make.saved.get('pnpm-lock.yaml').toString(), lockFor(NEW_PKG));
   });
