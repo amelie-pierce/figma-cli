@@ -1,0 +1,19 @@
+_vaults/figma-cli/wiki/make/write-cost.md
+  s_17f8cdcdd8de1d::t_970a781b216708 55-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0757dac569328634474e83c205bb472aef22db99",
+  "prompts": {},
+  "sessions": {
+    "s_17f8cdcdd8de1d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7328dd99-c96c-4189-ab57-245daf691b70",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
