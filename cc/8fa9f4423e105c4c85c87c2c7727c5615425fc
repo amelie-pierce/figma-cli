@@ -1,0 +1,14 @@
+CHANGELOG.md
+  h_eb882fdf9e0ce8 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cc8fa9f4423e105c4c85c87c2c7727c5615425fc",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
