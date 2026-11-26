@@ -1,0 +1,33 @@
+CHANGELOG.md
+  s_ec8c3585c19971::t_9135dbeb18e297 7
+_vaults/figma-cli/wiki/make/filesystem-bridge.md
+  s_ec8c3585c19971::t_a4f72251dc096a 54,56
+src/make-client.js
+  s_17f8cdcdd8de1d::t_213d42a4c368f5 349,797-805,1735,1737-1739,1744,1751-1757,1766-1771,1890-1895
+src/make-rpc.js
+  s_17f8cdcdd8de1d::t_004867f551b04d 107-112,123-126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d0b474f7baccebe1e702b3e829f788631bea4d6b",
+  "prompts": {},
+  "sessions": {
+    "s_17f8cdcdd8de1d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7328dd99-c96c-4189-ab57-245daf691b70",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_ec8c3585c19971": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9236cdb0-eb5a-4e05-8837-f2f676740c5c",
+        "model": "unknown"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
