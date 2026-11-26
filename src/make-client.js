@@ -789,6 +789,17 @@ export class MakeClient {
     } finally { this.deadline = previousDeadline; }
   }
 
+  // A read-only inventory is taken again, once, in a new operation (which
+  // captures the filesystem socket again) when Make's socket closes under it.
+  // Nothing was written, so nothing is unknown. Writes never go through here.
+  async _retryClosedSocket(read) {
+    try { return await read(); }
+    catch (error) {
+      if (!/Make filesystem socket closed/.test(error?.message || '')) throw error;
+      return read();
+    }
+  }
+
   _durable(action, deadline) {
     return this._evaluate(`(${makeDurablePageAction.toString()})(${JSON.stringify(action)})`, deadline,
       { bytes: action.type === 'read' ? Infinity : 0 });
@@ -1685,7 +1696,11 @@ export class MakeClient {
   // Bound each renderer/socket batch independently. Large kits can take more
   // than one command timeout in total, but no Runtime.callFunctionOn owns the
   // whole tree. Version/pending state is checked at every batch boundary.
-  async inventoryVendor(root = 'src/vendor/atomic-aui', { includeBytes = false, batchSize = 24 } = {}) {
+  inventoryVendor(root = 'src/vendor/atomic-aui', options = {}) {
+    return this._retryClosedSocket(() => this._inventoryVendor(root, options));
+  }
+
+  async _inventoryVendor(root, { includeBytes = false, batchSize = 24 } = {}) {
     sourcePath(root);
     if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 64) throw new Error('Inventory batch size must be 1–64.');
     const directories = [root];
@@ -1702,43 +1717,58 @@ export class MakeClient {
         const bridge = await this._fileBridge(deadline);
         try {
           let count = 0;
+          // Folders, then files, are requested READ_CONCURRENCY at a time and
+          // applied in queue order (see _inventoryProject).
           while (count < batchSize && (directories.length || files.length)) {
+            const room = batchSize - count;
             if (directories.length) {
-              const directory = directories.shift();
-              if (seenDirectories.has(directory)) throw new Error(`Make directory was listed twice: ${directory}`);
-              seenDirectories.add(directory);
-              const remotePath = `code/${directory}`;
-              const reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
-                'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
-              ]);
-              if (reply?.success !== true || reply.data?.path !== remotePath || !Array.isArray(reply.data.files)) {
-                throw new Error(`Make directory listing is unavailable: ${directory}`);
+              const wave = directories.splice(0, Math.min(room, directories.length));
+              for (const directory of wave) {
+                if (seenDirectories.has(directory)) throw new Error(`Make directory was listed twice: ${directory}`);
+                seenDirectories.add(directory);
               }
-              const names = new Set();
-              for (const entry of reply.data.files) {
-                const name = sourcePath(entry?.name);
-                if (name.includes('/') || entry.path !== name || names.has(name) ||
-                    (entry.isFile === true) === (entry.isDirectory === true)) {
-                  throw new Error(`Make directory listing is ambiguous: ${directory}`);
+              const replies = await mapLimit(wave, READ_CONCURRENCY, directory => bridge.invoke(
+                'function(type, data, id) { return this.request(type, data, id); }',
+                ['fs/dir/list', { path: `code/${directory}`, includeHidden: true }, randomUUID()]));
+              wave.forEach((directory, index) => {
+                const reply = replies[index];
+                const remotePath = `code/${directory}`;
+                if (reply?.success !== true || reply.data?.path !== remotePath || !Array.isArray(reply.data.files)) {
+                  throw new Error(`Make directory listing is unavailable: ${directory}`);
                 }
-                names.add(name);
-                const path = `${directory}/${name}`;
-                if (entry.isDirectory) directories.push(path);
-                else files.push({ path, size: entry.size });
-              }
+                const names = new Set();
+                for (const entry of reply.data.files) {
+                  const name = sourcePath(entry?.name);
+                  if (name.includes('/') || entry.path !== name || names.has(name) ||
+                      (entry.isFile === true) === (entry.isDirectory === true)) {
+                    throw new Error(`Make directory listing is ambiguous: ${directory}`);
+                  }
+                  names.add(name);
+                  const path = `${directory}/${name}`;
+                  if (entry.isDirectory) directories.push(path);
+                  else files.push({ path, size: entry.size });
+                }
+                if (seenDirectories.size + inventory.size + directories.length + files.length > this.maxEntries) {
+                  throw new Error('Make drift inventory exceeds the entry limit.');
+                }
+              });
+              count += wave.length;
             } else {
-              const { path, size } = files.shift();
-              const relative = path.slice(root.length + 1);
-              if (inventory.has(relative)) throw new Error(`Duplicate Make file: ${path}`);
-              const bytes = await this._bridgeReadBytes(bridge, path);
-              if (Number.isSafeInteger(size) && bytes.length !== size) throw new Error(`Make file changed during inventory: ${path}`);
-              inventory.set(relative, { path: relative, bytes: bytes.length, sha256: digest(bytes) });
-              if (includeBytes) contents.set(relative, bytes);
+              const wave = files.splice(0, Math.min(room, files.length));
+              const reads = await mapLimit(wave, READ_CONCURRENCY, ({ path }) => this._bridgeReadBytes(bridge, path));
+              wave.forEach(({ path, size }, index) => {
+                const bytes = reads[index];
+                const relative = path.slice(root.length + 1);
+                if (inventory.has(relative)) throw new Error(`Duplicate Make file: ${path}`);
+                if (Number.isSafeInteger(size) && bytes.length !== size) throw new Error(`Make file changed during inventory: ${path}`);
+                inventory.set(relative, { path: relative, bytes: bytes.length, sha256: digest(bytes) });
+                if (includeBytes) contents.set(relative, bytes);
+                if (seenDirectories.size + inventory.size + directories.length + files.length > this.maxEntries) {
+                  throw new Error('Make drift inventory exceeds the entry limit.');
+                }
+              });
+              count += wave.length;
             }
-            if (seenDirectories.size + inventory.size + directories.length + files.length > this.maxEntries) {
-              throw new Error('Make drift inventory exceeds the entry limit.');
-            }
-            count++;
           }
         } finally { await bridge.dispose(); }
         const after = (await this._driftState(deadline)).state;
@@ -1756,7 +1786,7 @@ export class MakeClient {
   // untracked node_modules folder is skipped. Excluded files are never read.
   // Version/pending state is bracketed per batch, as for inventoryVendor.
   inventoryProject(options = {}) {
-    return this._retryTrackerInventory(() => this._inventoryProject(options));
+    return this._retryClosedSocket(() => this._retryTrackerInventory(() => this._inventoryProject(options)));
   }
 
   async _inventoryProject({ includeBytes = false, classifyText = false, batchSize = 24, tracked = [], exclude = null } = {}) {
@@ -1802,48 +1832,68 @@ export class MakeClient {
         const bridge = await this._fileBridge(deadline);
         try {
           let count = 0;
+          // The queued folders (or, once none are queued, files) of this batch
+          // are requested READ_CONCURRENCY at a time and applied in queue
+          // order, so the queues, the output and every check equal the
+          // one-at-a-time walk's. A wave never holds more than the batch has room for.
           while (count < batchSize && (directories.length || files.length)) {
+            const room = batchSize - count;
             if (directories.length) {
-              const { path: directory, rules: inherited, ignored: inIgnored } = directories.shift();
-              if (seenDirectories.has(directory)) throw new Error(`Make directory was listed twice: ${directory}`);
-              seenDirectories.add(directory);
-              const entries = await list(bridge, directory);
-              let rules = inherited;
-              const join = name => directory ? `${directory}/${name}` : name;
-              const ignoreFile = entries.find(entry => entry.name === '.gitignore' && !entry.isDirectory);
-              if (ignoreFile && !isIgnored(rules, join('.gitignore'), false)) {
-                rules = [...rules, ...parseIgnore((await this._bridgeReadBytes(bridge, join('.gitignore'))).toString('utf8'), directory)];
+              const wave = directories.splice(0, Math.min(room, directories.length));
+              for (const { path: directory } of wave) {
+                if (seenDirectories.has(directory)) throw new Error(`Make directory was listed twice: ${directory}`);
+                seenDirectories.add(directory);
               }
-              for (const entry of entries) {
-                const path = join(entry.name);
-                const ignored = inIgnored || isIgnored(rules, path, entry.isDirectory);
-                const untrackedModules = entry.isDirectory && entry.name === 'node_modules';
-                const keepTracked = entry.isDirectory ? trackedFolders.has(path) : trackedFiles.has(path);
-                if ((!directory && entry.name === '.git') || isIgnored(hard, path, entry.isDirectory) ||
-                    ((ignored || untrackedModules) && !keepTracked)) {
-                  excluded.push(entry.isDirectory ? `${path}/` : path);
-                  continue;
+              const listed = await mapLimit(wave, READ_CONCURRENCY, async ({ path: directory, rules: inherited }) => {
+                const entries = await list(bridge, directory);
+                let rules = inherited;
+                const ignoreFile = entries.find(entry => entry.name === '.gitignore' && !entry.isDirectory);
+                if (ignoreFile && !isIgnored(rules, directory ? `${directory}/.gitignore` : '.gitignore', false)) {
+                  rules = [...rules, ...parseIgnore((await this._bridgeReadBytes(bridge, directory ? `${directory}/.gitignore` : '.gitignore')).toString('utf8'), directory)];
                 }
-                if (entry.isDirectory) directories.push({ path, rules, ignored });
-                else files.push({ path, size: entry.size });
-              }
+                return { entries, rules };
+              });
+              wave.forEach(({ path: directory, ignored: inIgnored }, index) => {
+                const { entries, rules } = listed[index];
+                const join = name => directory ? `${directory}/${name}` : name;
+                for (const entry of entries) {
+                  const path = join(entry.name);
+                  const ignored = inIgnored || isIgnored(rules, path, entry.isDirectory);
+                  const untrackedModules = entry.isDirectory && entry.name === 'node_modules';
+                  const keepTracked = entry.isDirectory ? trackedFolders.has(path) : trackedFiles.has(path);
+                  if ((!directory && entry.name === '.git') || isIgnored(hard, path, entry.isDirectory) ||
+                      ((ignored || untrackedModules) && !keepTracked)) {
+                    excluded.push(entry.isDirectory ? `${path}/` : path);
+                    continue;
+                  }
+                  if (entry.isDirectory) directories.push({ path, rules, ignored });
+                  else files.push({ path, size: entry.size });
+                }
+                if (seenDirectories.size + inventory.size + directories.length + files.length > this.maxEntries) {
+                  throw new Error('Make project inventory exceeds the entry limit.');
+                }
+              });
+              count += wave.length;
             } else {
-              const { path, size } = files.shift();
-              if (inventory.has(path)) throw new Error(`Duplicate Make file: ${path}`);
-              const bytes = await this._bridgeReadBytes(bridge, path);
-              if (Number.isSafeInteger(size) && bytes.length !== size) throw new Error(`Make file changed during inventory: ${path}`);
-              let text = true;
-              if (classifyText) {
-                try { text = bytes.length <= 2 * 1024 * 1024 && !new TextDecoder('utf-8', { fatal: true }).decode(bytes).includes('\0'); }
-                catch { text = false; }
-              }
-              inventory.set(path, { path, bytes: bytes.length, sha256: digest(bytes), blob: gitBlobSha(bytes), ...(classifyText ? { text } : {}) });
-              if (keep(path)) contents.set(path, bytes);
+              const wave = files.splice(0, Math.min(room, files.length));
+              const reads = await mapLimit(wave, READ_CONCURRENCY, ({ path }) => this._bridgeReadBytes(bridge, path));
+              wave.forEach(({ path, size }, index) => {
+                const bytes = reads[index];
+                if (inventory.has(path)) throw new Error(`Duplicate Make file: ${path}`);
+                if (Number.isSafeInteger(size) && bytes.length !== size) throw new Error(`Make file changed during inventory: ${path}`);
+                let text = true;
+                if (classifyText) {
+                  try { text = bytes.length <= 2 * 1024 * 1024 && !new TextDecoder('utf-8', { fatal: true }).decode(bytes).includes('\0'); }
+                  catch { text = false; }
+                }
+                inventory.set(path, { path, bytes: bytes.length, sha256: digest(bytes), blob: gitBlobSha(bytes), ...(classifyText ? { text } : {}) });
+                if (keep(path)) contents.set(path, bytes);
+                if (seenDirectories.size + inventory.size + directories.length + files.length > this.maxEntries) {
+                  throw new Error('Make project inventory exceeds the entry limit.');
+                }
+              });
+              count += wave.length;
             }
-            if (seenDirectories.size + inventory.size + directories.length + files.length > this.maxEntries) {
-              throw new Error('Make project inventory exceeds the entry limit.');
-            }
-            count++;
           }
         } finally { await bridge.dispose(); }
         const after = (await this._driftState(deadline)).state;
@@ -1895,7 +1945,7 @@ export class MakeClient {
   // tree's paths kept as tracked, the working-copy tree, the marker and the
   // AI-turn version history.
   projectStatus(options = {}) {
-    return this._retryTrackerInventory(() => this._projectStatus(options));
+    return this._retryClosedSocket(() => this._retryTrackerInventory(() => this._projectStatus(options)));
   }
 
   async _projectStatus({ classifyText = false, savedInventory = false, savedProtected } = {}) {
