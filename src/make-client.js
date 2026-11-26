@@ -346,6 +346,7 @@ export class MakeClient {
     this.maxEntries = maxEntries;
     this.fileKey = null;
     this._running = false;
+    this._closedSocketRetry = false;
     this._durableOperation = false;
     this._savedVersionEntries = null;
     // Optional absolute deadline shared by every operation (status budget).
@@ -793,11 +794,15 @@ export class MakeClient {
   // captures the filesystem socket again) when Make's socket closes under it.
   // Nothing was written, so nothing is unknown. Writes never go through here.
   async _retryClosedSocket(read) {
-    try { return await read(); }
-    catch (error) {
-      if (!/Make filesystem socket closed/.test(error?.message || '')) throw error;
-      return read();
-    }
+    if (this._closedSocketRetry) return read();
+    this._closedSocketRetry = true;
+    try {
+      try { return await read(); }
+      catch (error) {
+        if (!/Make filesystem socket closed/.test(error?.message || '')) throw error;
+        return await read();
+      }
+    } finally { this._closedSocketRetry = false; }
   }
 
   _durable(action, deadline) {
@@ -1727,26 +1732,29 @@ export class MakeClient {
                 if (seenDirectories.has(directory)) throw new Error(`Make directory was listed twice: ${directory}`);
                 seenDirectories.add(directory);
               }
-              const replies = await mapLimit(wave, READ_CONCURRENCY, directory => bridge.invoke(
-                'function(type, data, id) { return this.request(type, data, id); }',
-                ['fs/dir/list', { path: `code/${directory}`, includeHidden: true }, randomUUID()]));
-              wave.forEach((directory, index) => {
-                const reply = replies[index];
+              const listed = await mapLimit(wave, READ_CONCURRENCY, async directory => {
                 const remotePath = `code/${directory}`;
+                const reply = await bridge.invoke('function(type, data, id) { return this.request(type, data, id); }', [
+                  'fs/dir/list', { path: remotePath, includeHidden: true }, randomUUID(),
+                ]);
                 if (reply?.success !== true || reply.data?.path !== remotePath || !Array.isArray(reply.data.files)) {
                   throw new Error(`Make directory listing is unavailable: ${directory}`);
                 }
                 const names = new Set();
-                for (const entry of reply.data.files) {
+                return reply.data.files.map(entry => {
                   const name = sourcePath(entry?.name);
                   if (name.includes('/') || entry.path !== name || names.has(name) ||
                       (entry.isFile === true) === (entry.isDirectory === true)) {
                     throw new Error(`Make directory listing is ambiguous: ${directory}`);
                   }
                   names.add(name);
-                  const path = `${directory}/${name}`;
-                  if (entry.isDirectory) directories.push(path);
-                  else files.push({ path, size: entry.size });
+                  return { path: `${directory}/${name}`, isDirectory: entry.isDirectory, size: entry.size };
+                });
+              });
+              wave.forEach((directory, index) => {
+                for (const { path, isDirectory, size } of listed[index]) {
+                  if (isDirectory) directories.push(path);
+                  else files.push({ path, size });
                 }
                 if (seenDirectories.size + inventory.size + directories.length + files.length > this.maxEntries) {
                   throw new Error('Make drift inventory exceeds the entry limit.');
@@ -1755,12 +1763,15 @@ export class MakeClient {
               count += wave.length;
             } else {
               const wave = files.splice(0, Math.min(room, files.length));
-              const reads = await mapLimit(wave, READ_CONCURRENCY, ({ path }) => this._bridgeReadBytes(bridge, path));
-              wave.forEach(({ path, size }, index) => {
+              const reads = await mapLimit(wave, READ_CONCURRENCY, async ({ path, size }) => {
+                const bytes = await this._bridgeReadBytes(bridge, path);
+                if (Number.isSafeInteger(size) && bytes.length !== size) throw new Error(`Make file changed during inventory: ${path}`);
+                return bytes;
+              });
+              wave.forEach(({ path }, index) => {
                 const bytes = reads[index];
                 const relative = path.slice(root.length + 1);
                 if (inventory.has(relative)) throw new Error(`Duplicate Make file: ${path}`);
-                if (Number.isSafeInteger(size) && bytes.length !== size) throw new Error(`Make file changed during inventory: ${path}`);
                 inventory.set(relative, { path: relative, bytes: bytes.length, sha256: digest(bytes) });
                 if (includeBytes) contents.set(relative, bytes);
                 if (seenDirectories.size + inventory.size + directories.length + files.length > this.maxEntries) {
@@ -1876,11 +1887,14 @@ export class MakeClient {
               count += wave.length;
             } else {
               const wave = files.splice(0, Math.min(room, files.length));
-              const reads = await mapLimit(wave, READ_CONCURRENCY, ({ path }) => this._bridgeReadBytes(bridge, path));
-              wave.forEach(({ path, size }, index) => {
+              const reads = await mapLimit(wave, READ_CONCURRENCY, async ({ path, size }) => {
+                const bytes = await this._bridgeReadBytes(bridge, path);
+                if (Number.isSafeInteger(size) && bytes.length !== size) throw new Error(`Make file changed during inventory: ${path}`);
+                return bytes;
+              });
+              wave.forEach(({ path }, index) => {
                 const bytes = reads[index];
                 if (inventory.has(path)) throw new Error(`Duplicate Make file: ${path}`);
-                if (Number.isSafeInteger(size) && bytes.length !== size) throw new Error(`Make file changed during inventory: ${path}`);
                 let text = true;
                 if (classifyText) {
                   try { text = bytes.length <= 2 * 1024 * 1024 && !new TextDecoder('utf-8', { fatal: true }).decode(bytes).includes('\0'); }
