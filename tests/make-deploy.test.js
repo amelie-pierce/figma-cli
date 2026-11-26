@@ -2325,11 +2325,14 @@ describe('make deploy with dependency changes and Make\'s own install', () => {
     const applied = await deployApply(s.make, { ...s.opts, planPath: plan.planPath }, s.deps);
     assert.equal(applied.outcome, 'ok');
     const lockWrites = s.make.expectations.filter(([path]) => path === 'pnpm-lock.yaml');
-    assert.equal(lockWrites[0][1], sha256(text(lockFor(NEW_PKG))), 'the first lockfile write starts from the hash Make held after its install');
+    assert.equal(lockWrites.length, 1, 'one lockfile write attempt, none refused');
+    assert.equal(lockWrites[0][1], sha256(text(lockFor(NEW_PKG))), 'the lockfile write starts from the hash Make held after its install');
     assert.notEqual(lockWrites[0][1], planned.beforeSha256, 'not the plan\'s before hash');
     const calls = s.make.calls.map(([kind, path]) => (kind === 'write' ? `write ${path}` : kind));
-    const first = calls.indexOf('write pnpm-lock.yaml');
-    assert.ok(!calls.slice(calls.indexOf('write package.json'), first).includes('status'), 'no whole-project re-read between package.json and the lockfile write');
+    const lockAt = calls.indexOf('write pnpm-lock.yaml');
+    const entryAt = calls.indexOf('write src/App.tsx', lockAt);
+    assert.ok(lockAt > calls.indexOf('write package.json') && entryAt > lockAt, 'package.json, then the lockfile, then the entry file');
+    assert.ok(!calls.slice(calls.indexOf('write package.json'), entryAt).includes('status'), 'no whole-project re-read from the package.json write through the lockfile write to the entry file write');
     assert.equal(s.make.saved.get('pnpm-lock.yaml').toString(), lockFor(NEW_PKG));
     assert.equal(s.make.saved.get('package.json').toString(), text(NEW_PKG));
   });
