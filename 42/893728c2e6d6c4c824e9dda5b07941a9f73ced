@@ -1,0 +1,28 @@
+CHANGELOG.md
+  h_eb882fdf9e0ce8 7
+REFERENCE.md
+  h_eb882fdf9e0ce8 283-286
+_vaults/figma-cli/wiki/make/deploy.md
+  h_eb882fdf9e0ce8 25-26
+_vaults/figma-cli/wiki/make/filesystem-bridge.md
+  h_eb882fdf9e0ce8 53-56
+_vaults/figma-cli/wiki/make/write-cost.md
+  h_eb882fdf9e0ce8 23
+_vaults/figma-cli/wiki/testing/test-layout.md
+  h_eb882fdf9e0ce8 19
+src/make-client.js
+  h_eb882fdf9e0ce8 792-802,1699-1703,1720-1721,1723,1725-1728,1730-1737,1739-1755,1757-1770,1789,1835-1838,1840,1842-1845,1847-1852,1854-1876,1878-1895,1948
+tests/make-inventory-overlap.test.js
+  h_eb882fdf9e0ce8 1-175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "42893728c2e6d6c4c824e9dda5b07941a9f73ced",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}

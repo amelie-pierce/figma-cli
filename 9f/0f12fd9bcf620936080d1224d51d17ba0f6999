@@ -1,0 +1,16 @@
+REFERENCE.md
+  h_eb882fdf9e0ce8 286-287
+_vaults/figma-cli/wiki/make/filesystem-bridge.md
+  h_eb882fdf9e0ce8 54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9f0f12fd9bcf620936080d1224d51d17ba0f6999",
+  "prompts": {},
+  "humans": {
+    "h_eb882fdf9e0ce8": {
+      "author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
