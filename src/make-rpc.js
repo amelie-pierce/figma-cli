@@ -104,8 +104,12 @@ export function captureMakeFileSocket(fileKey, capturePath, timeoutMs, captureMs
   const hook = arm();
   const send = hook?.original || globalThis[hookKey]?.original || WebSocket.prototype.send;
   const bridge = {
-    disposed: false, requests: new Map(),
-    get socket() { return this.disposed ? null : live()?.socket || null; },
+    disposed: false, requests: new Map(), seen: null,
+    get socket() {
+      const socket = this.disposed ? null : live()?.socket || null;
+      if (socket) this.seen = socket;
+      return socket;
+    },
     get workspaceId() { return this.disposed ? null : live()?.workspaceId || null; },
     status() {
       return { captured: !!this.socket, workspace: typeof this.workspaceId === 'string' && !!this.workspaceId,
@@ -116,7 +120,10 @@ export function captureMakeFileSocket(fileKey, capturePath, timeoutMs, captureMs
       const socket = this.socket;
       const workspaceId = this.workspaceId;
       if (this.disposed || !matchesFile() || !socket || socket.readyState !== WebSocket.OPEN ||
-          typeof workspaceId !== 'string' || !workspaceId) throw new Error('Make filesystem connection is unavailable.');
+          typeof workspaceId !== 'string' || !workspaceId) {
+        throw new Error(!this.disposed && matchesFile() && this.seen && this.seen.readyState !== WebSocket.OPEN
+          ? 'Make filesystem socket closed before the request was sent.' : 'Make filesystem connection is unavailable.');
+      }
       if (!['fs/file/write', 'fs/file/read', 'fs/file/delete', 'fs/dir/list'].includes(type)) throw new Error('Unsupported Make filesystem operation.');
       // The project root itself may only be listed, never read, written or deleted.
       const projectRootList = type === 'fs/dir/list' && data?.path === 'code';

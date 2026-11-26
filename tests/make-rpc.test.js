@@ -71,6 +71,36 @@ test('disposal restores the hook and rejects pending work instead of retrying', 
   assert.equal(socket.sent.length, 2);
 });
 
+test('a request refused after its socket closed says so; every other refusal stays generic', async () => {
+  const read = { type: 'fs/file/read', data: { path: 'code/package.json', workspaceId: 'workspace' } };
+  const closed = setup();
+  closed.socket.send(JSON.stringify(read));
+  const pending = closed.bridge.request('fs/file/read', { path: 'code/a' }, 'a');
+  closed.socket.readyState = 3;
+  closed.socket.dispatchEvent(new Event('close'));
+  await assert.rejects(pending, /Make filesystem socket closed; outcome is unknown/);
+  assert.throws(() => closed.bridge.request('fs/file/read', { path: 'code/b' }, 'b'), /Make filesystem socket closed before the request was sent/);
+  assert.equal(closed.socket.sent.length, 2, 'nothing was sent on the closed socket');
+  closed.location.href = 'https://www.figma.com/make/Other/File';
+  assert.throws(() => closed.bridge.request('fs/file/read', { path: 'code/b' }, 'b'), /Make filesystem connection is unavailable/);
+  closed.bridge.dispose();
+
+  // Closing, before the close event: the cached record is still there.
+  const closing = setup();
+  closing.socket.send(JSON.stringify(read));
+  assert.equal(closing.bridge.status().captured, true);
+  closing.socket.readyState = 2;
+  assert.throws(() => closing.bridge.request('fs/dir/list', { path: 'code/src' }, 'c'), /Make filesystem socket closed before the request was sent/);
+  closing.bridge.dispose();
+  assert.throws(() => closing.bridge.request('fs/dir/list', { path: 'code/src' }, 'c'), /Make filesystem connection is unavailable/);
+
+  // A bridge that never held a socket has seen no close.
+  const never = setup();
+  never.socket.readyState = 3;
+  assert.throws(() => never.bridge.request('fs/file/read', { path: 'code/a' }, 'a'), /Make filesystem connection is unavailable/);
+  never.bridge.dispose();
+});
+
 function provisioned(capturePath = null) {
   class Socket extends EventTarget {
     static OPEN = 1;

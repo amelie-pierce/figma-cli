@@ -20,7 +20,7 @@ A durable write to Make (`writeDurable`, `deleteDurable`, `src/make-client.js`) 
 | Saved-tree flatten (first mutation per client) | 3.6-4.3 s once per `MakeClient` | `_pendingAfterMutation` |
 | Absence check of a file in a new folder | 5 s per unanswered missing-folder listing | `_sandboxAbsent`; [size-and-timeouts.md](size-and-timeouts.md) |
 
-So "5-10 s per file" is a folder-count and tree-shape cost, not a file-size cost. The three fixes before this one: no editor `select` during write and delete checks (edit 9.3 s to 1.7 s), a new-folder absence check that starts at the nearest ancestor the tree already shows, and overlapping independent sandbox reads (R4, `mapLimit`).
+So "5-10 s per file" is a folder-count and tree-shape cost, not a file-size cost. The three fixes before this one: no editor `select` during write and delete checks (edit 9.3 s to 1.7 s), a new-folder absence check that starts at the nearest ancestor the tree already shows, and overlapping independent sandbox reads (R4, `mapLimit`). Updated 2026-11-26: the whole-project and vendor inventories behind `projectStatus`, `inventoryProject` and `inventoryVendor` overlap their requests the same way (eight in flight; [filesystem-bridge.md](filesystem-bridge.md)). They are not writes, but a deploy runs the project inventory several times around its writes and they were most of its time; the per-write model above is unchanged.
 
 ## The batched write (Updated 2026-11-25)
 

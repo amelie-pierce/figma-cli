@@ -280,8 +280,11 @@ Optional external
 receipts must pin `fileKey`, the raw `manifestSha256` and full
 `savedVersionGitSha`; a stale receipt fails. `--manifest -` reads stdin. The
 default root is `src/vendor/atomic-aui`; the default timeout is 120 seconds.
-Each renderer inventory batch is bounded to 24 directory/file calls; the saved
-version and pending set are checked across batches. When present,
+Each renderer inventory batch is bounded to 24 directory/file calls, sent
+eight at a time and applied in order; the saved version and pending set are
+checked across batches. A read-only inventory (`make status`, `make drift`, a
+deploy's reads) is taken again once if Make's filesystem socket closes under
+it; a second close is raised. When present,
 `tokens/generated.manifest.json` is parsed and checked against the exact
 generated tree, including `.generated` and `splash-bootstrap.js`.
 
