@@ -669,7 +669,11 @@ client wrote it, so each lockfile is written through the client even when
 Make's install already holds main's content, and its start content is backed
 up first for `--abort` (unless it already equalled main's). After each dependency
 write, and whenever Make's state moves under a write, the deploy waits until
-Make is idle, checks that every unsaved path is planned and holds its before or
+Make is idle. A lockfile written right after that wait starts from the hash
+Make holds then (Make's install has already rewritten it), not from the plan's
+before hash; the last dependency write's own wait is skipped when the next step
+waits for Make itself. When a write is refused because Make's state moved, the
+deploy checks that every unsaved path is planned and holds its before or
 planned content (only a planned dependency file may hold what Make's install
 regenerated), and tries that path again. Before the save, a dependency file
 Make regenerated is written again; when Make keeps changing it after three

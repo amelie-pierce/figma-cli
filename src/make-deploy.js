@@ -794,7 +794,8 @@ function stop(receipt, error, stage, message, code) {
 }
 
 // Wait until Make is idle: its own install after a dependency write rewrites
-// files and the pending list for a while.
+// files and the pending list for a while. Returns the probe it settled on:
+// Make's client-VFS hash of every dependency file in the plan.
 async function waitIdle(client, receipt, deps) {
   const { quietMs, pollMs, timeoutMs } = deps.settle;
   const paths = receipt.plan.files.map(file => file.path).filter(isDependency);
@@ -806,7 +807,7 @@ async function waitIdle(client, receipt, deps) {
     const idle = !probe.busy && !probe.offline && probe.state && !probe.state.isLoading &&
       (receipt.mode === 'override-make' || !probe.state.error);
     const key = idle ? JSON.stringify(probe) : null;
-    if (key && key === last && Date.now() - since >= quietMs) return;
+    if (key && key === last && Date.now() - since >= quietMs) return probe;
     if (key !== last) { last = key; since = Date.now(); }
     if (Date.now() - start > timeoutMs) {
       stop(receipt, null, receipt.stage, `Make did not become idle within ${Math.round(timeoutMs / 1000)}s. No version was saved. ` +
@@ -984,7 +985,13 @@ async function writeBatch(client, receipt, files, { mainBytes, home, deps }) {
 // resumes in the order it was written with. A todo item with `placeholder` set
 // writes the entry file's unwired placeholder instead of main's content: it is
 // not a planned write, so it is never recorded as one.
-async function writeFiles(client, receipt, todo, { mainBytes, home, deps, final = true }) {
+// A lockfile that follows a dependency write starts from the hash Make holds in
+// the idle probe taken right after it, not from the plan's before hash, which
+// Make's own install has already replaced; its write keeps a hash precondition
+// (the current one), and a refusal still re-reads and retries below.
+// settles: the caller's next step waits for Make to be idle by itself
+// (reconcile, or another write round that does), so the last file's own wait is skipped.
+async function writeFiles(client, receipt, todo, { mainBytes, home, deps, final = true, settles = false }) {
   if (!receipt.writeRun) {
     receipt.writeRun = { startedAt: new Date().toISOString(), completedWrites: 0 };
     saveReceipt(receipt);
@@ -995,14 +1002,18 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps, final 
   // placeholder or an override-make write keeps its own single operation at
   // its own position.
   let run = [];
+  let idle = null;
   const flush = async () => {
     const chunks = chunkBatch(run, file => file.bytes ?? 0);
     run = [];
     for (const chunk of chunks) await writeBatch(client, receipt, chunk, { mainBytes, home, deps });
   };
-  for (const file of [...todo].sort((a, b) => position.get(a.path) - position.get(b.path))) {
-    if (receipt.mode !== 'override-make' && !file.placeholder && !batchBarred(file.path)) { run.push(file); continue; }
+  const ordered = [...todo].sort((a, b) => position.get(a.path) - position.get(b.path));
+  for (const file of ordered) {
+    if (receipt.mode !== 'override-make' && !file.placeholder && !batchBarred(file.path)) { run.push(file); idle = null; continue; }
     await flush();
+    const probe = idle;
+    idle = null;
     const writeStarted = Date.now();
     if (receipt.mode === 'override-make') {
       const checked = plannedState(receipt, await client.projectStatus(), mainBytes);
@@ -1018,6 +1029,8 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps, final 
       content = decode(bytes);
     }
     let expected = file.expectedSha256 !== undefined ? file.expectedSha256 : file.beforeSha256;
+    const held = probe?.sha?.[file.path];
+    if (isLockfile(file.path) && file.op !== 'delete' && !file.placeholder && file.expectedSha256 === undefined && /^[a-f0-9]{64}$/.test(held || '')) expected = held;
     let lastBackup = null;
     for (let attempt = 1; ; attempt++) {
       let result;
@@ -1067,7 +1080,7 @@ async function writeFiles(client, receipt, todo, { mainBytes, home, deps, final 
     }
     const completed = new Set(receipt.completedWrites.filter(write => !write.uncertain && !write.backupOnly).map(write => write.path)).size;
     deps.progress(`${completed}/${receipt.plan.files.length} ${file.path} (${Math.round((Date.now() - writeStarted) / 1000)}s)`);
-    if (isDependency(file.path)) await waitIdle(client, receipt, deps);
+    if (isDependency(file.path) && !(settles && file === ordered[ordered.length - 1])) idle = await waitIdle(client, receipt, deps);
   }
   await flush();
   if (!final) return;
@@ -1178,7 +1191,7 @@ async function reconcile(client, receipt, { mainBytes, home, deps, scope = new S
     }
     for (const file of left) if (file.state === 'after-eol') eolWritten.add(file.path);
     receipt.stage = 'writing';
-    await writeFiles(client, receipt, left.map(file => ({ ...file, expectedSha256: status.workingSha256.get(file.path) ?? null })), { mainBytes, home, deps });
+    await writeFiles(client, receipt, left.map(file => ({ ...file, expectedSha256: status.workingSha256.get(file.path) ?? null })), { mainBytes, home, deps, settles: true });
   }
 }
 
@@ -1365,7 +1378,7 @@ async function writePlan(client, ctx, receipt, todo, mainFlat, { mainBytes, home
   }
   if (entry?.mode === 'two-batch' && !receipt.batchSaved) {
     setPhase('batch1');
-    await writeFiles(client, receipt, rest, { ...options, final: false });
+    await writeFiles(client, receipt, rest, { ...options, final: false, settles: true });
     await reconcile(client, receipt, { ...options, scope: new Set(receipt.plan.files.map(file => file.path).filter(path => !entry.files.includes(path))) });
     await finish(client, ctx, receipt, mainFlat, home, deps.warn, deps.progress, { batch: true });
     await writeFiles(client, receipt, heads, options);
@@ -1383,7 +1396,7 @@ async function writePlan(client, ctx, receipt, todo, mainFlat, { mainBytes, home
     heads = heads.map(file => (placeholders.has(file.path) ? { ...file, expectedSha256: sha256(entryPlaceholder(file.path)) } : file));
     await writeFiles(client, receipt, heads, options);
   } else {
-    await writeFiles(client, receipt, todo, options);
+    await writeFiles(client, receipt, todo, { ...options, settles: true });
   }
   await reconcile(client, receipt, options);
   await finish(client, ctx, receipt, mainFlat, home, deps.warn, deps.progress);
